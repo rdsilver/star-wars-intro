@@ -5,7 +5,7 @@ function preload() {
 }
 
 function setup() {
-  createCanvas(window.innerWidth -10, window.innerHeight-10, WEBGL);
+  createCanvas(window.innerWidth, window.innerHeight, WEBGL);
   background(0);
   fill(236, 199, 96);
   mySound.setVolume(0.2);
@@ -16,7 +16,7 @@ var scale_amount = 0;
 var count = 0;
 function draw() {
   drawLogo();
-  drawDollarSign();
+  //drawDollarSign();
 }
 
 function drawLogo() {
