@@ -10,6 +10,7 @@ function setup() {
   fill(236, 199, 96);
   mySound.setVolume(0.2);
   mySound.loop(.2, 1, .2)
+  texture(dollar_sign_texture);
 }
 
 var scale_amount = 0;
@@ -22,7 +23,7 @@ function draw() {
 function drawLogo() {
   push();
   background(0);
-  texture(logo);
+  //texture(logo);
   scale_amount = 1 - (frameCount/500);
   if (scale_amount > 0) {
     scale(scale_amount);
@@ -33,7 +34,6 @@ function drawLogo() {
 
 function drawDollarSign() {
   push();
-  texture(dollar_sign_texture);
   rotateX(150);
   translate(0, height + 100 - count, 0);
   console.log("translate:" + (height + 100 - count));
