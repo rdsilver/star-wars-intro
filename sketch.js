@@ -22,7 +22,7 @@ function draw() {
 function drawLogo() {
   push();
   background(0);
-  texture(logo);
+  //texture(logo);
   scale_amount = 1 - (frameCount/500);
   if (scale_amount > 0) {
     scale(scale_amount);
@@ -35,7 +35,7 @@ function drawDollarSign() {
   push();
   texture(dollar_sign_texture);
   rotateX(150);
-  //translate(0, height + 100 - count, 0);
+  translate(0, height + 100 - count, 0);
   console.log("translate:" + (height + 100 - count));
   console.log("count: " + count);
   console.log(scale_amount);
