@@ -40,7 +40,7 @@ function drawDollarSign() {
   console.log("count: " + count);
   console.log(scale_amount);
   if (scale_amount < .35) {
-    plane(width/10.0, height/10.0);
+    plane(width/3, height/3);
     count += 2;
   }
   pop();
