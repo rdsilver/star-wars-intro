@@ -38,8 +38,9 @@ function drawDollarSign() {
   translate(0, height + 100 - count, 0);
   console.log("translate:" + (height + 100 - count));
   console.log("count: " + count);
+  console.log(scale_amount);
   if (scale_amount < .35) {
-    plane(width/4.0, height/4.0);
+    plane(width/10.0, height/10.0);
     count += 2;
   }
   pop();
