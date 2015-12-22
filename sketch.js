@@ -5,7 +5,7 @@ function preload() {
 }
 
 function setup() {
-  createCanvas(window.innerWidth, window.innerHeight, WEBGL);
+  createCanvas(window.innerWidth -10, window.innerHeight-10, WEBGL);
   background(0);
   fill(236, 199, 96);
   mySound.setVolume(0.2);
@@ -25,6 +25,7 @@ function drawLogo() {
   texture(logo);
   scale_amount = 1 - (frameCount/500);
   if (scale_amount > 0) {
+    console.log("hi")
     scale(scale_amount);
     plane(width/2.0, height/2.0);
   }
@@ -36,6 +37,7 @@ function drawDollarSign() {
   texture(dollar_sign_texture);
   rotateX(150);
   translate(0, height + 100 - count, 0);
+  console.log(height + 100 - count);
   if (scale_amount < .35) {
     plane(width/3.0, height/3.0);
     count += 2;
