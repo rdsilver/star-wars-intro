@@ -9,7 +9,7 @@ function setup() {
   background(0);
   fill(236, 199, 96);
   mySound.setVolume(0.2);
-  mySound.play();
+  mySound.loop(.2, 1, .2)
 }
 
 var scale_amount = 0;
@@ -22,7 +22,7 @@ function draw() {
 function drawLogo() {
   push();
   background(0);
-  //texture(logo);
+  texture(logo);
   scale_amount = 1 - (frameCount/500);
   if (scale_amount > 0) {
     scale(scale_amount);
