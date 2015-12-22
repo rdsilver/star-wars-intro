@@ -23,8 +23,8 @@ function drawLogo() {
   push();
   background(0);
   texture(logo);
-  scale_amount = 1 - (frameCount/500);
   if (scale_amount > 0) {
+    scale_amount = 1 - (frameCount/500);
     scale(scale_amount);
     plane(width/2.0, height/2.0);
   }
