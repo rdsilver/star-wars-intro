@@ -1,6 +1,5 @@
 function preload() {
   mySound = loadSound('star_wars_theme.mp3');
-  logo = loadImage("star_wars_logo.gif");
   dollar_sign_texture = loadImage("dollar_texture.gif");
 }
 
@@ -23,7 +22,6 @@ function draw() {
 function drawLogo() {
   push();
   background(0);
-  //texture(logo);
   scale_amount = 1 - (frameCount/500);
   if (scale_amount > 0) {
     scale(scale_amount);
@@ -36,9 +34,6 @@ function drawDollarSign() {
   push();
   rotateX(150);
   translate(0, height + 100 - count, 0);
-  console.log("translate:" + (height + 100 - count));
-  console.log("count: " + count);
-  console.log(scale_amount);
   if (scale_amount < .35) {
     plane(width/3, height/3);
     count += 2;
