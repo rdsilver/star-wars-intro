@@ -1,7 +1,7 @@
 function preload() {
   mySound = loadSound('star_wars_theme.mp3');
   logo = loadImage("star_wars_logo.gif");
-  dollar_sign_texture = loadImage("dollar_texture.png");
+  dollar_sign_texture = loadImage("dollar_texture.gif");
 }
 
 function setup() {
@@ -33,7 +33,7 @@ function drawLogo() {
 
 function drawDollarSign() {
   push();
-  //texture(dollar_sign_texture);
+  texture(dollar_sign_texture);
   rotateX(150);
   translate(0, height + 100 - count, 0);
   console.log("translate:" + (height + 100 - count));
