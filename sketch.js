@@ -33,7 +33,7 @@ function drawLogo() {
 
 function drawDollarSign() {
   push();
-  texture(dollar_sign_texture);
+  //texture(dollar_sign_texture);
   rotateX(150);
   translate(0, height + 100 - count, 0);
   console.log("translate:" + (height + 100 - count));
