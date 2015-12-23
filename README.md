@@ -1,3 +1,3 @@
 # star-wars-intro
-Satire (Fair use)
+Parody (Fair use)
 http://rdsilver.github.io/star-wars-intro/
