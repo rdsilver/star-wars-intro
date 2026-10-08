@@ -24,8 +24,8 @@
 
 
 
-Final shooting script (showrunner merge)
-Running time 5:03 (303.9s, measured with
+Final shooting script (showrunner polish)
+Running time 5:08 (308.6s, measured with
 the production TTS voices)
 Generated from src/script.py
 ```
@@ -45,8 +45,8 @@ DOREEN -- A motherly capybara with a hibiscus behind one ear.
 GERALD -- A polite British vulture. Sits on Barry's head. For
     no reason.
 
-DR. SHELLEY -- An ancient tortoise therapist. Charges by the
-    hour. Talks very... very... slowly.
+DR. SHELLEY -- An ancient tortoise therapist. Talks very...
+    very... slowly. Bills in oranges.
 
 NARRATOR -- A nature-documentary voice.
 
@@ -119,10 +119,11 @@ Then a new card:
 
 Barry soaks between SUNNY (huge, golden, blissed out, puka-
 shell necklace, an orange on his head) and DOREEN (motherly,
-a hibiscus behind one ear, an orange on her head). He props a
-little wooden board on a rock and presents it to Sunny like
-evidence: a hand-drawn graph of the water temperature,
-zigzagging upward, ending in a frowny face.
+a hibiscus behind one ear, an orange on her head). Planted in
+the rock beside him: a little board on a stick, presented
+like evidence -- a hand-drawn graph of the water temperature,
+zigzagging upward, ending in a frowny face. He taps it twice
+with his snout.
 
                       SUNNY
           Bro. There's no thermostat. It's a
@@ -131,10 +132,10 @@ zigzagging upward, ending in a frowny face.
                       BARRY
           Then who's touching it?
 
+She nudges a spare orange across the water toward him.
+
                       DOREEN
           Honey, put an orange on your head.
-
-She nudges a spare orange across the water toward him.
 
                       BARRY
           Who decided oranges go on our
@@ -145,8 +146,9 @@ She nudges a spare orange across the water toward him.
 
                       BARRY
           Tradition is just a meeting nobody
-          wrote down! And where do they come
-          from? Nothing is free, Doreen!
+          wrote down! And where do the
+          oranges even come from? Nothing is
+          free, Doreen!
 
                       DOREEN
           You think too much, sweetie. I had
@@ -157,15 +159,16 @@ FLAP. FLAP. FLAP. GERALD -- a large, polite British vulture,
 bald pink head, white ruff, half-lidded knowing eyes --
 settles onto Barry's head and grips his tuft. THUMP.
 
-Barry's eyes roll slowly upward. He says nothing.
+Barry's eyes roll slowly upward. And stay there. He says
+nothing.
 
                       DOREEN (CONT'D)
           Aw. He likes you.
 
                       BARRY
                 (deadpan)
-          He's not perching, Doreen. He's
-          pre-boarding.
+          That's not affection, Doreen.
+          That's a reservation.
                 (heating up)
           Six weeks on my head! You sit on a
           guy, you introduce yourself!
@@ -197,7 +200,7 @@ Barry's eyes roll slowly upward. He says nothing.
 
                                                       CUT TO:
 
-4   EXT. SNOOZE SPRINGS - MOMENTS LATER                [1:15]
+4   EXT. SNOOZE SPRINGS - MOMENTS LATER                [1:16]
 
 A low RUMBLE. Ripples cross the water. Oranges wobble on
 heads. Gerald grips tighter.
@@ -210,10 +213,11 @@ It bobs across the water and comes to rest right in front of
 Barry.
 
                       SUNNY
-          See? The universe provides.
+          See? The mountain provides.
 
-Uneasy music creeps in. Mount Snooze puffs two little clouds
-of smoke... then one big one. Exactly like a sneeze.
+Uneasy music creeps in. Mount Snooze puffs a little cloud of
+smoke. Another. A held beat... then one BIG one. Exactly like
+a sneeze.
 
                       DOREEN
           Bless you! That's just Mount
@@ -223,16 +227,16 @@ of smoke... then one big one. Exactly like a sneeze.
                       BARRY
           Exactly! It's well rested!
 
-PING. Barry dips the thermometer and yanks it up to his
-glasses. 39.8.
+Barry yanks the thermometer up beside his glasses. The red
+line creeps... and settles. PING. 39.8.
 
                       BARRY (CONT'D)
           Thirty-nine point eight! It went up
           while you were reassuring me!
 
-POP. At the edge of the spring, three little fish, each
-carrying a tiny suitcase, hop out one by one and away over
-the rocks.
+POP. POP. POP. Three little fish, each carrying a tiny
+suitcase, hop out of the spring one by one -- over the rocks
+on the left, into the river outlet -- and away.
 
                       BARRY (CONT'D)
           They packed! Fish don't own things!
@@ -244,11 +248,11 @@ the rocks.
 
                       BARRY
           Nobody skips a goodbye... unless
-          the party's about to be on fire!
+          they smell smoke!
 
                                                      FADE TO:
 
-5   INT. DR. SHELLEY'S OFFICE (A HOLLOW LOG) - DAY     [1:45]
+5   INT. DR. SHELLEY'S OFFICE (A HOLLOW LOG) - DAY     [1:46]
 
 A cosy office inside a hollow log. A round window looks out
 at the jungle -- and at Mount Snooze. A framed diploma:
@@ -287,50 +291,57 @@ SCRIBBLE. Dr. Shelley writes something down. Very slowly.
 
                       DR. SHELLEY (CONT'D)
           You're... catastrophizing.
-          Imagining the worst.
 
 Through the round window behind him, Mount Snooze puffs out a
 big, dark cloud of smoke. Dr. Shelley does not turn around.
 
                       BARRY
-          And what's it called when the worst
-          is actually happening?
+                (urgently)
+          Doc. Turn around.
+
+Dr. Shelley begins to turn his long neck toward the window.
+Impossibly slowly. Behind him, the smoke cloud finishes,
+drifts off, and clears -- a split second before his eye gets
+there. Clear blue sky. He turns back. Just as slowly.
 
                       DR. SHELLEY
-                (after a long beat)
+                (facing front again)
           ...We're out of time.
                 (beat)
           That'll be... forty oranges.
 
                       BARRY
-          You charge by the hour, and you
-          talk like that? That's a business
-          model!
+          Forty oranges? That's two oranges a
+          word!
 
                       DR. SHELLEY
-          ...Forty-one.
+          ...Forty-two.
 
                                                      WIPE TO:
 
-6   EXT. SNOOZE SPRINGS - DAY (MONTAGE)                [2:27]
+6   EXT. SNOOZE SPRINGS - DAY (MONTAGE)                [2:26]
 
--- BANG, BANG, BANG, BANG. Barry hammers arrow signs into the
-bank, all pointing the same way: "EXIT." "EVACUATION ROUTE."
-"NO, REALLY. THIS WAY." And a little one: "YES, YOU, SUNNY."
+-- BANG. BANG. Barry hammers arrow signs into the bank, all
+pointing the same way: "EXIT." "NO, REALLY. THIS WAY."
+
+-- At the very end of the row he plants one last little sign
+-- "YES, YOU, SUNNY." -- and gives it a pat.
 
 -- BANG. A big new sign by the pool: "SPRING RULES. 1.
 Introduce yourself. 2. Say goodbye. 3. No vultures on heads."
 
--- Gerald lands on the sign, reads it carefully, then hops
-onto Barry's head anyway.
+-- Gerald lands on top of the sign, reads it carefully, then
+hops onto Barry's head anyway.
 
 -- Barry lashes reeds into a raft at the river's edge and
-raises a little flag: "S.S. TOLD YOU SO." Gerald hops aboard,
-test-bounces twice, and nods his approval.
+raises a little flag: "S.S. TOLD YOU SO." Gerald hops down
+aboard, test-bounces twice -- THUD, THUD -- and nods his
+approval.
 
 -- ZIP. Barry straps on a tiny red bike helmet, cinches the
 chin strap, and lowers himself back into the spring with
-enormous dignity.
+enormous dignity. Behind him, Sunny and Doreen glance at the
+signs, then the raft, and share a pitying look.
 
 END MONTAGE.
 
@@ -346,7 +357,7 @@ END MONTAGE.
 
                                                       CUT TO:
 
-7   EXT. SNOOZE SPRINGS - GOLDEN HOUR                  [2:47]
+7   EXT. SNOOZE SPRINGS - GOLDEN HOUR                  [2:46]
 
 Golden hour. Barry, in his helmet, soaks with Sunny and
 Doreen. Gerald is perched on the SPRING RULES sign behind
@@ -357,10 +368,10 @@ them -- for once, not on Barry.
 
                       BARRY
                 (sighing)
-          Fine. One orange.
+          Fine. One orange. I won't enjoy it.
 
-Barry removes the helmet, sets it on a rock, places an orange
-on his head... and closes his eyes.
+Barry tips his head; the helmet slides off onto a rock.
+Doreen nudges an orange onto his head. He closes his eyes.
 
 Heavenly music swells.
 
@@ -387,7 +398,9 @@ away. Fast. Without looking back.
 The heavenly music stops. Barry's eyes open.
 
                       BARRY (CONT'D)
-          ...Why is he saying goodbye?
+                (slowly realizing)
+          Knowing? Past tense? Why is he
+          saying goodbye?
 
 INSERT - THE THERMOMETER, stuck in the water by his rock. The
 red line shoots past 39.8 to the top. POP! The bulb bursts.
@@ -397,8 +410,8 @@ every head.
 
                       BARRY (CONT'D)
                 (flat)
-          Nine seconds. I was chill for nine
-          seconds.
+          Twelve seconds. I was chill for
+          twelve seconds.
 
 BOOM! Mount Snooze ERUPTS. Smoke, fountains of lava, a blood-
 red sky. The orange grove shakes on its slope. Action music
@@ -417,13 +430,15 @@ rain down into the boiling spring.
                       BARRY
           Nothing is free!
 
-BONK. SPLAT. A rock turns Doreen's orange into juice.
+A rock drops out of the sky. BONK. SPLAT. Doreen's orange is
+now juice.
 
                       DOREEN
           My orange!
 
-Barry flicks his orange away and slaps the helmet back on.
-BONK. A rock bounces off it. He doesn't even flinch.
+Barry flicks his orange away and snaps the helmet back on.
+BONK. A rock bounces off it. He doesn't flinch. His glasses
+don't even slip.
 
                       BARRY
                 (to Doreen)
@@ -433,11 +448,11 @@ BONK. A rock bounces off it. He doesn't even flinch.
           Barry! What do we do?
 
                       BARRY
-          Oh, now you ask me? Now I'm the
-          expert? Follow the signs!
+          Oh, now you ask? Follow the signs!
+          I made signs!
 
-Everyone scrambles out of the spring and races past the EXIT
-signs toward the river.
+Everyone races along the bank, past the EXIT signs, toward
+the river.
 
 Sunny skids to a stop at the little sign: "YES, YOU, SUNNY."
 He gazes at it, touched. Lava glows behind him.
@@ -455,36 +470,38 @@ Gerald is already sitting on top of the flagpole.
 SPLASH. The S.S. TOLD YOU SO shoots off down the river as
 lava pours into the spring behind them. HISSSS.
 
-The music cuts out.
+                                                     FADE TO:
 
-CLOSE ON BARRY, on the speeding raft. Helmet on. Red glow
-behind him. He stares flatly ahead.
+8   EXT. THE RIVER - SUNSET                            [3:43]
+
+Silence.
+
+CLOSE ON BARRY, on the drifting raft. Helmet on. A little
+singed. Far over his shoulder, a tiny Mount Snooze smokes. He
+stares flatly ahead.
 
                       BARRY
+                (flat)
           Is it still catastrophizing if
           there's a catastrophe?
 
-                                                     FADE TO:
-
-8   EXT. THE RIVER - SUNSET                            [3:45]
-
-A wide, quiet river at sunset. The raft drifts. Barry (helmet
-on), Sunny and Doreen sit on it, a little singed. Gerald
-perches on top of the flagpole. Far in the distance, Mount
-Snooze smokes.
+The sunset music drifts in. WIDE: a quiet river at sunset.
+The raft drifts. Barry, Sunny and Doreen sit on it, a little
+singed. Gerald perches on top of the flagpole, above the
+flag: "S.S. TOLD YOU SO."
 
                       SUNNY
                 (quietly)
           Barry... you were right.
 
                       BARRY
-                (cupping an ear)
-          Sorry, the river's loud. What was
-          that?
+                (savouring it)
+          Could you say it slower? Like
+          Doctor Shelley?
 
                       SUNNY
-                (louder)
-          You were right, bro!
+                (very... very... slowly)
+          You... were... right... bro.
 
                       BARRY
           And who was touching the
@@ -495,14 +512,16 @@ Snooze smokes.
           ...The mountain.
 
                       BARRY
-          And the free oranges?
+          And why was a vulture on my head?
 
                       SUNNY
                 (grudgingly)
           ...The mountain, bro.
 
                       BARRY
-          The mountain!
+                (triumphant)
+          The mountain! Thank you! Was that
+          so hard?
 
                       GERALD
           I did sit on him. Rather a clear
@@ -511,19 +530,12 @@ Snooze smokes.
                       DOREEN
           Oh! Thank you, Gerald!
 
-Gerald preens, then shuffles down the pole and settles over
-the flag, so that it now reads only: "S.S."
+Gerald preens. Then he shuffles down the pole and settles
+over the flag, so that it now reads only: "S.S."
 
                       BARRY
           Thank you, Gerald? All he ever said
           was no reason!
-
-                      GERALD
-          Among vultures, it's terribly rude
-          to mention it.
-
-                      BARRY
-          The rude part is not mentioning it!
 
 The three fish drift past on a lily pad, suitcases stacked,
 waving their fins.
@@ -538,7 +550,7 @@ waving their fins.
           credit.
 
 Doreen gently places an orange on top of Barry's helmet. It
-stays.
+wobbles. It stays.
 
                       BARRY (CONT'D)
                 (softly)
@@ -549,7 +561,7 @@ stays.
 
                                                      FADE TO:
 
-9   EXT. SNOOZE SPRINGS 2 - DAY                        [4:28]
+9   EXT. SNOOZE SPRINGS 2 - DAY                        [4:27]
 
 SUPER: "THREE WEEKS LATER"
 
@@ -557,9 +569,10 @@ A sunnier spring among gentle green hills. No volcano in
 sight. A new sign: "SNOOZE SPRINGS 2 -- Barry Approved."
 Planted beside it: the SPRING RULES sign.
 
-Barry soaks in bliss, eyes closed, an orange on his head, his
-helmet resting on a rock beside him. Sunny holds the
-thermometer, looking worried. It reads 39.2.
+Barry soaks in bliss, eyes closed, wearing Sunny's orange,
+his helmet resting on a rock beside him. Sunny, bare-headed,
+holds the thermometer, looking worried. It reads 39.2. Doreen
+frowns at Barry's old temperature chart.
 
                       SUNNY
           Barry... thirty-nine point two.
@@ -572,6 +585,9 @@ thermometer, looking worried. It reads 39.2.
 
 FLAP. FLAP. FLAP. Gerald glides in and lands on Sunny's head.
 THUMP.
+
+Gerald glances at the SPRING RULES sign -- "1. Introduce
+yourself" -- and gives it a tidy nod.
 
                       GERALD
           Gerald. Pleased to meet you.
@@ -591,8 +607,8 @@ THUMP.
 
 Barry's eyes open.
 
-Calmly, he lifts the orange off his head... and straps on the
-red helmet.
+Calmly, he lifts the orange off his head... and starts
+strapping on the red helmet.
 
                       SUNNY
           Barry... why are you putting on the
@@ -605,13 +621,26 @@ red helmet.
 DUN-DUN!
 
 WHOOSH -- Sunny and Doreen launch out of the spring in a puff
-of dust. Gerald is left hovering alone in mid-air where
-Sunny's head used to be. Barry floats on, eyes closed,
-perfectly calm, helmet on.
+of dust. Gerald is left hanging in mid-air where Sunny's head
+used to be. He looks down. He flaps. Barry floats on, eyes
+closed, perfectly calm, helmet on.
+
+                      NARRATOR (V.O.)
+          Nothing... bothers the capybara.
+
+A low rumble. Far behind the spring, one gentle green hill
+puffs a tiny cloud of smoke. Another. Then one big one.
+Exactly like a sneeze.
+
+Gerald looks at it. Barry does not open his eyes.
+
+                      BARRY
+                (eyes closed)
+          Almost nothing.
 
                                                 SMASH CUT TO:
 
-10  END CREDITS                                        [4:56]
+10  END CREDITS                                        [5:00]
 
 OVER BLACK, in white serif letters:
 
