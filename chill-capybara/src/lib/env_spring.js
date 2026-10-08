@@ -216,7 +216,7 @@ function bandsOf(poly, y0, y1, step) {
   for (let i = 0; i < edges.length - 1; i++) {
     const a = edges[i], b = edges[i + 1];
     const pts = slab(poly, a - 0.9, b + 0.9);
-    if (pts.length >= 3) out.push({ y: (a + b) / 2, path: newPath((p) => polyP(p, pts)) });
+    if (pts.length >= 3) out.push({ y: (a + b) / 2, y0: a, y1: b, path: newPath((p) => polyP(p, pts)) });
   }
   return out;
 }
@@ -389,12 +389,12 @@ function palette(setting, dusk = 0, erupt = 0, skyTint) {
     P.hazeAmt = lerp(P.hazeAmt, 0.6, E);
     P.tint = mix(P.tint, '#C8381C', E);
     P.tintAmt = lerp(P.tintAmt, 0.24, E);
-    P.shadow = mix(P.shadow, '#22080E', E);
-    P.dark = lerp(P.dark, 0.5, E);
+    P.shadow = mix(P.shadow, '#1C0A12', E);
+    P.dark = lerp(P.dark, 0.56, E);
     P.cloud = mix(P.cloud, '#6A4440', E);
     P.cloudShade = mix(P.cloudShade, '#3A2428', E);
     P.rim = mix(P.rim, '#FF8A3A', E);
-    P.rimA = lerp(P.rimA, 0.7, E);
+    P.rimA = lerp(P.rimA, 0.8, E);
     P.w0 = mix(P.w0, '#E07A44', 0.75 * E);
     P.w1 = mix(P.w1, '#4E5E5A', 0.65 * E);
     P.w2 = mix(P.w2, '#30464C', 0.65 * E);
@@ -464,6 +464,7 @@ function opts(o, setting) {
     dusk: clamp(o.dusk ?? 0),
     sign: o.sign !== false,
     moorPost: o.moorPost ?? setting === 'new',
+    barryRock: o.barryRock !== false,
     birds: o.birds ?? true,
     skyTint: o.skyTint,
     raft: !!o.raft,
@@ -481,6 +482,7 @@ const POOL_PTS = [
   [1100, 778], [900, 804], [640, 812], [400, 806], [268, 778], [226, 730], [208, 684], [166, 652],
 ];
 const POOL_DENSE = closedSpline(POOL_PTS, 12);
+const POOL_PATH = newPath((p) => blobP(p, POOL_PTS));
 const RIVER_TOP = [[238, 534], [180, 556], [112, 562], [20, 565], [-120, 568], [-470, 574]];
 const RIVER_BOT = [[-470, 640], [-120, 634], [20, 630], [110, 628], [176, 634], [236, 662]];
 const RIVER_DENSE = openSpline(RIVER_TOP, 6).concat(openSpline(RIVER_BOT, 6));
@@ -524,31 +526,44 @@ const SPRING = {
     doreen: { x: 945, y: 588, scale: 0.97, flip: true },
     extras: [
       { x: 240, y: 540, scale: 0.76, flip: false },
-      { x: 506, y: 514, scale: 0.68, flip: true },
-      { x: 806, y: 510, scale: 0.68, flip: false },
+      { x: 492, y: 514, scale: 0.68, flip: true },
+      { x: 884, y: 508, scale: 0.66, flip: false },
       { x: 1090, y: 532, scale: 0.75, flip: true },
     ],
   },
+  // Barry's rock: a flat-topped boulder in the water between Barry and Doreen (a little behind
+  // them) for the chart board / helmet / thermometer. top = where a prop rests on it.
+  barryRock: { x: 798, y: 552, rx: 38, ry: 21, top: { x: 794, y: 532 } },
+  thermometerSpot: { x: 770, y: 598 },
   riverMouth: { x: 150, y: 596 },
   raftMoor: { x: 70, y: 597 },
   moorPost: { x: 118, y: 558 },
+  // ground points (bottom of the post) on the back-left bank, nearest the pool first; all point LEFT.
+  // suggested order of the montage gags: EXIT, EVACUATION ROUTE, NO, REALLY. THIS WAY., YES, YOU, SUNNY
   exitSignSpots: [
-    { x: 182, y: 452, dir: 'left' },
-    { x: 290, y: 449, dir: 'left' },
-    { x: 400, y: 446, dir: 'left' },
+    { x: 400, y: 446, dir: 'left', size: 1 },
+    { x: 292, y: 449, dir: 'left', size: 1 },
+    { x: 184, y: 452, dir: 'left', size: 1 },
+    { x: 148, y: 500, dir: 'left', size: 0.6 },
   ],
-  escapePath: [{ x: 650, y: 600 }, { x: 470, y: 540 }, { x: 330, y: 476 }, { x: 200, y: 476 }, { x: 128, y: 530 }, { x: 70, y: 596 }],
+  rulesSignSpot: { x: 604, y: 452 },      // the SPRING RULES sign on the back bank (behind the swimmers)
+  escapePath: [{ x: 650, y: 600 }, { x: 470, y: 540 }, { x: 340, y: 474 }, { x: 200, y: 476 }, { x: 128, y: 532 }, { x: 70, y: 596 }],
   signPos: { x: 1150, y: 446 },
   volcanoPeak: { x: 860, y: 150 },
   craterPos: { x: 860, y: 150, w: 110 },
+  grove: { x: 768, y: 346, w: 100 },       // orange grove on the lower-left flank
+  // bounce points for the orange that shakes loose and plops into the back-right of the pool
+  orangeRoll: [{ x: 796, y: 330 }, { x: 838, y: 370 }, { x: 884, y: 404 }, { x: 930, y: 432 }, { x: 968, y: 452 }, { x: 994, y: 480 }],
   lavaEntry: { x: 990, y: 468 },
-  thermometerSpot: { x: 770, y: 598 },
+  // fish hop out over the right rim rocks and away
+  fishHop: [{ x: 1080, y: 520 }, { x: 1150, y: 470 }, { x: 1200, y: 455 }, { x: 1290, y: 450 }],
 };
 const NEW_SPRING = Object.assign({}, SPRING, {
   signPos: { x: 1150, y: 446 },
+  rulesSignSpot: { x: 990, y: 452 },     // planted beside the SNOOZE SPRINGS 2 sign
   tinyHill: { x: 880, y: 330 },   // top of the innocent little hill where Mount Snooze would be
   hillPuffPos: { x: 900, y: 322 },
-  volcanoPeak: null, craterPos: null, lavaEntry: null,
+  volcanoPeak: null, craterPos: null, lavaEntry: null, grove: null, orangeRoll: null,
 });
 
 // =====================================================================================
@@ -623,13 +638,18 @@ function volcY(x) {
   return 560;
 }
 const VOLC_SIL = newPath((p) => polyP(p, VOLC_POLY));
-const VOLC_BANDS = bandsOf(VOLC_POLY, 140, 440, 20);
+const VOLC_BANDS = bandsOf(VOLC_POLY, 0, 0, [140, 160, 176, 190, 204, 220, 238, 258, 280, 304, 330, 358, 388, 414, 442]);
 const VOLC_RIDGE = openSpline([[858, 156], [864, 196], [874, 246], [892, 300], [916, 352], [946, 404], [982, 470], [1000, 540]], 4);
+// shadow (right) side, bounded by the main ridge; a softer half-shadow band hugs the ridge
 const VOLC_SHADOW = (() => {
   const i0 = VOLC_DENSE.findIndex((q) => q[0] >= 858);
   const right = VOLC_DENSE.slice(i0).reverse();
   return newPath((p) => polyP(p, VOLC_RIDGE.filter((q) => q[1] < 440).concat([[960, 440], [1344, 440]], right)));
 })();
+const VOLC_HALFSHADE = newPath((p) => {
+  const L = VOLC_RIDGE.filter((q) => q[1] < 440);
+  polyP(p, L.map(([x, y]) => [x - 4 - (y - 150) * 0.1, y]).concat(L.slice().reverse()));
+});
 // ridges radiating from the crater: [polyline, litSide]
 const RIDGES = [
   [[[818, 162], [800, 202], [776, 248], [748, 294], [720, 338], [694, 376]], 1],
@@ -645,22 +665,59 @@ const RIDGE_PATHS = (() => {
     const sp = openSpline(pts, 4);
     const n = sp.length;
     const w = (i) => lerp(2, 20, i / (n - 1));
-    ribbonP(lit, sp.map(([x, y], i) => [x - w(i) * 0.5, y]), 0, 0, (u) => lerp(1.5, 16, u));
-    ribbonP(dark, sp.map(([x, y], i) => [x + w(i) * 0.55, y]), 0, 0, (u) => lerp(1.5, 18, u));
+    ribbonP(lit, sp.map(([x, y], i) => [x - w(i) * 0.6, y]), 0, 0, (u) => lerp(1.5, 22, Math.pow(u, 0.8)));
+    ribbonP(dark, sp.map(([x, y], i) => [x + w(i) * 0.75, y]), 0, 0, (u) => lerp(1.5, 28, Math.pow(u, 0.8)));
   }
   return { lit, dark };
 })();
 const GULLY_DATA = RIDGES;
-const STRATA = newPath((p) => {
-  for (let i = 0; i < 3; i++) {
-    const y0 = 214 + i * 40;
-    let pen = false;
-    for (let x = 560; x <= 1180; x += 12) {
-      const y = y0 + Math.sin(x * 0.025 + i * 2) * 3 + (x - 860) * (x - 860) * 0.00002 * (i + 1);
-      if (y > volcY(x) + 8) { if (!pen) p.moveTo(x, y); else p.lineTo(x, y); pen = true; } else pen = false;
-    }
+// dark ash cap around the summit (scalloped lower edge), crater geometry, old lava scars
+const VOLC_CAP = newPath((p) => {
+  // ash-dark summit with drippy streaks running down the cone
+  p.moveTo(770, volcY(770) - 2);
+  for (let x = 770; x <= 954; x += 4) p.lineTo(x, volcY(x) - 2);
+  const r = rng(515);
+  for (let x = 954; x >= 770; x -= 9) {
+    const base = Math.max(volcY(x) + 10, 186 + 0.0035 * (x - 862) * (x - 862));
+    const drip = r() < 0.45 ? r.range(14, 34) : r.range(0, 6);
+    p.lineTo(x + 2.5, base);
+    p.quadraticCurveTo(x, base + drip * 1.15, x - 2.5, base);
   }
+  p.closePath();
 });
+function jaggedEllipse(cx, cy, rx, ry, seed, amp, n = 22) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU, front = Math.sin(a) > 0 ? 1 : 0.35;
+    const k = 1 + (hash1(seed + i * 1.37) - 0.5) * amp * front;
+    out.push([cx + Math.cos(a) * rx * k, cy + Math.sin(a) * ry * k]);
+  }
+  return out;
+}
+const CRATER = {
+  lip: newPath((p) => blobP(p, jaggedEllipse(860, 151.5, 50, 10.5, 3, 0.16))),
+  wall: newPath((p) => blobP(p, jaggedEllipse(860, 151, 42, 7.6, 7, 0.14))),
+  throat: newPath((p) => blobP(p, jaggedEllipse(860, 153.4, 32, 4.6, 11, 0.12))),
+  rimHi: newPath((p) => { const q = jaggedEllipse(860, 151.5, 50, 10.5, 3, 0.16); const sel = q.filter((_, i) => i >= 2 && i <= 9); p.moveTo(sel[0][0], sel[0][1]); splineTo(p, sel); }),
+};
+const SCARS = (() => {
+  const p = new Path2D();
+  ribbonP(p, openSpline([[806, 176], [784, 214], [760, 252], [734, 290], [708, 326], [684, 358]], 4), 0, 0, (u) => lerp(2, 9, u) * (1 - 0.5 * Math.sin(u * 9) * 0.3));
+  ribbonP(p, openSpline([[848, 178], [842, 222], [842, 266], [852, 308], [866, 344]], 4), 0, 0, (u) => lerp(2, 8, u));
+  return p;
+})();
+// boulders & ledges on the slopes (small lit/dark pairs)
+const VOLC_ROCKS = (() => {
+  const dark = new Path2D(), lit = new Path2D();
+  [[742, 232, 9], [790, 286, 7], [700, 300, 8], [930, 236, 8], [990, 300, 10], [1050, 330, 7], [884, 262, 6], [830, 330, 7], [660, 345, 6], [960, 352, 6]]
+    .forEach(([x, y, r]) => {
+      ellipseP(dark, x, y + r * 0.25, r * 1.5, r * 0.62);
+      ellipseP(lit, x - r * 0.25, y - r * 0.05, r * 1.05, r * 0.42);
+    });
+  return { dark, lit };
+})();
+// the orange grove on the lower-left flank (between the two left lava channels)
+const GROVE_TREES = [[724, 344, 10.5], [748, 334, 11.5], [772, 340, 10], [796, 332, 9.5], [736, 362, 11], [762, 358, 12], [788, 360, 10.5], [812, 352, 9]];
 // vegetation skirt on the lower slopes: scalloped top that stays inside the silhouette
 function vegPath(yOff, seed, step) {
   const r = rng(seed);
@@ -759,7 +816,7 @@ const FAR_PALMS = (() => {
       const a = -PI + (i / 6) * PI;
       const L = len * (i === 0 || i === 6 ? 0.85 : 1);
       const ex = tx + Math.cos(a) * L, ey = ty + Math.sin(a) * L * 0.55 + L * 0.5;
-      addLeaf(dark, light, null, leafPts(tx, ty, tx + Math.cos(a) * L * 0.5, ty + Math.sin(a) * L * 0.5 - L * 0.22, ex, ey, L * 0.15, 14, true));
+      addLeaf(dark, light, null, leafPts(tx, ty, tx + Math.cos(a) * L * 0.5, ty + Math.sin(a) * L * 0.5 - L * 0.22, ex, ey, L * 0.15, 10, true));
     }
   }
   return { dark, light, trunks };
@@ -908,6 +965,14 @@ const RIVER_ROCKS = bakeRocks((() => {
   }
   return out.sort((a, b) => a.y - b.y);
 })(), 2, true);
+// Barry's rock (flat-topped, half-submerged)
+const BARRY_ROCK = (() => {
+  const b = SPRING.barryRock;
+  const rk = makeRock(b.x, b.y, b.rx, b.ry, 4321, true);
+  const flat = (pts) => pts.map(([x, y]) => [x, Math.max(y, -b.ry * 0.62)]);
+  rk.pts = flat(rk.pts); rk.inner = flat(rk.inner);
+  return bakeRocks([rk], 1, false);
+})();
 const BANK_LIST = [
   makeRock(-60, 716, 60, 38, 52, true), makeRock(60, 746, 74, 46, 51, true), makeRock(150, 792, 54, 34, 53, false),
   makeRock(-210, 768, 80, 50, 58, true), makeRock(1262, 642, 52, 36, 54, true), makeRock(1360, 702, 70, 44, 56, false),
@@ -1031,6 +1096,43 @@ const SHIMMER = (() => {
   return out;
 })();
 
+// reflections on the pool: Mount Snooze (compressed mirror image) and the jungle wall
+const REFL_K = 0.3;
+const VOLC_REFL = newPath((p) => {
+  const pts = VOLC_DENSE.filter(([x]) => x > 470 && x < 1300).map(([x, y]) => [x, 458 + (440 - Math.min(y, 440)) * REFL_K]);
+  p.moveTo(pts[0][0], 458); for (const q of pts) p.lineTo(q[0], q[1]); p.lineTo(pts[pts.length - 1][0], 458); p.closePath();
+});
+const JUNGLE_REFL = (() => {
+  const top = [], bot = [];
+  for (let x = 190; x <= 1192; x += 8) top.push([x, backY(x) - 2]);
+  for (let x = 1192; x >= 190; x -= 26) {
+    const taper = smoothstep(190, 300, x) * (1 - smoothstep(1110, 1192, x));
+    const h = (16 + 8 * noise1(x * 0.018 + 5) + 4 * noise1(x * 0.05 + 1)) * taper + 2;
+    bot.push([x, backY(x) + h]);
+  }
+  const path = newPath((p) => { p.moveTo(top[0][0], top[0][1]); polyTo(p, top); p.lineTo(bot[0][0], bot[0][1]); splineTo(p, bot); p.closePath(); });
+  return { path, bot: bot.slice().reverse() };
+})();
+const VOLC_REFL_SLICES = (() => {
+  const pts = [[470, 458]].concat(VOLC_DENSE.filter(([x]) => x > 470 && x < 1300).map(([x, y]) => [x, 458 + (440 - Math.min(y, 440)) * REFL_K]), [[1300, 458]]);
+  const out = [];
+  for (let i = 0; i < 11; i++) {
+    const y0 = 461 + i * 8.6, poly = slab(pts, y0, y0 + 6.8 - i * 0.12);
+    if (poly.length >= 3) out.push({ i, path: newPath((p) => polyP(p, poly)) });
+  }
+  return out;
+})();
+// small twinkle glints on the water (positions fixed, phases animate)
+const GLINTS = (() => {
+  const r = rng(4747), out = [];
+  for (let i = 0; i < 40; i++) {
+    const k = Math.pow(r(), 1.2), y = lerp(486, 790, k), sp = poolSpan(y);
+    if (!sp) continue;
+    out.push({ x: lerp(sp[0] + 40, sp[1] - 40, r()), y, s: lerp(3, 8, k), ph: r(), sp: r.range(0.35, 0.8) });
+  }
+  return out;
+})();
+
 // =====================================================================================
 // sky, clouds, hills
 // =====================================================================================
@@ -1063,12 +1165,16 @@ function drawSky(ctx, t, P) {
     ctx.beginPath(); circleP(ctx, P.sunX, P.sunY, 46); ctx.fill();
   }
   if (P.erupt > 0.04) {
+    // volcanic glow on the sky behind the summit (stacked soft discs: cheaper than a big gradient)
     const gl = smoothstep(0.04, 0.3, P.erupt);
-    const R = 220 + 160 * gl;
-    const g = ctx.createRadialGradient(860, 190, 0, 860, 190, R);
-    g.addColorStop(0, `rgba(255,130,50,${0.5 * gl})`); g.addColorStop(0.45, `rgba(255,90,40,${0.2 * gl})`); g.addColorStop(1, 'rgba(255,80,30,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(860 - R, 190 - R, 2 * R, Math.min(2 * R, 460 - (190 - R)));
+    const R = 200 + 150 * gl;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const [k, a] of [[1, 0.07], [0.72, 0.09], [0.46, 0.12], [0.24, 0.14]]) {
+      ctx.fillStyle = `rgba(255,110,44,${a * gl})`;
+      ctx.beginPath(); ellipseP(ctx, 860, 200, R * k * 1.15, R * k * 0.85); ctx.fill();
+    }
+    ctx.restore();
   }
 }
 function drawClouds(ctx, t, P) {
@@ -1119,18 +1225,22 @@ function drawFarHills(ctx, t, P) {
 function drawVolcano(ctx, t, P, o) {
   const glowK = smoothstep(0.03, 0.2, o.erupt);
   const far = 0.32;
-  const stops = [[146, P.g('#8E8DA8', far)], [178, P.g(C.volcRim, far)], [262, P.g(C.volcLit, far)], [430, P.g(C.volcLitLo, far + 0.06)]];
+  // body: smooth vertical gradient (ash-dark summit → lighter, hazier foot)
+  const stops = [[146, P.g('#8C8BA8', far)], [234, P.g(C.volcLit, far)], [366, P.g('#9497AF', far + 0.08)], [440, P.g('#8E97A8', far + 0.2)]];
   for (const b of VOLC_BANDS) { ctx.fillStyle = stopsColor(stops, b.y); ctx.fill(b.path); }
-  ctx.strokeStyle = rgba(P.g(C.volcDark, far), 0.16); ctx.lineWidth = 2; ctx.stroke(STRATA);
-  fillOff(ctx, RIDGE_PATHS.dark, rgba(P.g(C.volcDark, far), 0.3));
-  fillOff(ctx, RIDGE_PATHS.lit, rgba(P.hl(C.volcRim, far, 1.2), 0.55));
+  fillOff(ctx, VOLC_CAP, rgba(P.g('#57526E', far), 0.42));
+  fillOff(ctx, RIDGE_PATHS.dark, rgba(P.g(C.volcDark, far), 0.26));
+  fillOff(ctx, RIDGE_PATHS.lit, rgba(P.hl(C.volcRim, far, 1.2), 0.5));
+  fillOff(ctx, SCARS, rgba(P.g('#4A4258', far), 0.2 + 0.25 * glowK));
+  // shadow side + soft terminator
+  fillOff(ctx, VOLC_SHADOW, rgba(P.g(C.volcShade, far), 0.46));
+  fillOff(ctx, VOLC_HALFSHADE, rgba(P.g(C.volcShade, far), 0.2));
   // vegetation skirt
   fillOff(ctx, VEG_A, P.hl(C.jLight, 0.42, 0.9), -2, -2.5);
   fillOff(ctx, VEG_A, P.g(C.jMid, 0.44));
   fillOff(ctx, VEG_B, P.hl(C.jMid, 0.42, 0.7), -2, -2.5);
   fillOff(ctx, VEG_B, P.g(C.jDeep, 0.42));
-  // shadow side
-  fillOff(ctx, VOLC_SHADOW, rgba(P.g(C.volcShade, far), 0.5));
+  drawGrove(ctx, t, P, o);
   // fissure glow (pre-eruption)
   if (glowK > 0) {
     ctx.save();
@@ -1142,19 +1252,15 @@ function drawVolcano(ctx, t, P, o) {
     ctx.stroke();
     ctx.restore();
   }
-  // outline
-  ctx.strokeStyle = rgba(P.g(C.volcDark, far), 0.45); ctx.lineWidth = 1.6; ctx.stroke(VOLC_EDGE);
-  // crater
-  ctx.fillStyle = P.g(mix(C.volcRim, C.volcLit, 0.5), far);
-  ctx.beginPath(); ellipseP(ctx, 860, 152, 50, 9.5); ctx.fill();
-  ctx.fillStyle = mix(P.g(C.crater, far), '#FF6A22', glowK);
-  ctx.beginPath(); ellipseP(ctx, 860, 154.5, 41, 6.2); ctx.fill();
+  // crater: light lip, lit back wall, dark throat (glows when waking), bright front rim
+  ctx.fillStyle = P.hl('#A6A4BE', far, 0.7); ctx.fill(CRATER.lip);
+  ctx.fillStyle = mix(P.g('#625C7C', far), '#C8502A', glowK * 0.8); ctx.fill(CRATER.wall);
+  ctx.fillStyle = mix(P.g(C.crater, far), '#FF6A22', glowK); ctx.fill(CRATER.throat);
   if (glowK > 0) {
     ctx.fillStyle = rgba('#FFD25A', glowK * (0.75 + 0.25 * noise1(t * 9)));
-    ctx.beginPath(); ellipseP(ctx, 860, 155, 30, 3.8); ctx.fill();
+    ctx.beginPath(); ellipseP(ctx, 860, 154, 24, 2.8); ctx.fill();
   }
-  ctx.strokeStyle = P.hl(C.volcRim, far, 1.2); ctx.lineWidth = 2.2;
-  ctx.beginPath(); ctx.ellipse(860, 152, 50, 9.5, 0, 0.15, PI - 0.15); ctx.stroke();
+  ctx.strokeStyle = P.hl(C.volcRim, far, 1.4); ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.stroke(CRATER.rimHi);
   if (glowK > 0) {
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
@@ -1165,6 +1271,29 @@ function drawVolcano(ctx, t, P, o) {
     }
     ctx.restore();
   }
+}
+// little round orange trees; they shiver with o.rumble (and harder while erupting)
+function drawGrove(ctx, t, P, o) {
+  const far = 0.36, shake = Math.max(o.rumble, smoothstep(0.05, 0.3, o.erupt) * 0.8);
+  const trunk = new Path2D(), dark = new Path2D(), lit = new Path2D(), fruit = new Path2D(), shine = new Path2D();
+  GROVE_TREES.forEach(([x, y, r], i) => {
+    const jx = shake > 0 ? noise1(t * 21 + i * 3.3) * shake * 1.8 : 0, jy = shake > 0 ? noise1(t * 17 + i * 5.1) * shake * 0.8 : 0;
+    trunk.rect(x - 1.6, y - 2, 3.2, r * 0.95);
+    const cx = x + jx, cy = y - r * 0.55 + jy;
+    circleP(dark, cx, cy, r);
+    circleP(lit, cx - r * 0.22, cy - r * 0.26, r * 0.7);
+    for (let k = 0; k < 4; k++) {
+      const a = 0.6 + k * 1.55 + i, d = r * (0.42 + 0.22 * hash1(i * 7 + k));
+      const fx = cx + Math.cos(a) * d, fy = cy + Math.sin(a) * d * 0.85;
+      circleP(fruit, fx, fy, 2.3);
+      circleP(shine, fx - 0.7, fy - 0.8, 0.8);
+    }
+  });
+  ctx.fillStyle = P.g(C.trunk, far); ctx.fill(trunk);
+  ctx.fillStyle = P.g('#3E8250', far - 0.1); ctx.fill(dark);
+  ctx.fillStyle = P.hl('#5FA662', far - 0.1, 0.9); ctx.fill(lit);
+  ctx.fillStyle = P.g('#FF9A1F', 0.12); ctx.fill(fruit);
+  ctx.fillStyle = rgba('#FFF2C8', 0.8); ctx.fill(shine);
 }
 // lazy smoke wisp (+ thicker, darker pre-eruption smoke). Puffs are unioned per alpha bucket so
 // overlapping translucent discs never stack into rings.
@@ -1196,44 +1325,83 @@ function drawCraterSmoke(ctx, t, P, o) {
     ctx.fillStyle = rgba(light, a); ctx.fill(LI[b]);
   }
 }
+// a discrete smoke puff from the crater (the "sneeze" gag): k 0..1 = life of the puff.
+// {k, size=1, dark=0, x=860, y=146, seed}
+function drawVolcanoPuff(ctx, t, o = {}) {
+  const k = clamp(o.k ?? 0.5);
+  if (k <= 0 || k >= 1) return;
+  const size = o.size ?? 1, dark = clamp(o.dark ?? 0), seed = o.seed ?? 1;
+  const cx = o.x ?? 860, cy = o.y ?? 146;
+  const grow = U.ease.outBack(Math.min(1, k / 0.22), 2.2);
+  const rise = U.ease.outCubic(k) * 120 * size, drift = k * 46 * size;
+  const R = 26 * size * (0.25 + 0.75 * grow) * (1 + k * 0.6);
+  const fade = 1 - smoothstep(0.55, 1, k);
+  const x = cx + drift, y = cy - 18 * size * grow - rise;
+  const lobes = [[0, 0, 1], [-0.75, 0.25, 0.68], [0.78, 0.22, 0.72], [-0.32, -0.55, 0.62], [0.38, -0.5, 0.66], [0, 0.42, 0.7]];
+  const base = new Path2D(), lit = new Path2D();
+  for (const [dx, dy, rr] of lobes) {
+    circleP(base, x + dx * R, y + dy * R, rr * R);
+    circleP(lit, x + dx * R - rr * R * 0.22, y + dy * R - rr * R * 0.26, rr * R * 0.7);
+  }
+  ctx.save();
+  ctx.globalAlpha = fade;
+  ctx.fillStyle = mix('#C9C4D2', '#3A3236', dark); ctx.fill(base);
+  ctx.fillStyle = mix('#F4F2F8', '#5C5056', dark); ctx.fill(lit);
+  // stem: a short tapering tail back down to the crater while the puff is young
+  if (k < 0.45) {
+    const a = (1 - k / 0.45) * 0.8;
+    ctx.globalAlpha = fade * a;
+    ctx.fillStyle = mix('#DCD8E2', '#4A4044', dark);
+    ribbon(ctx, [[cx, cy + 2], [lerp(cx, x, 0.5), lerp(cy, y, 0.6)], [x, y + R * 0.3]], R * 0.45, R * 0.9);
+    ctx.fill();
+  }
+  ctx.restore();
+}
 // erupt .2-.6: explosive billowing plume that fills the sky above the volcano (opaque puffs)
-function drawPlume(ctx, t, P, o) {
-  const G = smoothstep(0.17, 0.5, o.erupt);
-  if (G <= 0) return;
-  const cx = 860, cy = 150;
-  const Ht = 520 * Math.pow(G, 0.7);
-  const N = 44;
-  const list = [];
+function plumePuffs(t, G) {
+  // column rises from the crater, widens fast and mushrooms into a sky-filling canopy
+  const cx = 860, cy = 150, Hfull = 480, H = Hfull * Math.pow(G, 0.55);
+  const N = 54, list = [];
   for (let i = 0; i < N; i++) {
-    const h = frac(i / N + t * 0.04);
-    if (h > 0.12 + 0.88 * G) continue; // the plume has not reached that far yet
-    const cap = smoothstep(0.22, 1, h);
-    const side = (hash1(i * 13.7) - 0.5) * 1.3;
-    const x = cx + (side * (60 + 300 * h + 900 * cap * cap) + 90 * h + noise1(t * 0.35 + i * 1.3) * 22 * h) * (0.15 + 0.85 * G);
-    const y = cy - h * Ht + cap * cap * 150 * G + (hash1(i * 5.9) - 0.5) * 40 * h * G;
-    const shrink = 1 - smoothstep(0.92, 1, h);
-    const r = (34 + 210 * Math.pow(h, 0.5)) * (0.3 + 0.7 * G) * (1 + 0.07 * Math.sin(t * 1.7 + i * 2.1)) * shrink * smoothstep(0, 0.05, h + 0.02);
-    if (r > 2) list.push({ x, y, r, h });
+    const u = frac(i / N + t * 0.05 + hash1(i * 3.1) * 0.02);
+    const hgt = Math.pow(u, 0.85) * Hfull;
+    if (hgt > H + 20) continue; // the column has not got this far yet
+    const head = smoothstep(H * 0.45, H, hgt);
+    const side = (hash1(i * 13.7) - 0.5) * 2;
+    const spread = Math.min(560, 20 + 0.9 * hgt + 260 * head * G);
+    const x = cx + side * spread + 0.35 * hgt * (hgt / Hfull) + noise1(t * 0.35 + i * 1.3) * 12 * u;
+    const y = cy - hgt + (hash1(i * 5.9) - 0.5) * 40 * u + head * 40 * Math.abs(side);
+    const r = (22 + 0.34 * hgt + 46 * head) * (0.5 + 0.5 * G) * (1 + 0.06 * Math.sin(t * 1.7 + i * 2.1)) * smoothstep(0, 0.03, u + 0.008);
+    if (r > 3) list.push({ x, y, r, u, hgt });
   }
-  const dark = mix('#241C20', P.skyTop, 0.1), mid = '#41363A', lit = mix('#66585A', P.rim, 0.2);
+  return list;
+}
+function drawPlume(ctx, t, P, o) {
+  const G = smoothstep(0.19, 0.55, o.erupt);
+  if (G <= 0) return;
+  const list = plumePuffs(t, G);
   const fl = 0.75 + 0.25 * noise1(t * 5.1);
-  const glowP = new Path2D(), darkP = new Path2D(), midP = new Path2D(), litP = new Path2D();
+  const glowP = new Path2D(), darkP = new Path2D(), midP = new Path2D(), litP = new Path2D(), hotP = new Path2D();
   for (const p of list) {
-    if (p.h < 0.4) circleP(glowP, p.x + p.r * 0.04, p.y + p.r * 0.14, p.r * 0.97);
+    const low = p.hgt < 220;
+    circleP(glowP, p.x + p.r * 0.03, p.y + p.r * (low ? 0.16 : 0.1), p.r * (low ? 1.0 : 0.98));
+    if (p.hgt < 90) circleP(hotP, p.x, p.y + p.r * 0.22, p.r * 0.8);
     circleP(darkP, p.x, p.y, p.r);
-    circleP(midP, p.x - p.r * 0.1, p.y - p.r * 0.14, p.r * 0.84);
-    if (p.r > 30) circleP(litP, p.x - p.r * 0.36, p.y - p.r * 0.42, p.r * 0.34);
+    circleP(midP, p.x - p.r * 0.12, p.y - p.r * 0.16, p.r * 0.82);
+    if (p.r > 24) circleP(litP, p.x - p.r * 0.26, p.y - p.r * 0.32, p.r * 0.52);
   }
-  ctx.fillStyle = mix(dark, '#FF5A1E', 0.75 * fl); ctx.fill(glowP);
-  ctx.fillStyle = dark; ctx.fill(darkP);
-  ctx.fillStyle = mid; ctx.fill(midP);
-  ctx.fillStyle = lit; ctx.fill(litP);
+  const young = 1 - smoothstep(0.2, 0.5, G); // a fresh column is still smoky-grey
+  ctx.fillStyle = mix('#E0521C', '#FF7A2A', fl * 0.5); ctx.fill(glowP);
+  ctx.fillStyle = mix('#2A2026', '#4E4448', young * 0.6); ctx.fill(darkP);
+  ctx.fillStyle = mix('#3E3337', '#6A5E62', young * 0.6); ctx.fill(midP);
+  ctx.fillStyle = mix(mix('#4E4246', P.rim, 0.12), '#7A6E72', young * 0.5); ctx.fill(litP);
+  ctx.fillStyle = rgba('#FF8A3A', 0.35 * fl); ctx.fill(hotP);
   // volcanic lightning
   const ph = smoothstep(0.25, 0.32, o.erupt) * (1 - smoothstep(0.62, 0.8, o.erupt));
   const slot = Math.floor(t * 2.3);
   if (ph > 0.2 && frac(t * 2.3) < 0.2 && hash1(slot * 7.31) > 0.5) {
     const r = rng(slot);
-    let x = cx + r.range(-160, 200), y = cy - r.range(150, 300);
+    let x = 860 + r.range(-160, 200), y = 150 - r.range(150, 300);
     ctx.save();
     ctx.strokeStyle = 'rgba(255,244,226,0.95)'; ctx.lineWidth = 2.6; ctx.lineJoin = 'round';
     ctx.beginPath(); ctx.moveTo(x, y);
@@ -1243,49 +1411,58 @@ function drawPlume(ctx, t, P, o) {
     ctx.restore();
   }
 }
-function drawAshPall(ctx, t, P, o) {
-  const k = smoothstep(0.3, 0.75, o.erupt);
-  if (k <= 0) return;
-  const cols = [0.8, 0.6, 0.42, 0.26, 0.12];
-  for (let i = 0; i < cols.length; i++) {
-    ctx.fillStyle = `rgba(36,20,22,${cols[i] * k * 0.55})`;
-    ctx.fillRect(WX0, WY0, WX1 - WX0, -40 + i * 60 - WY0);
-  }
-}
 function drawFountains(ctx, t, P, o) {
-  const I = smoothstep(0.2, 0.3, o.erupt) * (1 - 0.45 * smoothstep(0.7, 1, o.erupt));
+  const I = smoothstep(0.2, 0.3, o.erupt) * (1 - 0.45 * smoothstep(0.75, 1, o.erupt));
   if (I <= 0) return;
-  const cx = 860, cy = 150;
+  const cx = 860, cy = 152;
   ctx.save();
-  const jh = (70 + 60 * I) * (0.85 + 0.15 * noise1(t * 8));
-  const jg = ctx.createLinearGradient(0, cy, 0, cy - jh);
-  jg.addColorStop(0, 'rgba(255,230,140,0.95)'); jg.addColorStop(0.5, 'rgba(255,140,50,0.7)'); jg.addColorStop(1, 'rgba(255,80,30,0)');
-  ctx.fillStyle = jg;
-  ctx.beginPath();
-  ctx.moveTo(cx - 26, cy + 2);
-  ctx.quadraticCurveTo(cx - 10, cy - jh * 0.5, cx + noise1(t * 3) * 10, cy - jh);
-  ctx.quadraticCurveTo(cx + 12, cy - jh * 0.5, cx + 26, cy + 2);
-  ctx.closePath(); ctx.fill();
-  const N = Math.round(80 * I);
-  const glowP = new Path2D(), hot = new Path2D(), warm = new Path2D(), cool = new Path2D();
-  for (let i = 0; i < N; i++) {
-    const per = 1.3 + hash1(i * 3.1) * 1.3;
-    const age = frac(t / per + hash1(i * 7.7)) * per;
-    const vx = (hash1(i * 5.3) - 0.5) * 300;
-    const vy = -(200 + hash1(i * 9.1) * 300) * (0.75 + 0.35 * I);
-    const x = cx + (hash1(i * 2.3) - 0.5) * 50 + vx * age;
-    const y = cy + vy * age + 210 * age * age;
-    if (y > cy + 260) continue;
-    const heat = 1 - age / per;
-    const r = (2.2 + hash1(i * 4.4) * 3.6) * (0.75 + 0.5 * heat);
-    if (heat > 0.4) circleP(glowP, x, y, r * 1.9);
-    circleP(heat > 0.55 ? hot : heat > 0.25 ? warm : cool, x, y, r);
-  }
+  // glow around the vent
   ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = 'rgba(255,120,40,0.3)'; ctx.fill(glowP);
+  for (const [rx, ry, a] of [[150, 90, 0.1], [90, 52, 0.16], [48, 26, 0.24]]) {
+    ctx.fillStyle = `rgba(255,120,40,${a * I * (0.8 + 0.2 * noise1(t * 6))})`;
+    ctx.beginPath(); ellipseP(ctx, cx, cy - 20, rx, ry); ctx.fill();
+  }
   ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = '#B8381A'; ctx.fill(cool);
-  ctx.fillStyle = '#FF9A30'; ctx.fill(warm);
+  // central jet: several wobbling tongues (outer orange, yellow core)
+  const outer = new Path2D(), core = new Path2D();
+  for (let j = 0; j < 4; j++) {
+    const hj = (90 + 70 * I) * (0.7 + 0.35 * hash1(j * 3.7)) * (0.82 + 0.18 * noise1(t * 7 + j * 2));
+    const lean = (j - 1.5) * 9 + noise1(t * 2.3 + j) * 10;
+    const pts = [];
+    for (let k = 0; k <= 8; k++) { const s = k / 8; pts.push([cx + (j - 1.5) * 7 * (1 - s) + lean * s + Math.sin(s * 5 + t * 9 + j) * 4 * s, cy + 2 - s * hj]); }
+    ribbonP(outer, pts, 0, 0, (u) => (1 - u) * (16 - j * 1.5) + 2);
+    ribbonP(core, pts.slice(0, 7), 0, 0, (u) => (1 - u) * (7 - j * 0.6) + 1);
+  }
+  ctx.fillStyle = '#FF6A1E'; ctx.fill(outer);
+  ctx.fillStyle = '#FFE48A'; ctx.fill(core);
+  // lava blobs on ballistic arcs (+ a few big bombs with smoke trails)
+  const N = Math.round(90 * I);
+  const glowP = new Path2D(), hot = new Path2D(), warm = new Path2D(), cool = new Path2D(), trail = new Path2D();
+  for (let i = 0; i < N; i++) {
+    const big = i % 11 === 0;
+    const per = (big ? 2.2 : 1.3) + hash1(i * 3.1) * 1.2;
+    const age = frac(t / per + hash1(i * 7.7)) * per;
+    const vx = (hash1(i * 5.3) - 0.5) * (big ? 520 : 330);
+    const vy = -(220 + hash1(i * 9.1) * 300) * (0.75 + 0.35 * I) * (big ? 1.15 : 1);
+    const g = 300;
+    const x = cx + (hash1(i * 2.3) - 0.5) * 40 + vx * age;
+    const y = cy + vy * age + 0.5 * g * age * age;
+    if (y > cy + 300) continue;
+    const heat = 1 - age / per;
+    const r = (big ? 6 + hash1(i) * 4 : 2.2 + hash1(i * 4.4) * 3.8) * (0.8 + 0.4 * heat);
+    if (big) {
+      const vyy = vy + g * age, d = Math.hypot(vx, vyy) || 1;
+      ribbonP(trail, [[x - (vx / d) * r * 7, y - (vyy / d) * r * 7], [x, y]], 0, 0, (u) => u * r * 1.6);
+    }
+    if (heat > 0.35) circleP(glowP, x, y, r * 2.2);
+    circleP(heat > 0.6 ? hot : heat > 0.3 ? warm : cool, x, y, r);
+  }
+  ctx.fillStyle = 'rgba(70,52,52,0.45)'; ctx.fill(trail);
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.fillStyle = 'rgba(255,120,40,0.28)'; ctx.fill(glowP);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#A8301A'; ctx.fill(cool);
+  ctx.fillStyle = '#FF8A2A'; ctx.fill(warm);
   ctx.fillStyle = '#FFE07A'; ctx.fill(hot);
   ctx.restore();
 }
@@ -1295,29 +1472,45 @@ function strokeLava(ctx, t, pts, w, seed = 0, w0) {
   const a = w0 ?? w * 0.45;
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  ctx.fillStyle = 'rgba(255,90,30,0.16)'; ribbon(ctx, pts, a * 3, w * 3.4); ctx.fill();
+  ctx.fillStyle = 'rgba(255,90,30,0.14)'; ribbon(ctx, pts, a * 3.4, w * 3.6); ctx.fill();
+  ctx.fillStyle = 'rgba(255,110,40,0.14)'; ribbon(ctx, pts, a * 2, w * 2.1); ctx.fill();
   ctx.globalCompositeOperation = 'source-over';
-  ctx.fillStyle = '#6A160C'; ribbon(ctx, pts, a * 1.25, w * 1.3); ctx.fill();
+  ctx.fillStyle = '#5E140C'; ribbon(ctx, pts, a * 1.3, w * 1.32); ctx.fill();
   ctx.fillStyle = '#E8441A'; ribbon(ctx, pts, a, w); ctx.fill();
-  ctx.fillStyle = '#FF9A2E'; ribbon(ctx, pts, a * 0.55, w * 0.55); ctx.fill();
-  ctx.fillStyle = '#FFE08A'; ribbon(ctx, pts, a * 0.18, w * 0.2); ctx.fill();
+  ctx.fillStyle = '#FF9A2E'; ribbon(ctx, pts, a * 0.58, w * 0.6); ctx.fill();
+  ctx.fillStyle = '#FFE08A'; ribbon(ctx, pts, a * 0.2, w * 0.24); ctx.fill();
   ctx.lineCap = 'round';
-  ctx.setLineDash([w * 0.8, w * 2.2]);
-  ctx.lineDashOffset = -t * 30 - seed * 7;
-  ctx.strokeStyle = 'rgba(255,240,170,0.9)'; ctx.lineWidth = Math.max(1.2, w * 0.14);
+  ctx.setLineDash([w * 0.7, w * 2.4]);
+  ctx.lineDashOffset = -t * 34 - seed * 7;
+  ctx.strokeStyle = 'rgba(255,246,190,0.9)'; ctx.lineWidth = Math.max(1.2, w * 0.16);
   ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); polyTo(ctx, pts); ctx.stroke();
   ctx.setLineDash([]);
   const e = pts[pts.length - 1];
   ctx.fillStyle = '#FFB13B';
-  ctx.beginPath(); circleP(ctx, e[0], e[1], w * 0.5); ctx.fill();
+  ctx.beginPath(); circleP(ctx, e[0], e[1], w * 0.55); ctx.fill();
   ctx.restore();
 }
 function drawLavaRivers(ctx, t, P, o) {
   const p = smoothstep(0.58, 0.97, o.erupt);
   if (p <= 0) return;
-  strokeLava(ctx, t, partial(LAVA_A, LAVA_A_L, p), 13, 1, 4);
-  strokeLava(ctx, t, partial(LAVA_B, LAVA_B_L, clamp(p * 1.1)), 16, 2, 5);
-  strokeLava(ctx, t, partial(LAVA_C, LAVA_C_L, clamp(p * 0.9 - 0.1)), 9, 3, 3);
+  strokeLava(ctx, t, partial(LAVA_A, LAVA_A_L, p), 22, 1, 5);
+  strokeLava(ctx, t, partial(LAVA_B, LAVA_B_L, clamp(p * 1.1)), 24, 2, 6);
+  strokeLava(ctx, t, partial(LAVA_C, LAVA_C_L, clamp(p * 0.9 - 0.1)), 14, 3, 4);
+}
+// lava light spilling over the jungle where the rivers disappear behind it (drawn after the jungle)
+function drawLavaGlow(ctx, t, P, o) {
+  const p = smoothstep(0.62, 1, o.erupt), q = smoothstep(0.02, 0.3, o.lava);
+  if (p <= 0 && q <= 0) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  const fl = 0.85 + 0.15 * noise1(t * 3.3);
+  for (const [x, y, r, k] of [[630, 420, 120, p], [920, 420, 130, p], [1060, 372, 80, p * 0.7], [990, 452, 150, q]]) {
+    if (k <= 0) continue;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(255,120,40,${0.32 * k * fl})`); g.addColorStop(1, 'rgba(255,90,30,0)');
+    ctx.fillStyle = g; ctx.fillRect(x - r, y - r, 2 * r, 2 * r);
+  }
+  ctx.restore();
 }
 
 // =====================================================================================
@@ -1557,6 +1750,20 @@ function drawRocks(ctx, P, R, style, lod = 9) {
   }
   ctx.fillStyle = rgba(P.wHi, 0.65); ctx.fill(R.glint);
 }
+function drawBarryRockImpl(ctx, t, P, style) {
+  const b = SPRING.barryRock;
+  drawRocks(ctx, P, BARRY_ROCK, style);
+  // submerged lower part + waterline
+  const wl = b.y + b.ry * 0.3;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(b.x - b.rx * 1.3, wl + wave(b.x, t) * 0.5, b.rx * 2.6, b.ry * 2); ctx.clip();
+  ctx.fillStyle = rgba(P.waterBand(wl + 6), 0.78);
+  ctx.beginPath(); ellipseP(ctx, b.x, b.y + 2, b.rx * 1.15, b.ry * 1.2); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = rgba(P.wHi, 0.85); ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.ellipse(b.x, wl + wave(b.x, t) * 0.5, b.rx * 1.02, b.ry * 0.28, 0, 0.15, PI - 0.15); ctx.stroke();
+  waterlineRipple(ctx, b.x, wl + 1, b.rx * 2, t + 3.3, { amp: 0.5, part: 'both', color: P.wHi, speed: 0.7 });
+}
 const ROCK_STYLE = { shade: C.rockShade, dark: C.rockDark, base: C.rock, light: C.rockLight, moss: C.moss, mossLight: C.mossLight };
 const ROCK_STYLE_NEW = { shade: '#C9A58C', dark: '#9A7462', base: '#EBCDB0', light: '#FFF2E0', moss: '#8FCB6A', mossLight: '#C2E886' };
 function drawWaterBands(ctx, P, heat = 0) {
@@ -1565,7 +1772,7 @@ function drawWaterBands(ctx, P, heat = 0) {
   for (let i = 0; i < POOL_BANDS.length; i++) { ctx.fillStyle = k ? mix(P.poolCols[i], '#F4FFFC', k) : P.poolCols[i]; ctx.fill(POOL_BANDS[i].path); }
 }
 // surface detail shared by the back water and the front water (must match exactly)
-function drawWaterSurface(ctx, t, P, o) {
+function drawWaterSurface(ctx, t, P, o, front) {
   const heat = o.waterHeat, rum = o.rumble;
   ctx.save();
   ctx.lineCap = 'round';
@@ -1606,6 +1813,22 @@ function drawWaterSurface(ctx, t, P, o) {
     ctx.globalAlpha = 1;
   }
   ctx.restore();
+  if (front) return;
+  // twinkling glints
+  if (P.sunA > 0.05 || o.setting === 'new') {
+    ctx.save();
+    ctx.fillStyle = rgba(mix(P.wHi, '#FFFFFF', 0.6), 0.9);
+    ctx.beginPath();
+    for (const g of GLINTS) {
+      const k = frac(t * g.sp + g.ph), a = Math.sin(PI * k);
+      if (a < 0.25) continue;
+      const s = g.s * a, x = g.x + Math.sin(t * 0.4 + g.ph * 9) * 6, y = g.y;
+      ctx.moveTo(x, y - s * 0.6); ctx.lineTo(x + s * 0.16, y - s * 0.12); ctx.lineTo(x + s, y); ctx.lineTo(x + s * 0.16, y + s * 0.12);
+      ctx.lineTo(x, y + s * 0.6); ctx.lineTo(x - s * 0.16, y + s * 0.12); ctx.lineTo(x - s, y); ctx.lineTo(x - s * 0.16, y - s * 0.12); ctx.closePath();
+    }
+    ctx.fill();
+    ctx.restore();
+  }
   if (heat > 0.18) {
     const a = smoothstep(0.18, 1, heat);
     for (const row of BUBBLE_ROWS) drawBubbles(ctx, t, { x: row.x, y: row.y, w: row.w, h: row.h, amount: a, scale: row.s, seed: row.seed, color: P.wHi });
@@ -1617,17 +1840,51 @@ const BUBBLE_ROWS = [
   { x: 690, y: 602, w: 960, h: 60, s: 0.9, seed: 3 },
   { x: 690, y: 700, w: 900, h: 80, s: 1.1, seed: 4 },
 ];
+function drawReflections(ctx, t, P, o) {
+  ctx.save();
+  if (o.setting !== 'new') {
+    // Mount Snooze, sliced into wobbling strips by the ripples
+    ctx.fillStyle = rgba(mix(P.g('#8C8CAE', 0.3), P.w1, 0.35), 0.62);
+    for (const sl of VOLC_REFL_SLICES) {
+      const dx = Math.sin(t * 1.25 + sl.i * 1.1) * (1 + sl.i * 0.4);
+      ctx.translate(dx, 0); ctx.fill(sl.path); ctx.translate(-dx, 0);
+    }
+    const gk = smoothstep(0.03, 0.25, o.erupt);
+    if (gk > 0) {
+      // glitter streak: the crater / fountain glow reflected on the rippled water
+      ctx.globalCompositeOperation = 'lighter';
+      const fl = 0.8 + 0.2 * noise1(t * 7);
+      const hot = new Path2D(), warm = new Path2D();
+      for (let i = 0; i < 34; i++) {
+        const k = i / 33, y = 520 + k * k * 200 + Math.sin(t * 2 + i) * 1.5;
+        const spread = 10 + 70 * k * (0.5 + gk * 0.6);
+        const x = 860 + 6 + (hash1(i * 7.3 + Math.floor(t * 3) * 0.37) - 0.5) * spread * 2;
+        const len = (8 + 26 * k) * (0.55 + 0.45 * Math.sin(t * 2.4 + i * 1.9)) * gk;
+        if (len < 1.5) continue;
+        ellipseP(k < 0.45 ? hot : warm, x, y, len, 1 + k * 1.6);
+      }
+      ctx.fillStyle = `rgba(255,170,90,${0.55 * fl * gk})`; ctx.fill(hot);
+      ctx.fillStyle = `rgba(255,110,50,${0.45 * fl * gk})`; ctx.fill(warm);
+      ctx.globalCompositeOperation = 'source-over';
+    }
+  }
+  // jungle wall reflection with a ripple-broken lower edge
+  const jc = rgba(mix(P.g(o.setting === 'new' ? '#5FAF6A' : C.jMid, 0.1), P.w2, 0.4), 0.5);
+  ctx.fillStyle = jc;
+  ctx.fill(JUNGLE_REFL.path);
+  ctx.beginPath();
+  const B = JUNGLE_REFL.bot;
+  for (let i = 1; i < B.length - 1; i++) {
+    const [x, y] = B[i], w = 12 + 14 * hash1(i * 3.3), dx = Math.sin(t * 1.4 + i) * 3;
+    ctx.rect(x - w / 2 + dx, y + 2.5 + hash1(i) * 3, w, 1.8);
+  }
+  ctx.fill();
+  ctx.restore();
+}
 function drawPoolWater(ctx, t, P, o) {
   drawWaterBands(ctx, P, o.waterHeat);
   ctx.save();
-  // reflection band under the back rim
-  ctx.beginPath();
-  ctx.moveTo(196, backY(196));
-  for (let x = 196; x <= 1188; x += 12) ctx.lineTo(x, backY(x) - 1);
-  for (let x = 1188; x >= 196; x -= 12) ctx.lineTo(x, backY(x) + 13 + Math.sin(x * 0.045 + t * 1.2) * 2.5 + Math.sin(x * 0.11 - t) * 1.5);
-  ctx.closePath();
-  ctx.fillStyle = rgba(P.wRefl, 0.34);
-  ctx.fill();
+  drawReflections(ctx, t, P, o);
   // soft sky reflections (two pale streaks)
   ctx.fillStyle = rgba(P.wHi, 0.13);
   ctx.beginPath(); ellipseP(ctx, 520 + Math.sin(t * 0.2) * 10, 506, 300, 5); ellipseP(ctx, 860 + Math.sin(t * 0.17 + 1) * 10, 538, 240, 6); ellipseP(ctx, 600 + Math.sin(t * 0.13 + 2) * 12, 660, 380, 8); ctx.fill();
@@ -1667,16 +1924,7 @@ function drawPoolWater(ctx, t, P, o) {
     ctx.restore();
   }
   drawWaterSurface(ctx, t, P, o);
-  if (o.erupt > 0.05) {
-    const k = smoothstep(0.05, 0.4, o.erupt);
-    ctx.save();
-    ctx.globalCompositeOperation = 'lighter';
-    for (const [rx, ry, a] of [[460, 70, 0.08], [300, 46, 0.1], [160, 26, 0.12]]) {
-      ctx.fillStyle = `rgba(255,110,40,${a * k})`;
-      ctx.beginPath(); ellipseP(ctx, 860, 488, rx, ry); ctx.fill();
-    }
-    ctx.restore();
-  }
+
 }
 function drawMoorPost(ctx, P, x, y) {
   ctx.save();
@@ -1730,21 +1978,69 @@ function paintText(ctx, text, x, y, size, weight, color, shadow, seed, maxW) {
   }
   ctx.restore();
 }
-function drawFlame(ctx, x, y, h, w, t, seed) {
-  const f = 0.75 + 0.35 * noise1(t * 9 + seed * 3.1);
-  const H = h * f, sx = noise1(t * 4 + seed) * w * 0.6;
-  const layer = (k, col) => {
-    ctx.fillStyle = col;
-    ctx.beginPath();
-    ctx.moveTo(x - w * k, y);
-    ctx.bezierCurveTo(x - w * k * 1.1, y - H * k * 0.5, x + sx * k - w * 0.25 * k, y - H * k * 0.7, x + sx, y - H * k);
-    ctx.bezierCurveTo(x + sx * k + w * 0.3 * k, y - H * k * 0.6, x + w * k * 1.1, y - H * k * 0.4, x + w * k, y);
-    ctx.quadraticCurveTo(x, y + w * k * 0.4, x - w * k, y);
-    ctx.fill();
-  };
-  layer(1, 'rgba(232,64,26,0.92)');
-  layer(0.68, '#FF9A2E');
-  layer(0.36, '#FFE58A');
+// ---- fire: batched multi-tongue cartoon flames ------------------------------------------
+function tongueP(p, x, y, w, H, sx) {
+  p.moveTo(x - w, y);
+  p.bezierCurveTo(x - w * 1.18, y - H * 0.45, x + sx * 0.35 - w * 0.4, y - H * 0.74, x + sx, y - H);
+  p.bezierCurveTo(x + sx * 0.35 + w * 0.5, y - H * 0.7, x + w * 1.18, y - H * 0.42, x + w, y);
+  p.quadraticCurveTo(x, y + w * 0.55, x - w, y);
+  p.closePath();
+}
+// flames: [{x, y (base), h, w, seed}] — drawn in one batch (glow, red, orange, yellow, licks)
+function drawFlames(ctx, t, flames, o = {}) {
+  if (!flames.length) return;
+  const L = [new Path2D(), new Path2D(), new Path2D()], licks = new Path2D();
+  const glows = [];
+  for (const f of flames) {
+    const sd = f.seed || 0;
+    const fl = 0.78 + 0.3 * noise1(t * 8.5 + sd * 3.1);
+    const tongues = [[0, 1, 1], [-0.55, 0.68, 0.62], [0.6, 0.6, 0.58]];
+    tongues.forEach(([dx, hk, wk], j) => {
+      const H = f.h * hk * (j ? 0.75 + 0.35 * noise1(t * 11 + sd * 5 + j * 7) : fl);
+      const sx = noise1(t * 4.3 + sd + j * 2.2) * f.w * 0.7 + dx * f.w * 0.4;
+      const bx = f.x + dx * f.w, w = f.w * wk;
+      for (let k = 0; k < 3; k++) {
+        const sc = [1, 0.66, 0.36][k];
+        tongueP(L[k], bx + sx * 0.08 * k, f.y + w * 0.18 * k, w * sc, H * (k === 0 ? 1 : sc * 1.12), sx * sc);
+      }
+    });
+    const lk = noise1(t * 6.1 + sd * 9.7);
+    if (lk > 0.05) {
+      const ly = f.y - f.h * (1.08 + 0.4 * frac(t * 1.7 + sd * 0.37)), lx = f.x + noise1(t * 3 + sd) * f.w * 0.6;
+      tongueP(licks, lx, ly, f.w * 0.22 * lk, f.h * 0.22 * lk, 0);
+    }
+    glows.push(f);
+  }
+  ctx.save();
+  if (o.glow !== false) {
+    ctx.globalCompositeOperation = 'lighter';
+    const gp = new Path2D();
+    for (const f of glows) ellipseP(gp, f.x, f.y - f.h * 0.35, f.w * 2.2 + f.h * 0.3, f.h * 0.7);
+    ctx.fillStyle = 'rgba(255,96,30,0.1)'; ctx.fill(gp);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.fillStyle = 'rgba(226,58,24,0.95)'; ctx.fill(L[0]); ctx.fill(licks);
+  ctx.fillStyle = '#FF8A26'; ctx.fill(L[1]);
+  ctx.fillStyle = '#FFE27A'; ctx.fill(L[2]);
+  ctx.restore();
+}
+function drawFlame(ctx, x, y, h, w, t, seed) { drawFlames(ctx, t, [{ x, y, h, w, seed }], { glow: false }); }
+// dark smoke rising from fires: sources [{x, y, s}]
+function drawFireSmoke(ctx, t, sources, amount = 1) {
+  if (amount <= 0) return;
+  const base = new Path2D(), lit = new Path2D();
+  sources.forEach((src, i) => {
+    for (let k = 0; k < 5; k++) {
+      const ph = frac(t * 0.4 + k / 5 + hash1(i * 3.7) * 0.2);
+      const x = src.x + ph * 50 * src.s + Math.sin(ph * 4 + i) * 7 * src.s, y = src.y - ph * 190 * src.s;
+      const r = (12 + ph * 40) * src.s * Math.min(1, ph * 6 + 0.3) * (1 - smoothstep(0.75, 1, ph) * 0.5);
+      circleP(ph < 0.45 ? lit : base, x, y, r);
+    }
+  });
+  ctx.save();
+  ctx.fillStyle = `rgba(44,34,38,${0.34 * amount})`; ctx.fill(base);
+  ctx.fillStyle = `rgba(44,34,38,${0.5 * amount})`; ctx.fill(lit);
+  ctx.restore();
 }
 function drawSnoozeSignImpl(ctx, t, P, o) {
   const burn = o.burn || 0;
@@ -1753,7 +2049,7 @@ function drawSnoozeSignImpl(ctx, t, P, o) {
   ctx.save();
   ctx.translate(o.x, o.y);
   ctx.scale(sc, sc);
-  const ch = (c) => (burn > 0 ? mix(P.g(c), '#1E120C', burn * 0.75) : P.g(c));
+  const ch = (c) => (burn > 0 ? mix(P.g(c), '#2A1810', burn * 0.3) : P.g(c));
   // posts
   ctx.fillStyle = ch(C.woodDark);
   ctx.beginPath(); for (const px of [-74, 74]) { ctx.rect(px - 7, -126, 14, 130); } ctx.fill();
@@ -1787,13 +2083,13 @@ function drawSnoozeSignImpl(ctx, t, P, o) {
   };
   plank(-92, 44, -0.025, 214, 3);
   plank(-50, 34, 0.018, 196, 9);
-  const paint = burn > 0 ? mix(P.g(C.paint), '#3A2A22', burn * 0.6) : P.g(C.paint);
+  const paint = burn > 0 ? mix(P.g(C.paint), '#3A2A22', burn * 0.25) : P.g(C.paint);
   const sh = rgba('#4A2A14', 0.45);
   ctx.save(); ctx.rotate(-0.025);
   paintText(ctx, lines[0], 0, -92, 27, 700, paint, sh, 11, 190);
   ctx.restore();
   ctx.save(); ctx.rotate(0.018);
-  const c2 = o.check ? paint : (burn > 0 ? mix(P.g(C.paint2), '#3A2A22', burn * 0.6) : P.g(C.paint2));
+  const c2 = o.check ? paint : (burn > 0 ? mix(P.g(C.paint2), '#3A2A22', burn * 0.25) : P.g(C.paint2));
   paintText(ctx, lines[1] || '', o.check ? -16 : 0, -50, 18, 600, c2, sh, 23, o.check ? 146 : 176);
   ctx.restore();
   if (o.check) {
@@ -1816,29 +2112,34 @@ function drawSnoozeSignImpl(ctx, t, P, o) {
     ctx.restore();
   }
   if (burn > 0) {
+    // char creeping up the boards from the bottom, with a glowing ember front
+    const front = lerp(-22, -132, Math.pow(burn, 0.85));
     ctx.save();
-    for (let i = 0; i < 6; i++) {
-      const k = frac(t * 0.5 + i / 6);
-      ctx.globalAlpha = burn * (1 - k) * 0.45;
-      ctx.fillStyle = '#3A3034';
-      ctx.beginPath(); circleP(ctx, -40 + i * 16 + k * 30, -120 - k * 140, 10 + k * 26); ctx.fill();
-    }
-    ctx.restore();
-    const n = Math.round(4 + burn * 9);
-    for (let i = 0; i < n; i++) {
-      const fx = -96 + (i / Math.max(1, n - 1)) * 192 + (hash1(i * 4.1) - 0.5) * 14;
-      const fy = (i % 3 === 0 ? -30 : -36) - burn * 20 * hash1(i * 2.2);
-      const h = (16 + 70 * burn) * (0.6 + 0.6 * hash1(i * 5.5));
-      drawFlame(ctx, fx, fy, h, 9 + 7 * burn, t, i * 1.7);
-    }
-    if (burn > 0.5) { drawFlame(ctx, -74, -100, 40 * burn, 10, t, 41); drawFlame(ctx, 74, -96, 46 * burn, 10, t, 43); }
-    ctx.save();
+    ctx.beginPath();
+    roundRect(ctx, -107, -114, 214, 44, 6); roundRect(ctx, -98, -67, 196, 34, 6);
+    for (const px of [-74, 74]) ctx.rect(px - 7, -126, 14, 130);
+    ctx.clip();
+    const g = ctx.createLinearGradient(0, front - 14, 0, front + 40);
+    g.addColorStop(0, 'rgba(46,26,18,0)'); g.addColorStop(0.3, 'rgba(46,26,18,0.72)'); g.addColorStop(1, 'rgba(34,20,14,0.86)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.moveTo(-120, 20);
+    for (let x = -120; x <= 120; x += 8) ctx.lineTo(x, front - 14 + Math.sin(x * 0.11 + 1.3) * 6 + noise1(x * 0.05 + 4) * 8);
+    ctx.lineTo(120, 20); ctx.closePath(); ctx.fill();
     ctx.globalCompositeOperation = 'lighter';
-    for (const [r, a] of [[160, 0.1], [100, 0.14]]) {
-      ctx.fillStyle = `rgba(255,120,40,${a * burn})`;
-      ctx.beginPath(); circleP(ctx, 0, -70, r); ctx.fill();
-    }
+    ctx.strokeStyle = `rgba(255,120,40,${0.75 + 0.25 * noise1(t * 6)})`; ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    for (let x = -110; x <= 110; x += 6) { const y = front - 2 + Math.sin(x * 0.17 + t * 2) * 3 + noise1(x * 0.2 + t) * 3; x === -110 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    ctx.stroke();
     ctx.restore();
+    // smoke, flames along the char front and up the posts, warm glow
+    drawFireSmoke(ctx, t, [{ x: -50, y: front - 30, s: 0.9 }, { x: 20, y: front - 40, s: 1.1 }, { x: 70, y: front - 30, s: 0.8 }], burn);
+    const n = Math.round(4 + burn * 8), fl = [];
+    for (let i = 0; i < n; i++) {
+      const fx = -98 + (i / Math.max(1, n - 1)) * 196 + (hash1(i * 4.1) - 0.5) * 16;
+      fl.push({ x: fx, y: Math.min(-30, front + 8 + hash1(i * 2.2) * 10), h: (18 + 62 * burn) * (0.55 + 0.6 * hash1(i * 5.5)), w: 8 + 6 * burn, seed: i * 1.7 });
+    }
+    if (burn > 0.4) { fl.push({ x: -74, y: -106, h: 46 * burn, w: 9, seed: 41 }); fl.push({ x: 74, y: -100, h: 52 * burn, w: 9, seed: 43 }); }
+    drawFlames(ctx, t, fl);
   }
   ctx.restore();
 }
@@ -1846,91 +2147,173 @@ function drawSnoozeSignImpl(ctx, t, P, o) {
 // =====================================================================================
 // lava into the pool
 // =====================================================================================
-function lavaBlobPts(cx, cy, rx, ry, t, seed) {
-  const pts = [];
-  for (let i = 0; i < 16; i++) {
-    const a = (i / 16) * TAU;
-    const k = 1 + 0.16 * noise1(i * 1.7 + seed + t * 0.25) + 0.08 * Math.sin(a * 3 + seed);
-    pts.push([cx + Math.cos(a) * rx * k, cy + Math.sin(a) * ry * k]);
-  }
-  return pts;
-}
-const LAVA_PLATES = (() => {
-  const r = rng(616), out = [];
-  for (let i = 0; i < 46; i++) {
-    const a = r() * TAU, d = Math.sqrt(r());
-    const pts = [];
-    const n = 6, rr = r.range(0.07, 0.13);
-    for (let k = 0; k < n; k++) { const b = (k / n) * TAU + r.range(-0.2, 0.2); pts.push([Math.cos(b) * rr * r.range(0.7, 1.15), Math.sin(b) * rr * r.range(0.7, 1.15)]); }
-    out.push({ u: Math.cos(a) * d * 0.86, v: Math.sin(a) * d * 0.8, pts, sh: r.range(0, 1) });
+// The lava delta in the pool = union of perspective ellipses that spread from the back-right entry.
+const LAVA_LOBES = (() => {
+  const r = rng(717), out = [];
+  for (let i = 0; i < 22; i++) {
+    const a = PI * 0.5 + r.range(-0.1, 1.1) * PI * 0.6; // spread toward the left / front
+    out.push({ a, d: Math.sqrt(r()) * 0.9, rr: r.range(0.4, 0.55), ph: r() * TAU, start: r() * 0.35 });
   }
   return out;
 })();
-function drawLavaPool(ctx, t, cx, cy, rx, ry, sd) {
-  const pts = lavaBlobPts(cx, cy, rx, ry, t, sd);
-  ctx.fillStyle = 'rgba(255,110,40,0.22)';
-  ctx.beginPath(); blobP(ctx, pts.map(([x, y]) => [cx + (x - cx) * 1.18, cy + (y - cy) * 1.4])); ctx.fill();
-  ctx.fillStyle = '#7A1C0E'; ctx.beginPath(); blobP(ctx, pts.map(([x, y]) => [x, y + 2])); ctx.fill();
-  ctx.fillStyle = '#FF6A22'; ctx.beginPath(); blobP(ctx, pts); ctx.fill();
-  ctx.fillStyle = '#FFB13B'; ctx.beginPath(); blobP(ctx, pts.map(([x, y]) => [cx + (x - cx) * 0.8, cy + (y - cy) * 0.72])); ctx.fill();
-  // dark crust plates drifting on the melt, cooling toward the edges
-  const crust = new Path2D(), crustHi = new Path2D();
-  for (const pl of LAVA_PLATES) {
-    const px = cx + pl.u * rx + Math.sin(t * 0.3 + pl.sh * 6) * 3, py = cy + pl.v * ry;
-    const s = Math.max(rx, ry * 3) * (0.9 + 0.3 * (Math.abs(pl.u) + Math.abs(pl.v)));
-    const k = ry / Math.max(1, rx) * 2.2;
-    crust.moveTo(px + pl.pts[0][0] * s, py + pl.pts[0][1] * s * k);
-    for (const [u, v] of pl.pts) crust.lineTo(px + u * s, py + v * s * k);
-    crust.closePath();
-    crustHi.moveTo(px + pl.pts[3][0] * s * 0.6, py + pl.pts[3][1] * s * k * 0.6 - 1);
-    crustHi.lineTo(px + pl.pts[4][0] * s * 0.6, py + pl.pts[4][1] * s * k * 0.6 - 1);
-    crustHi.lineTo(px + pl.pts[5][0] * s * 0.6, py + pl.pts[5][1] * s * k * 0.6 - 1);
+function lavaLobes(k, t) {
+  // k 0..1 spread; returns [{x, y, rx, ry}] in world units
+  const ex = 1000, ey = 480;
+  const R = 30 + 300 * k;
+  const out = [{ x: ex - 6, y: ey + 2, rx: 26 + 40 * k, ry: 8 + 12 * k }];
+  for (const L of LAVA_LOBES) {
+    const kk = clamp((k - L.start) / (1 - L.start));
+    if (kk <= 0) continue;
+    const d = L.d * R * kk;
+    const x = ex + Math.cos(L.a) * d * 1.0 - 40 * kk, y = ey + 6 + Math.sin(L.a) * d * 0.28 + 30 * k * kk;
+    const rr = R * L.rr * (0.4 + 0.6 * kk) * (1 + 0.04 * Math.sin(t * 0.8 + L.ph));
+    out.push({ x, y, rx: rr, ry: rr * (0.3 + 0.05 * (y - 470) / 100) });
   }
+  // second, smaller entry at the far right (by the sign)
+  const k2 = clamp((k - 0.25) / 0.75);
+  if (k2 > 0) out.push({ x: 1140 - 10 * k2, y: 498 + 14 * k2, rx: 20 + 80 * k2, ry: 7 + 24 * k2 });
+  return out;
+}
+function lobesPath(lobes, sc = 1, dy = 0) {
+  const p = new Path2D();
+  for (const l of lobes) ellipseP(p, l.x, l.y + dy, l.rx * sc, l.ry * sc);
+  return p;
+}
+const LAVA_CELLS = (() => {
+  // cracked crust: a jittered perspective grid whose cells are shrunk toward their centres,
+  // leaving glowing seams between the plates
+  const r = rng(818), rows = [];
+  let y = 462;
+  while (y < 660) { rows.push(y); y += 10 + (y - 462) * 0.085; }
+  const V = rows.map((yy, i) => {
+    const h = (rows[i + 1] ?? yy + 26) - yy, w = h * 2.3, line = [];
+    for (let x = 560 - w * (i % 2) * 0.5; x < 1260; x += w) line.push([x + r.range(-0.28, 0.28) * w, yy + r.range(-0.25, 0.25) * h]);
+    return line;
+  });
+  const out = [];
+  for (let i = 0; i < V.length - 1; i++) {
+    const A = V[i], B = V[i + 1];
+    for (let j = 0; j < A.length - 1; j++) {
+      // nearest vertices on the next row
+      const bi = B.reduce((m, q, k) => (Math.abs(q[0] - A[j][0]) < Math.abs(B[m][0] - A[j][0]) ? k : m), 0);
+      if (bi + 1 >= B.length) continue;
+      const quad = [A[j], A[j + 1], B[bi + 1], B[bi]];
+      const cx = quad.reduce((m, q) => m + q[0], 0) / 4, cy = quad.reduce((m, q) => m + q[1], 0) / 4;
+      const sh = r.range(0.78, 0.88);
+      out.push({ x: cx, y: cy, pts: quad.map(([qx, qy]) => [cx + (qx - cx) * sh, cy + (qy - cy) * sh]) });
+    }
+  }
+  return out;
+})();
+// cartoon steam clouds bursting up where lava meets water: {x, y, w, amount, scale, seed, color}
+function drawSteamBurst(ctx, t, o = {}) {
+  const x = o.x ?? 640, y = o.y ?? 520, w = o.w ?? 300, amount = clamp(o.amount ?? 1, 0, 2), sc = o.scale ?? 1, seed = o.seed ?? 5;
+  if (amount <= 0) return;
+  const N = Math.round((amount * w) / 22);
+  const B = [new Path2D(), new Path2D(), new Path2D()], H = [new Path2D(), new Path2D(), new Path2D()];
+  for (let i = 0; i < N; i++) {
+    const L = 2.2 + hash1(seed * 7 + i * 1.9) * 1.6;
+    const tt = t / L + hash1(seed + i * 3.7), cyc = Math.floor(tt), k = tt - cyc;
+    const bx = x - w / 2 + w * hash2(i * 5 + seed, cyc * 1.3);
+    const px = bx + k * 34 * sc * (hash1(i + cyc) - 0.3), py = y - Math.pow(k, 0.75) * 190 * sc;
+    const r = (16 + 50 * Math.pow(k, 0.6)) * sc;
+    const fade = Math.sin(PI * Math.min(1, k * 1.15 + 0.06));
+    const bk = fade > 0.66 ? 2 : fade > 0.33 ? 1 : 0;
+    for (const [dx, dy, rr] of [[0, 0, 1], [-0.62, 0.3, 0.7], [0.66, 0.26, 0.66]]) circleP(B[bk], px + dx * r, py + dy * r, rr * r);
+    circleP(H[bk], px - r * 0.12, py - r * 0.18, r * 0.78);
+  }
+  const col = o.color || '#F2ECEA';
   ctx.save();
-  ctx.beginPath(); blobP(ctx, pts.map(([x, y]) => [cx + (x - cx) * 0.94, cy + (y - cy) * 0.9])); ctx.clip();
-  ctx.fillStyle = '#3A1E1A'; ctx.fill(crust);
-  ctx.strokeStyle = '#6A3A30'; ctx.lineWidth = 1.2; ctx.stroke(crustHi);
+  for (let b = 0; b < 3; b++) {
+    const a = [0.16, 0.3, 0.46][b] * Math.min(1, amount);
+    ctx.fillStyle = rgba(mix(col, '#B4A8AA', 0.35), a); ctx.fill(B[b]);
+    ctx.fillStyle = rgba(col, a * 0.8); ctx.fill(H[b]);
+  }
   ctx.restore();
-  ctx.strokeStyle = `rgba(255,236,160,${0.75 + 0.25 * noise1(t * 4 + sd)})`; ctx.lineWidth = 2;
-  ctx.beginPath(); blobP(ctx, pts); ctx.stroke();
 }
 function drawLavaToPool(ctx, t, P, o) {
-  const L = o.lava;
-  if (L <= 0) return;
+  const Lv = o.lava;
+  if (Lv <= 0) return;
+  // glow on the back bank where the lava arrives
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
-  for (const [r, a] of [[220, 0.08], [130, 0.12]]) {
-    ctx.fillStyle = `rgba(255,110,40,${a * Math.min(1, L * 2)})`;
-    ctx.beginPath(); ellipseP(ctx, 1010, 458, r * 1.3, r * 0.6); ctx.fill();
+  for (const [r, a] of [[230, 0.07], [130, 0.11]]) {
+    ctx.fillStyle = `rgba(255,110,40,${a * Math.min(1, Lv * 2)})`;
+    ctx.beginPath(); ellipseP(ctx, 1010, 462, r * 1.3, r * 0.55); ctx.fill();
   }
   ctx.restore();
-  const fb = smoothstep(0.03, 0.3, L);
+  // the bushes along its path catch fire
+  const fb = smoothstep(0.03, 0.3, Lv);
   if (fb > 0) {
-    [[900, 426, 1], [936, 432, 2], [1004, 440, 3], [1070, 432, 4], [1096, 440, 5], [872, 424, 6], [1160, 446, 7], [960, 420, 8]].forEach(([fx, fy, s], i) => {
-      const k = clamp(fb * 1.6 - i * 0.1);
-      if (k > 0) drawFlame(ctx, fx, fy, 34 * k, 10, t, s);
+    const spots = [[884, 444, 1], [914, 437, 2], [950, 447, 3], [1034, 449, 4], [1066, 441, 5], [1098, 448, 6], [1178, 452, 7], [1210, 445, 8], [866, 452, 9]];
+    const fl = [];
+    spots.forEach(([fx, fy, sd], i) => {
+      const k = clamp(fb * 1.7 - i * 0.09);
+      if (k > 0) fl.push({ x: fx, y: fy, h: (26 + 16 * hash1(sd * 3.3)) * k, w: 8 + 3 * hash1(sd), seed: sd });
     });
+    drawFireSmoke(ctx, t, [{ x: 920, y: 400, s: 1.1 }, { x: 1060, y: 400, s: 1 }, { x: 1190, y: 410, s: 0.9 }], fb * 0.9);
+    drawFlames(ctx, t, fl);
   }
-  const p1 = clamp(L / 0.3), p2 = clamp((L - 0.12) / 0.3);
-  strokeLava(ctx, t, partial(LAVA_P1, LAVA_P1_L, p1), 26, 4, 14);
-  if (p2 > 0) strokeLava(ctx, t, partial(LAVA_P2, LAVA_P2_L, p2), 18, 5, 10);
-  const pour = smoothstep(0.26, 0.4, L);
-  if (pour > 0) {
-    const yb = lerp(462, 488, pour);
-    ctx.fillStyle = '#E8441A';
-    ctx.beginPath(); ctx.moveTo(980, 462); ctx.quadraticCurveTo(988, 474, 976, yb); ctx.lineTo(1012, yb); ctx.quadraticCurveTo(1006, 472, 1004, 462); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#FFB13B';
-    ctx.beginPath(); ctx.moveTo(986, 463); ctx.quadraticCurveTo(992, 474, 986, yb - 2); ctx.lineTo(998, yb - 2); ctx.quadraticCurveTo(1000, 472, 996, 463); ctx.closePath(); ctx.fill();
-  }
-  const k = smoothstep(0.3, 1, L);
+  // flows over the back bank
+  const p1 = clamp(Lv / 0.3), p2 = clamp((Lv - 0.12) / 0.3);
+  strokeLava(ctx, t, partial(LAVA_P1, LAVA_P1_L, p1), 28, 4, 16);
+  if (p2 > 0) strokeLava(ctx, t, partial(LAVA_P2, LAVA_P2_L, p2), 20, 5, 11);
+  const k = smoothstep(0.28, 1, Lv);
   if (k > 0) {
     ctx.save();
-    ctx.beginPath(); blobP(ctx, POOL_PTS); ctx.clip();
-    drawLavaPool(ctx, t, lerp(996, 952, k), lerp(480, 502, k), 20 + 240 * k, 7 + 42 * k, 1);
-    const k2 = clamp((L - 0.4) / 0.6);
-    if (k2 > 0.05) drawLavaPool(ctx, t, 1138, lerp(488, 520, k2), 12 + 100 * k2, 6 + 36 * k2, 2);
+    // the spring turns into a murky mess
+    ctx.fillStyle = `rgba(70,52,50,${0.22 * k})`; ctx.fill(POOL_PATH);
+    const lobes = lavaLobes(k, t);
+    const fl = 0.85 + 0.15 * noise1(t * 4);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(255,100,40,${0.2 * fl})`; ctx.fill(lobesPath(lobes, 1.3, 2));
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(236,226,220,0.55)'; ctx.fill(lobesPath(lobes, 1.1, 1)); // boiling foam ring
+    ctx.fillStyle = '#6E180C'; ctx.fill(lobesPath(lobes, 1.02, 1.5));
+    ctx.fillStyle = '#FF5A1F'; ctx.fill(lobesPath(lobes, 0.98));
+    ctx.fillStyle = '#FFA236'; ctx.fill(lobesPath(lobes, 0.86, -0.5));
+    // cooled crust plates with glowing seams (none right at the hot entry); a plate is kept when
+    // its centre lies well inside the lava, so no clipping is needed
+    const crust = new Path2D(), crustHi = new Path2D();
+    for (const c of LAVA_CELLS) {
+      const dx = c.x - 1000, dy = (c.y - 482) / 0.3;
+      if (dx * dx + dy * dy < 70 * 70) continue;
+      let inside = false;
+      for (const l of lobes) {
+        const ux = (c.x - l.x) / (l.rx * 0.84), uy = (c.y - l.y) / (l.ry * 0.78);
+        if (ux * ux + uy * uy < 1) { inside = true; break; }
+      }
+      if (!inside) continue;
+      const jig = Math.sin(t * 0.6 + c.x * 0.05) * 0.6;
+      crust.moveTo(c.pts[0][0] + jig, c.pts[0][1]);
+      for (const q of c.pts) crust.lineTo(q[0] + jig, q[1]);
+      crust.closePath();
+      crustHi.moveTo(c.pts[3][0] + jig, c.pts[3][1] - 0.4); crustHi.lineTo(c.pts[0][0] + jig, c.pts[0][1] + 0.6); crustHi.lineTo(c.pts[1][0] + jig, c.pts[1][1] + 0.6);
+    }
+    ctx.fillStyle = '#3C2622'; ctx.fill(crust);
+    ctx.strokeStyle = 'rgba(140,92,80,0.7)'; ctx.lineWidth = 1.1; ctx.stroke(crustHi);
+    // hot glints
+    ctx.fillStyle = `rgba(255,240,170,${0.8 * fl})`;
+    ctx.beginPath();
+    for (let i = 0; i < 14; i++) {
+      const l = lobes[i % lobes.length], a = t * 0.7 + i * 2.3;
+      ellipseP(ctx, l.x + Math.cos(a) * l.rx * 0.5, l.y + Math.sin(a) * l.ry * 0.5, 4 + 3 * hash1(i), 1.2);
+    }
+    ctx.fill();
     ctx.restore();
-    drawSteam(ctx, t, { x: lerp(990, 930, k), y: lerp(482, 524, k), w: 140 + 440 * k, amount: 0.6 + 0.8 * k, h: 230, scale: 1.5, color: P.steam, seed: 41 });
+    // pour over the rim (cascade into the water)
+    const pour = smoothstep(0.26, 0.4, Lv);
+    if (pour > 0) {
+      const yb = lerp(462, 492, pour);
+      ctx.fillStyle = '#E8441A';
+      ctx.beginPath(); ctx.moveTo(978, 460); ctx.quadraticCurveTo(990, 474, 974, yb); ctx.lineTo(1016, yb); ctx.quadraticCurveTo(1008, 472, 1006, 460); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#FFB13B';
+      ctx.beginPath(); ctx.moveTo(986, 461); ctx.quadraticCurveTo(994, 474, 986, yb - 2); ctx.lineTo(1000, yb - 2); ctx.quadraticCurveTo(1002, 472, 998, 461); ctx.closePath(); ctx.fill();
+    }
+    // the hiss: steam clouds boil off along the whole lava front
+    const ext = lobes.reduce((m, l) => [Math.min(m[0], l.x - l.rx), Math.max(m[1], l.x + l.rx)], [1e9, -1e9]);
+    drawSteamBurst(ctx, t, { x: (ext[0] + ext[1]) / 2, y: 500 + 22 * k, w: ext[1] - ext[0], amount: 0.7 + 0.5 * k, scale: 0.8 + 0.5 * k, seed: 23, color: P.steam });
+    drawSteam(ctx, t, { x: (ext[0] + ext[1]) / 2, y: 506 + 30 * k, w: (ext[1] - ext[0]) * 1.1, amount: 0.8 + 0.6 * k, h: 200, scale: 1.3, color: P.steam, seed: 41 });
   }
 }
 
@@ -1941,51 +2324,69 @@ function drawSteam(ctx, t, o = {}) {
   const x = o.x ?? 640, y = o.y ?? 520, w = o.w ?? 600, amount = clamp(o.amount ?? 0.5, 0, 2);
   const h = o.h ?? 120, scale = o.scale ?? 1, color = o.color || '#FFFFFF', seed = o.seed ?? 1;
   if (amount <= 0.001) return;
-  const N = Math.max(1, Math.round((amount * w) / (60 * scale)));
   const [cr, cg, cb] = U.hexToRgb(color);
-  const A = 0.16 + 0.16 * Math.min(1, amount);
-  for (let i = 0; i < N; i++) {
-    const L = 3 + hash1(seed * 31 + i * 1.7) * 2.4;
-    const tt = t / L + hash1(seed * 17 + i * 3.3);
-    const cyc = Math.floor(tt), k = tt - cyc;
-    const px = x - w / 2 + w * hash2(i + seed * 7, cyc * 1.31);
-    const yy = y - k * h * scale * (0.7 + 0.6 * hash1(i * 9.7 + seed));
-    const xx = px + Math.sin(k * 4 + i) * 9 * scale * k + 10 * k * scale;
-    const r = (14 + 34 * k) * scale * (0.75 + 0.3 * Math.min(1, amount));
-    const a = Math.sin(PI * Math.min(1, k * 1.15)) * A;
-    if (a < 0.01) continue;
-    const g = ctx.createRadialGradient(xx, yy, 0, xx, yy, r);
-    g.addColorStop(0, `rgba(${cr},${cg},${cb},${a})`); g.addColorStop(1, `rgba(${cr},${cg},${cb},0)`);
-    ctx.fillStyle = g;
-    ctx.fillRect(xx - r, yy - r, 2 * r, 2 * r);
+  const col = (a) => `rgba(${cr},${cg},${cb},${a})`;
+  // soft billows for dense steam: flat discs bucketed by alpha (a big faint halo + a denser core)
+  if (amount > 0.35) {
+    const N = Math.round(((amount - 0.35) * w) / (70 * scale));
+    const A = 0.07 + 0.08 * Math.min(1, amount - 0.35);
+    const halo = [new Path2D(), new Path2D()], core = [new Path2D(), new Path2D()];
+    for (let i = 0; i < N; i++) {
+      const L = 3 + hash1(seed * 31 + i * 1.7) * 2.4;
+      const tt = t / L + hash1(seed * 17 + i * 3.3);
+      const cyc = Math.floor(tt), k = tt - cyc;
+      const px = x - w / 2 + w * hash2(i + seed * 7, cyc * 1.31);
+      const yy = y - k * h * scale * (0.7 + 0.6 * hash1(i * 9.7 + seed));
+      const xx = px + Math.sin(k * 4 + i) * 9 * scale * k + 10 * k * scale;
+      const r = (22 + 46 * k) * scale;
+      const a = Math.sin(PI * Math.min(1, k * 1.15));
+      if (a < 0.15) continue;
+      const bk = a > 0.6 ? 1 : 0;
+      circleP(halo[bk], xx, yy, r);
+      circleP(core[bk], xx - r * 0.08, yy - r * 0.05, r * 0.62);
+    }
+    for (let b = 0; b < 2; b++) {
+      const al = A * (b ? 1 : 0.5);
+      ctx.fillStyle = col(al); ctx.fill(halo[b]);
+      ctx.fillStyle = col(al * 1.2); ctx.fill(core[b]);
+    }
   }
-  // stylised curly wisps
-  const M = Math.max(1, Math.round((amount * w) / 220));
-  const inner = new Path2D(), outer = new Path2D();
+  // stylised wisps (the ♨ motif): soft S-ribbons that rise, swell, curl over at the top and fade
+  const M = Math.max(1, Math.round((amount * w) / (80 * Math.max(0.7, scale))));
+  const outer = new Path2D(), inner = new Path2D(), faint = new Path2D();
   for (let i = 0; i < M; i++) {
-    const L = 3.6 + hash1(seed * 13 + i * 2.9) * 2;
+    const L = 3.2 + hash1(seed * 13 + i * 2.9) * 2.4;
     const tt = t / L + hash1(seed * 5 + i * 1.1);
     const cyc = Math.floor(tt), k = tt - cyc;
-    const px = x - w / 2 + w * hash2(i * 3 + seed, cyc * 2.7 + 1);
-    const hh = h * scale * 0.6;
+    const px = x - w / 2 + w * ((i + 0.15 + 0.7 * hash2(i * 3 + seed, cyc * 2.7 + 1)) / M);
+    const hh = h * scale * (0.6 + 0.4 * hash1(i * 5.3 + cyc));
+    const curl = hash1(i * 7.7 + cyc) > 0.5 ? 1 : -1;
+    const ph = hash1(i * 2.1 + cyc) * TAU;
+    const lift = k * hh * 0.5, len = hh * (0.3 + 0.5 * Math.min(1, k * 1.8));
     const pts = [];
     for (let j = 0; j <= 10; j++) {
-      const s = j / 10;
-      pts.push([px + Math.sin(s * 6.5 + k * 3 + i) * 7 * scale * (0.5 + s), y - 6 * scale - k * hh * 0.7 - s * hh * 0.5]);
+      const sj = j / 10;
+      const yy = y - 3 * scale - lift - sj * len;
+      const xx = px + Math.sin(sj * 6.6 + ph + t * 1.1) * 6.5 * scale * (0.5 + sj * 0.8) + curl * Math.pow(sj, 2.5) * 12 * scale * (0.4 + k);
+      pts.push([xx, yy]);
     }
-    const a = Math.sin(PI * k);
-    ribbonP(a > 0.5 ? inner : outer, pts, 0, 0, (s) => Math.sin(PI * s) * 4 * scale);
+    const a = Math.sin(PI * Math.pow(k, 0.8));
+    const W = (6.5 + 8 * k) * scale;
+    ribbonP(a > 0.5 ? outer : faint, pts, 0, 0, (u) => Math.pow(Math.sin(PI * u), 0.7) * W * 2.2);
+    if (a > 0.3) ribbonP(inner, pts, 0, 0, (u) => Math.pow(Math.sin(PI * Math.min(1, u * 1.08)), 1.1) * W);
   }
-  ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.16 * Math.min(1, amount + 0.4)})`; ctx.fill(outer);
-  ctx.fillStyle = `rgba(${cr},${cg},${cb},${0.32 * Math.min(1, amount + 0.4)})`; ctx.fill(inner);
+  const Am = Math.min(1, 0.5 + amount * 0.5);
+  ctx.fillStyle = col(0.08 * Am); ctx.fill(faint);
+  ctx.fillStyle = col(0.12 * Am); ctx.fill(outer);
+  ctx.fillStyle = col(0.18 * Am); ctx.fill(inner);
 }
 function drawBubbles(ctx, t, o = {}) {
   const x = o.x ?? 640, y = o.y ?? 560, w = o.w ?? 400, h = o.h ?? 30, amount = clamp(o.amount ?? 0.5);
   const scale = o.scale ?? 1, seed = o.seed ?? 3, color = o.color || '#DAFAF4';
   if (amount <= 0.001) return;
   ctx.save();
-  const N = Math.round((amount * w) / 16);
-  const body = new Path2D(), spec = new Path2D(), rings = new Path2D();
+  const N = Math.round((amount * w) / 24);
+  const body = new Path2D(), small = new Path2D(), spec = new Path2D(), rings = new Path2D();
   for (let i = 0; i < N; i++) {
     const L = 0.8 + hash1(seed * 7 + i * 1.3) * 0.9;
     const tt = t / L + hash1(seed * 3 + i * 7.7);
@@ -1996,6 +2397,7 @@ function drawBubbles(ctx, t, o = {}) {
     const rmax = (2 + 3.5 * hash1(i * 4.3 + cyc)) * scale * (0.7 + 0.5 * amount);
     if (k < 0.75) {
       const r = rmax * Math.sqrt(k / 0.75);
+      if (r < 2.6) { circleP(small, bx, by - r * 0.3, r); continue; }
       ellipseP(body, bx, by - r * 0.3, r, r * 0.8);
       circleP(spec, bx - r * 0.35, by - r * 0.65, r * 0.25);
     } else {
@@ -2004,6 +2406,7 @@ function drawBubbles(ctx, t, o = {}) {
     }
   }
   ctx.lineWidth = 1.1 * scale;
+  ctx.fillStyle = rgba(color, 0.7); ctx.fill(small);
   ctx.fillStyle = rgba(color, 0.3); ctx.fill(body);
   ctx.strokeStyle = rgba(color, 0.9); ctx.stroke(body);
   ctx.fillStyle = '#FFFFFF'; ctx.fill(spec);
@@ -2011,7 +2414,7 @@ function drawBubbles(ctx, t, o = {}) {
   if (amount > 0.55) {
     const bk = (amount - 0.55) / 0.45;
     const M = Math.round((bk * w) / 50);
-    const domes = new Path2D(), drops = new Path2D(), dRings = new Path2D(), shine = new Path2D();
+    const domes = new Path2D(), drops = new Path2D(), dRings = new Path2D();
     for (let i = 0; i < M; i++) {
       const L = 1.1 + hash1(seed * 19 + i * 2.3) * 0.8;
       const tt = t / L + hash1(seed * 23 + i * 5.9);
@@ -2024,7 +2427,7 @@ function drawBubbles(ctx, t, o = {}) {
         const gk = Math.sin((k / 0.55) * PI * 0.5);
         const hh = R * 0.75 * gk, rr = R * (0.6 + 0.4 * gk);
         domes.moveTo(bx + rr, by); domes.ellipse(bx, by, rr, hh, 0, 0, PI, true); domes.closePath();
-        shine.moveTo(bx - rr * 0.5, by - hh * 0.3); shine.quadraticCurveTo(bx - rr * 0.4, by - hh * 0.8, bx - rr * 0.05, by - hh * 0.85);
+        ellipseP(drops, bx - rr * 0.38, by - hh * 0.62, rr * 0.22, hh * 0.13 + 0.6);
         ellipseP(dRings, bx, by, R * 1.2, R * 0.22);
       } else {
         const kk = (k - 0.55) / 0.45;
@@ -2036,11 +2439,10 @@ function drawBubbles(ctx, t, o = {}) {
         ellipseP(dRings, bx, by, R * (1 + kk * 1.8), R * 0.25 * (1 + kk * 1.8));
       }
     }
-    ctx.fillStyle = rgba(color, 0.45); ctx.fill(domes);
-    ctx.strokeStyle = rgba(color, 0.95); ctx.lineWidth = 1.4 * scale; ctx.stroke(domes);
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 1.8 * scale; ctx.lineCap = 'round'; ctx.stroke(shine);
+    ctx.fillStyle = rgba(color, 0.5); ctx.fill(domes);
+    ctx.strokeStyle = rgba(color, 0.9); ctx.lineWidth = 1.3 * scale; ctx.stroke(domes);
     ctx.strokeStyle = rgba(color, 0.6); ctx.lineWidth = 1.1 * scale; ctx.stroke(dRings);
-    ctx.fillStyle = rgba(color, 0.9); ctx.fill(drops);
+    ctx.fillStyle = rgba(mix(color, '#FFFFFF', 0.5), 0.95); ctx.fill(drops);
   }
   ctx.restore();
 }
@@ -2139,33 +2541,47 @@ function fallingRocks(t, o = {}) {
   const t0 = o.t0 ?? 0, count = o.count ?? 8, seed = o.seed ?? 1, dur = o.dur ?? 2, g = o.g ?? 900;
   const size = o.size || [7, 16];
   const area = Object.assign({ x0: 160, x1: 1150, yTop: -80, yGround: [520, 700] }, o.area || {});
+  const from = o.from || null; // launch point → ballistic arcs (e.g. SPRING.craterPos)
+  const flight = o.flight || [1.3, 1.9];
   const r = rng(seed * 101 + 7);
   const out = [];
   for (let i = 0; i < count; i++) {
     const start = t0 + r() * dur;
     const x0 = lerp(area.x0, area.x1, r());
     const yG = Array.isArray(area.yGround) ? lerp(area.yGround[0], area.yGround[1], r()) : area.yGround;
-    const vx = (r() - 0.5) * 140;
+    let vx = (r() - 0.5) * 140;
     const rad = lerp(size[0], size[1], r());
     const spin = (r() - 0.5) * 9;
     const yTop = area.yTop - r() * 80;
-    const fallT = Math.sqrt((2 * Math.max(1, yG - yTop)) / g);
+    let fallT, landX, sx = x0, sy = yTop, vy0 = 0;
+    if (from) {
+      fallT = lerp(flight[0], flight[1], r());
+      sx = from.x + (r() - 0.5) * 30; sy = from.y;
+      landX = x0;
+      vx = (landX - sx) / fallT;
+      vy0 = (yG - sy - 0.5 * g * fallT * fallT) / fallT;
+    } else {
+      fallT = Math.sqrt((2 * Math.max(1, yG - yTop)) / g);
+      landX = x0 + vx * fallT;
+    }
     const impactT = start + fallT;
-    const landX = x0 + vx * fallT;
     const tau = t - start;
     const inWater = inPool(landX, yG);
-    let x = x0, y = yTop, landed = false, vy = 0, sink = 0;
-    if (tau >= 0 && tau < fallT) { x = x0 + vx * tau; y = yTop + 0.5 * g * tau * tau; vy = g * tau; } else if (tau >= fallT) {
-      landed = true;
+    let x = sx, y = sy, landed = false, vy = 0, sink = 0, scale = from ? 0.35 : 1;
+    if (tau >= 0 && tau < fallT) {
+      x = sx + vx * tau; y = sy + vy0 * tau + 0.5 * g * tau * tau; vy = vy0 + g * tau;
+      if (from) scale = lerp(0.35, 1, Math.pow(tau / fallT, 1.5));
+    } else if (tau >= fallT) {
+      landed = true; scale = 1;
       const af = tau - fallT;
-      x = landX + (inWater ? 0 : vx * 0.2 * Math.min(af, 0.4));
+      x = landX + (inWater ? 0 : vx * 0.12 * Math.min(af, 0.4));
       const hop = af < 0.4 ? Math.sin((af / 0.4) * PI) * (1 - af / 0.4) * rad * 1.6 : 0;
       y = yG - (inWater ? 0 : hop);
       sink = inWater ? clamp(af / 0.45) : 0;
     }
     out.push({
-      i, x, y, r: rad, rot: spin * clamp(tau, 0, fallT + 0.4), glow: clamp(1 - Math.max(0, tau) / (fallT + 1.6)),
-      active: tau >= 0, landed, impactT, start, inWater, sink, vx, vy, landX, landY: yG,
+      i, x, y, r: rad * scale, rot: spin * clamp(tau, 0, fallT + 0.4), glow: clamp(1 - Math.max(0, tau) / (fallT + 1.6)),
+      active: tau >= 0, landed, impactT, start, inWater, sink, vx, vy, landX, landY: yG, scale, baseR: rad,
     });
   }
   return out;
@@ -2259,50 +2675,61 @@ function defaultSwimmers() {
   const s = SPRING.swimSpots;
   return [s.sunny, s.barry, s.doreen].map((p) => ({ x: p.x, y: p.y, scale: p.scale }));
 }
+// region under one swimmer's waterline: wavy top, half-ellipse bottom (k shrinks it for soft edges)
+function swimRegion(ctx, s, t, k) {
+  const hw = (s.w / 2) * k, x0 = s.x - hw, x1 = s.x + hw;
+  ctx.beginPath();
+  ctx.moveTo(x0, s.y + wave(x0, t));
+  for (let xx = x0 + 6; xx < x1; xx += 6) ctx.lineTo(xx, s.y + wave(xx, t));
+  ctx.lineTo(x1, s.y + wave(x1, t));
+  ctx.ellipse(s.x, s.y + 2, hw, s.depth * (0.75 + 0.25 * k), 0, 0, PI);
+  ctx.closePath();
+}
 function drawWaterFront(ctx, t, o = {}) {
   const setting = normSetting(o.setting);
   const op = opts(o, setting);
   const P = palette(setting, op.dusk, op.erupt, op.skyTint);
   const sw = (o.swimmers || defaultSwimmers()).map((s) => {
     const sc = s.scale ?? depthScale(s.y);
-    return { x: s.x, y: s.y, w: s.w ?? 270 * sc, depth: s.depth ?? 190 * sc, sc, ripple: s.ripple !== false };
-  });
+    return { x: s.x, y: s.y, w: s.w ?? 280 * sc, depth: s.depth ?? 110 * sc, sc, ripple: s.ripple !== false };
+  }).sort((a, b) => a.y - b.y);
   if (!sw.length) return;
+  const opacity = clamp(o.opacity ?? 0.72, 0, 0.98);
+  const LV = [1, 0.84, 0.68];
+  const a1 = 1 - Math.pow(1 - opacity, 1 / LV.length);
+  const heatK = op.waterHeat > 0.3 ? (op.waterHeat - 0.3) * 0.22 : 0;
   ctx.save();
-  ctx.beginPath();
   for (const s of sw) {
-    const x0 = s.x - s.w / 2, x1 = s.x + s.w / 2;
-    ctx.moveTo(x0, s.y + wave(x0, t));
-    for (let xx = x0 + 6; xx < x1; xx += 6) ctx.lineTo(xx, s.y + wave(xx, t));
-    ctx.lineTo(x1, s.y + wave(x1, t));
-    ctx.lineTo(x1, s.y + s.depth); ctx.lineTo(x0, s.y + s.depth); ctx.closePath();
-  }
-  ctx.clip();
-  ctx.globalAlpha = o.opacity ?? 0.7;
-  drawWaterBands(ctx, P, op.waterHeat);
-  ctx.globalAlpha = 1;
-  for (const s of sw) {
-    // contact shadow just under the waterline
-    for (let k = 0; k < 3; k++) {
-      ctx.fillStyle = rgba(P.w3, 0.16);
-      ctx.fillRect(s.x - s.w / 2, s.y - 3, s.w, (8 + k * 8) * s.sc);
+    // translucent water body in three nested, progressively narrower layers → soft sides.
+    // Filled with a vertical gradient sampled from the pool's colour bands (no clipping).
+    const yA = s.y - 4, yB = s.y + s.depth + 4;
+    const g = ctx.createLinearGradient(0, yA, 0, yB);
+    for (let q = 0; q <= 4; q++) {
+      const yy = lerp(yA, yB, q / 4);
+      let c = s.x < 200 && yy > 540 ? P.riverCols[Math.min(P.riverCols.length - 1, Math.max(0, Math.floor((yy - 528) / 28)))] : P.waterBand(yy);
+      if (heatK) c = mix(c, '#F4FFFC', heatK);
+      g.addColorStop(q / 4, c);
     }
-    // refraction bands
-    ctx.strokeStyle = rgba(P.wHi, 0.22);
+    ctx.fillStyle = g;
+    ctx.globalAlpha = a1;
+    for (let li = 0; li < LV.length; li++) { swimRegion(ctx, s, t, LV[li]); ctx.fill(); }
+    ctx.globalAlpha = 1;
+    // contact shade hugging the waterline + refraction bands
+    ctx.fillStyle = rgba(P.w3, 0.2);
+    ctx.beginPath(); ellipseP(ctx, s.x, s.y + 3 * s.sc, s.w * 0.38, 7 * s.sc); ctx.fill();
+    ctx.fillStyle = rgba(P.w3, 0.13);
+    ctx.beginPath(); ellipseP(ctx, s.x, s.y + 7 * s.sc, s.w * 0.3, 15 * s.sc); ctx.fill();
+    ctx.strokeStyle = rgba(P.wHi, 0.2);
     ctx.lineWidth = 2 * s.sc;
     ctx.beginPath();
-    for (let b = 0; b < 3; b++) {
-      const yy = s.y + (20 + b * 24) * s.sc;
-      ctx.moveTo(s.x - s.w / 2, yy);
-      for (let xx = s.x - s.w / 2; xx <= s.x + s.w / 2; xx += 10) ctx.lineTo(xx, yy + Math.sin(xx * 0.06 + t * 2 + b * 2) * 3 * s.sc);
+    for (let bnd = 0; bnd < 3; bnd++) {
+      const yy = s.y + (20 + bnd * 22) * s.sc, hw = s.w * (0.36 - bnd * 0.07);
+      ctx.moveTo(s.x - hw, yy);
+      for (let xx = s.x - hw; xx <= s.x + hw; xx += 10) ctx.lineTo(xx, yy + Math.sin(xx * 0.06 + t * 2 + bnd * 2) * 3 * s.sc);
     }
     ctx.stroke();
-  }
-  drawWaterSurface(ctx, t, P, op);
-  ctx.restore();
-  ctx.save();
-  for (const s of sw) {
-    const hw = s.w * 0.44;
+    // bright waterline lens + ripple rings in front
+    const hw = s.w * 0.42;
     ctx.fillStyle = rgba(P.wHi, 0.88);
     ctx.beginPath();
     ctx.moveTo(s.x - hw, s.y + wave(s.x - hw, t));
@@ -2310,9 +2737,20 @@ function drawWaterFront(ctx, t, o = {}) {
     for (let xx = s.x + hw; xx >= s.x - hw; xx -= 6) ctx.lineTo(xx, s.y + wave(xx, t) + 1.4 * (1 - ((xx - s.x) / hw) ** 2) * s.sc);
     ctx.closePath();
     ctx.fill();
-    if (s.ripple) waterlineRipple(ctx, s.x, s.y + 1, s.w * 0.8, t + s.x * 0.01, { amp: 1, part: 'front', color: P.wHi });
+    if (s.ripple) waterlineRipple(ctx, s.x, s.y + 1, s.w * 0.78, t + s.x * 0.01, { amp: 1, part: 'front', color: P.wHi });
   }
   ctx.restore();
+}
+// Convenience: draw swimmers back-to-front, each followed by its own front water, so a nearer
+// swimmer's head is never covered by the water of one further back.
+// list: [{x, y, scale?, w?, depth?, draw(ctx)}]  (y = waterline). o: same as drawWaterFront.
+function drawSwimmers(ctx, t, list, o = {}) {
+  const sorted = list.slice().sort((a, b) => a.y - b.y);
+  for (const s of sorted) {
+    if (s.ripple !== false) waterlineRipple(ctx, s.x, s.y + 1, (s.w ?? 280 * (s.scale ?? depthScale(s.y))) * 0.78, t + s.x * 0.01, { part: 'back', color: palette(normSetting(o.setting), o.dusk || 0, o.erupt || 0).wHi });
+    if (s.draw) s.draw(ctx);
+    drawWaterFront(ctx, t, Object.assign({}, o, { swimmers: [s] }));
+  }
 }
 function waterlineRipple(ctx, x, y, w, t, o = {}) {
   const amp = o.amp ?? 1, part = o.part || 'front', color = o.color || '#E2FBF6', speed = o.speed ?? 1;
@@ -2338,13 +2776,13 @@ function waterlineRipple(ctx, x, y, w, t, o = {}) {
 // overlay & foreground
 // =====================================================================================
 function eruptFlash(t, erupt) {
-  const onset = Math.exp(-Math.pow((erupt - 0.215) / 0.022, 2));
+  const onset = Math.exp(-Math.pow((erupt - 0.215) / 0.016, 2));
   let flick = 0;
   if (erupt > 0.22 && erupt < 0.68) {
     const slot = Math.floor(t * 2.6), ph = t * 2.6 - slot;
-    if (hash1(slot * 3.17 + 0.5) > 0.62) flick = Math.exp(-ph * 9) * 0.42 * (1 - smoothstep(0.55, 0.68, erupt));
+    if (hash1(slot * 3.17 + 0.5) > 0.62) flick = Math.exp(-ph * 9) * 0.2 * (1 - smoothstep(0.55, 0.68, erupt));
   }
-  return clamp(onset * 0.85 + flick);
+  return clamp(onset * 0.7 + flick);
 }
 function drawSpringOverlay(ctx, t, o = {}) {
   const setting = normSetting(o.setting);
@@ -2368,9 +2806,9 @@ function drawSpringOverlay(ctx, t, o = {}) {
       ctx.globalCompositeOperation = 'source-over';
     }
   }
-  const fl = eruptFlash(t, op.erupt);
+  const fl = o.flash != null ? clamp(o.flash) : eruptFlash(t, op.erupt);
   if (fl > 0.01) {
-    ctx.fillStyle = `rgba(255,224,190,${0.75 * fl})`;
+    ctx.fillStyle = `rgba(255,214,170,${0.75 * fl})`;
     ctx.fillRect(WX0, WY0, WX1 - WX0, WY1 - WY0);
   }
   ctx.restore();
@@ -2433,6 +2871,7 @@ function drawSpring(ctx, t, o, setting) {
   drawVolcano(ctx, t, P, op);
   drawLavaRivers(ctx, t, P, op);
   drawCraterSmoke(ctx, t, P, op);
+  if (o && o.puffs) for (const pf of o.puffs) drawVolcanoPuff(ctx, t, pf);
   drawPlume(ctx, t, P, op);
   drawFountains(ctx, t, P, op);
   drawJungleBands(ctx, t, P, op);
@@ -2443,6 +2882,7 @@ function drawSpring(ctx, t, o, setting) {
   drawBigTreeLeft(ctx, t, P, op);
   drawVines(ctx, t, P, VINES, op.rumble);
   drawBushBand(ctx, t, P, op);
+  drawLavaGlow(ctx, t, P, op);
   drawBanana(ctx, P, 86, 486, 0.9, t, 5, op.rumble, 0.04);
   drawPalm(ctx, t, P, PALMS[0], op.rumble);
   drawBanana(ctx, P, 1262, 458, 1.05, t, 9, op.rumble, 0.04, -1);
@@ -2454,6 +2894,7 @@ function drawSpring(ctx, t, o, setting) {
   const lod = devScale(ctx);
   drawRocks(ctx, P, RIVER_ROCKS, null, lod);
   drawRocks(ctx, P, RIM_ROCKS, null, lod);
+  if (op.barryRock) drawBarryRockImpl(ctx, t, P);
   if (op.moorPost) drawMoorPost(ctx, P, SPRING.moorPost.x, SPRING.moorPost.y);
   drawLavaToPool(ctx, t, P, op);
   const heat = op.waterHeat;
@@ -2503,6 +2944,11 @@ function drawMountSnooze(ctx, t, o = {}) {
   drawPlume(ctx, t, P, op);
   drawFountains(ctx, t, P, op);
   ctx.restore();
+}
+function drawBarryRock(ctx, t, o = {}) {
+  const setting = normSetting(o.setting);
+  const op = opts(o, setting);
+  drawBarryRockImpl(ctx, t, palette(setting, op.dusk, op.erupt, op.skyTint), setting === 'new' ? ROCK_STYLE_NEW : null);
 }
 function drawSnoozeSign(ctx, t, o = {}) {
   const P = palette(normSetting(o.setting), o.dusk || 0, o.erupt || 0);
@@ -2739,6 +3185,7 @@ function drawNewSpring(ctx, t, o) {
   const lod = devScale(ctx);
   drawRocks(ctx, P, RIVER_ROCKS, ROCK_STYLE_NEW, lod);
   drawRocks(ctx, P, RIM_ROCKS, ROCK_STYLE_NEW, lod);
+  if (op.barryRock) drawBarryRockImpl(ctx, t, P, ROCK_STYLE_NEW);
   for (const [c, path] of RIM_FLOWERS.byCol) { ctx.fillStyle = P.g(c); ctx.fill(path); }
   ctx.fillStyle = P.g('#FFB02E'); ctx.fill(RIM_FLOWERS.centres);
   if (op.moorPost) drawMoorPost(ctx, P, NEW_SPRING.moorPost.x, NEW_SPRING.moorPost.y);
@@ -2780,10 +3227,10 @@ function tile(ctx, i, cols, rows, label, fn) {
   }
   ctx.restore();
 }
-function labCapy(ctx, t, s, flip, who) {
+function labCapy(ctx, t, s, flip, who, seed) {
   try {
     const cap = require('./capybara');
-    if (cap.drawCapybara) { cap.drawCapybara(ctx, { x: s.x, y: s.y, scale: s.scale || 1, flip, who, t, pose: 'swim', mood: who === 'barry' ? 'worried' : 'chill' }); return; }
+    if (cap.drawCapybara) { cap.drawCapybara(ctx, { x: s.x, y: s.y, scale: s.scale || 1, flip, who, seed, t, pose: 'swim', mood: who === 'barry' ? 'worried' : who === 'extra' ? 'sleepy' : 'chill' }); return; }
   } catch (e) { /* placeholder below */ }
   const sc = s.scale || 1;
   ctx.save();
@@ -2798,6 +3245,16 @@ function labCapy(ctx, t, s, flip, who) {
 }
 function trio(ctx, t, S) {
   labCapy(ctx, t, S.sunny, false, 'sunny'); labCapy(ctx, t, S.barry, false, 'barry'); labCapy(ctx, t, S.doreen, true, 'doreen');
+}
+// everyone in the pool, depth-sorted, each with its own front water
+function labSwimmers(ctx, t, S, o, extras = true) {
+  const list = [
+    { ...S.sunny, draw: (c) => labCapy(c, t, S.sunny, false, 'sunny') },
+    { ...S.barry, draw: (c) => labCapy(c, t, S.barry, false, 'barry') },
+    { ...S.doreen, draw: (c) => labCapy(c, t, S.doreen, true, 'doreen') },
+  ];
+  if (extras) S.extras.forEach((e, i) => list.push({ ...e, draw: (c) => labCapy(c, t, e, e.flip, 'extra', i * 3 + 1) }));
+  drawSwimmers(ctx, t, list, o);
 }
 const lab = {
   day(ctx, t) { drawSpringDay(ctx, t, {}); },
@@ -2835,10 +3292,7 @@ const lab = {
   },
   swim(ctx, t) {
     drawSpringDay(ctx, t, {});
-    const S = SPRING.swimSpots;
-    S.extras.forEach((s) => labCapy(ctx, t, s, s.flip, 'extra'));
-    trio(ctx, t, S);
-    drawWaterFront(ctx, t, { setting: 'day', swimmers: [...S.extras, S.sunny, S.barry, S.doreen] });
+    labSwimmers(ctx, t, SPRING.swimSpots, { setting: 'day' });
     drawSpringOverlay(ctx, t, {});
   },
   evening(ctx, t) { drawSpringEvening(ctx, t, { dusk: 0.15 }); },
@@ -2960,7 +3414,7 @@ const lab = {
 
 module.exports = {
   drawSpringDay, drawSpringEvening, drawNewSpring, drawEruption, drawMountSnooze, drawSnoozeSign,
-  drawWaterFront, waterlineRipple, drawSpringOverlay, drawForegroundFoliage,
+  drawWaterFront, drawSwimmers, drawBarryRock, drawVolcanoPuff, drawSteamBurst, drawFlames, waterlineRipple, drawSpringOverlay, drawForegroundFoliage,
   fallingRocks, drawFallingRocks, drawAsh, drawEmbers, drawSteam, drawBubbles,
   inPool, SPRING, NEW_SPRING, lab,
 };

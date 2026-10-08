@@ -2,69 +2,89 @@
 // matches the characters: soft gradients, a rim-light crescent on the top-left edges, thin
 // darker same-hue outlines, rounded shapes. Every function is a pure function of its options
 // (time `t` included): deterministic, no Math.random, ctx state restored on exit.
+// Cost at 1920×1080 (typical sizes): most props 0.3-1.5 ms; two-plank sign ≈3.5 ms; raft
+// ≈9 ms; burning sign ≈11 ms; close-up orange (r=120) ≈4.5 ms.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API   (all coordinates in 1280×720 design units; angles in RADIANS)
 // ─────────────────────────────────────────────────────────────────────────────
 // Common options: x, y (origin, see each prop), scale=1, rot=0, flip=false (mirror
 // horizontally), alpha=1. Outlines thin out gently when a prop is drawn big (close-ups).
+// "t = seconds since X" FX draw nothing for t < 0 and nothing once finished, so they can
+// be called every frame with S.since('cue').
 //
 // drawOrange(ctx, {x, y, r=16, rot, squash=0, t, seed, leaf=true, leaves=1, alpha})
 //     Glossy dimpled orange with stem + leaf. (x,y) = centre of the round orange; the
 //     bottom point (x, y+r) stays put while squashing. squash 0..1 morphs into a flattened
 //     burst orange with exposed pulp and a juice puddle (pair with drawJuiceSplat at impact).
-// drawJuiceSplat(ctx, {x, y, r=24, t, seed, rot, life=1.2, gravity=1, puddle=false, alpha})
-//     Animated orange-juice burst. t = seconds since impact (nothing drawn for t<0): splat
-//     star (0-0.5 s), ballistic droplets, peel chips and pulp flecks (gone after `life`).
-//     puddle:true adds a growing juice puddle on the surface at y (+ o.floor offset).
+// drawJuiceSplat(ctx, {x, y, r=24, t, seed, rot, life=1.2, gravity=1, puddle=false, floor=0, alpha})
+//     Animated orange-juice burst. t = seconds since impact: splat star (0-0.4 s), mist ring,
+//     ballistic droplets, peel chips, pulp flecks (gone after `life`). puddle:true adds a
+//     growing juice puddle at y + floor.
 // drawHelmet(ctx, {x, y, scale=1, rot, flip, strap=true})
 //     Barry's tiny red aero bike helmet. Origin = centre of the bottom rim; visor faces right.
-//     Scale 1 ≈ the helmet the capybara rig wears (≈74 units long).
+//     Scale 1 ≈ the helmet the capybara rig wears (≈74 units long). (Use for the helmet
+//     set down on a rock / held in a paw; when worn, the capybara rig draws its own.)
 // drawThermometer(ctx, {x, y, scale=1, rot, flip, level=0.5, reading=null, showTag=true,
-//                       tagSide='right', labels=auto, broken=0, breakAt='bulb', length=100, t})
+//                       tagSide='right', tagSize=13, labels=auto, broken=0, breakAt='bulb',
+//                       surge=true, length=100, t})
 //     Glass thermometer, VERTICAL, bulb at the bottom. Origin = bulb centre; the tube runs
-//     up to y-length*scale. level 0..1 = red column (use thermoLevel(°C) to match a reading:
-//     30 °C → 0, 45 °C → 1). reading '39.2' + showTag → a big upright readable tag "39.2°"
-//     pointing at the top of the column (stays upright whatever rot/flip). labels (default
-//     on when scale ≥ 1.5) = printed scale numbers. broken 0..1 animates the break:
-//     0-0.16 the bulb trembles/cracks, 0.16 POP (flash, glass shards, red spray), the column
-//     drains, 1 = jagged empty stub. breakAt 'top' pops the top cap instead (red geyser).
-//     Map broken to the beat: broken = S.prog('thermo_pops').
+//     up to y - length*scale. level 0..1 = red column (thermoLevel(°C) maps 30 °C → 0,
+//     45 °C → 1). reading '39.4' + showTag → big upright readable tag "39.4°" pointing at the
+//     top of the column (stays upright whatever rot/flip). labels (default on at scale ≥ 2.2)
+//     = printed 30/35/40/45 scale numbers on a frosted decal. broken 0..1 = the break beat:
+//     0-0.14 the column SURGES to the top (surge:false keeps level) while the bulb swells,
+//     trembles and cracks; 0.16 POP (flash, glass shards, red spray); the column drains;
+//     1 = jagged empty stub. breakAt:'top' blows the top cap off instead (red geyser).
+//     Drive it with broken = S.prog('thermo_pops').
 // thermoLevel(celsius, lo=30, hi=45) → level 0..1
 // thermoAnchors(o) → {bulb, top, column (top of red column), tag} caller-space points
 // drawSign(ctx, {x, y, text | lines, style='wood'|'arrow', arrowDir='left'|'right', w, h,
-//                size=24, sizes, scale=1, rot, burn=0, t, seed, paint, board, stake=30,
-//                drive=1, ground=true, wrap=true, glyph})
-//     Hand-made wooden sign with painted Fredoka lettering on a stake hammered into the ground.
+//                size=24, sizes, weight=700, scale=1, rot, burn=0, t, seed, paint, board,
+//                stake=30, drive=1, ground=true, wrap=true, glyph, drips=0})
+//     Hand-made wooden sign with painted Fredoka lettering on a stake in the ground.
 //     Origin (x,y) = the GROUND point under the stake; the board sits above it (rot pivots
-//     there — use signWobble(dt) for a post-hammer-hit wobble). text: 'A / B' or '\n' splits
-//     lines; long single lines auto-wrap at '. ' or ', ' (wrap:false disables). Lines that
-//     contain lowercase after the first get 0.62 size (sizes:[...] overrides).
-//     'wood': one plank per line (wide signs get two posts). 'arrow': one board cut to a
-//     point toward arrowDir. w/h optional: auto-sized from the text when omitted, otherwise
-//     the text is fitted. paint = letter colour ('#FFF3D9'); board = paint colour for the
-//     whole board (e.g. '#D9473C' red), null = natural wood. glyph:true (wood) adds a
-//     painted arrow toward arrowDir. drive 0..1: how far the stake is hammered in (0 → the
-//     board stands ~28 units higher). burn 0..1: char creeps up from the bottom with a glowing
-//     ember front, letters blacken, flames + smoke (animated with t).
-// signLayout(o) → {w, h, lines, ...}   signAnchors(o) → {top, center, ground, left, right}
+//     there — use signWobble(dt) for a post-hammer-hit wobble). text: 'A / B', 'A — B',
+//     'A -- B' or '\n' split lines; long single lines (>16 chars) auto-wrap at '. ' / ', '
+//     (wrap:false disables). Lines after the first that contain lowercase get 0.66 size
+//     (sizes:[...] overrides, relative to `size`). Nails are kept off the lettering.
+//     'wood': one plank per line (signs wider than 210 get two posts). 'arrow': one board cut
+//     to a point toward arrowDir (multi-line ok: lines:['EVACUATION','ROUTE']). w/h optional:
+//     auto-sized from the text when omitted, else the text is fitted. paint = letter colour
+//     ('#FFF3D9'); board = paint colour for the whole board (e.g. '#D9473C'), default natural
+//     wood. glyph:true (wood, 1 line) adds a painted arrow toward arrowDir. drive 0..1: how far
+//     the stake is hammered in (0 → board ~28 units higher). drips 0..1: opt-in paint drips
+//     under E/L/Z (close-ups only; they read as accents when small). burn 0..1: char creeps up
+//     from the bottom behind a glowing ember front, letters blacken, flames + smoke (uses t).
+//     Tested texts: 'EXIT', 'EVACUATION ROUTE', 'NO, REALLY. THIS WAY.', 'YES, YOU, SUNNY',
+//     'SNOOZE SPRINGS / No Worries Allowed', 'SNOOZE SPRINGS 2 / Barry Approved',
+//     'S.S. TOLD YOU SO', lines:['SPRING RULES','1. Introduce yourself','2. Say goodbye',
+//     '3. No vultures on heads'].
+// signLayout(o) → {w, h, lines, sizes, ...} (unscaled)
+// signAnchors(o) → {top (Gerald lands here), center, ground, left, right, w, h} caller space
 // signWobble(dt, amp=0.08) → rot (radians) of a sign hit dt seconds ago (damped wobble).
-// drawRaft(ctx, {x, y, scale=1, t, flip, flagText='S.S. TOLD YOU SO', build=1, bob=0,
-//                rock=0, wind=0.6, flagDir=1, paddle=true, wake=0, dir=-1, wet})
-//     Lashed reed-bundle raft (4 bundles with upturned tips, rope lashings), a bamboo mast
-//     with a swallowtail banner painted with flagText, stays, a paddle on deck. Origin = centre
-//     at the WATERLINE; ≈410 long × 60 tall hull, mast top ≈ 236 above the waterline (scale 1).
-//     build 0..1 assembles it for the montage: bundles drop in one by one (0-0.42), lashings
-//     wrap (0.42-0.7), mast rises (0.7-0.82), banner unfurls (0.82-0.95), paddle (0.95-1).
-//     bob 0..1 floating bob/roll amount (0 = on land); rock = extra roll (radians).
-//     wind 0..1 banner flutter; flagDir ±1 caller-space side the banner streams to.
+// drawRaft(ctx, {x, y, scale=1, t, flip, flagText='S.S. TOLD YOU SO', flagShow, build=1,
+//                bob=0, rock=0, wind=0.6, flagDir=1, paddle=true, wake=0, dir=-1, wet, alpha})
+//     Reed-bundle raft: 3 lashed bundles with upturned tips, rope lashings, a bamboo mast with
+//     stays and a swallowtail banner painted with flagText, a steering oar at the stern
+//     (the end opposite `dir`, so by default on the right for a raft heading left).
+//     Origin = centre at the WATERLINE; hull ≈388 long (tips at x ±194, deck y ≈ -42),
+//     mast top ≈ 272 above the waterline, banner ≈250 long streaming from the mast top
+//     (scale 1). build 0..1 assembles it for the montage: bundles drop in one by one
+//     (0-0.42), lashings wrap (0.42-0.7), mast rises (0.7-0.82), banner unfurls (0.82-0.95),
+//     oar (0.95-1). bob 0..1 floating bob/roll (0 = on land); rock = extra roll (radians).
+//     wind 0..1 banner flutter; flagDir ±1 = caller-space side the banner streams to.
 //     wake 0..1 with dir ±1 (direction of travel, caller space): bow foam + wake lines.
-// raftAnchors(o) → {seats:[4 pts on the deck, stern→bow], deck, mastTop (Gerald perches),
-//                   flag, tipL, tipR, waterline, angle} in caller space (bob/rock included).
+//     flagShow = number of flagText characters painted (e.g. 4 → just 'S.S.'), for when
+//     Gerald sits on the banner (draw him after the raft at raftAnchors().flagCover).
+// raftAnchors(o) → {seats:[4 deck points, stern→bow], deck, mastTop (Gerald perches),
+//                   flag (banner centre), flagWords:[{text,x,y,w,h}], flagCover ({x,y,w,h}
+//                   over 'TOLD YOU SO' — everything after the first word), tipL, tipR,
+//                   waterline, angle} in caller space (bob/rock included). Pass the same o.
 // drawBackpack(ctx, {x, y, scale=1, rot, flip, open=0})
 //     Barry's teal go-bag with a bedroll strapped under it and a first-aid patch.
 //     Origin = bottom centre (≈72 wide × 100 tall). open 0..1 flips the flap up/back and shows
-//     the mouth. backpackAnchors(o).mouth → where packed items should fly in.
+//     the mouth. backpackAnchors(o) → {mouth (items fly in here), top, bottom, strap}.
 // drawHammer(ctx, {x, y, scale=1, rot, flip})        origin = grip (paw); head up, face → right.
 //     hammerAnchors(o) → {face, head, grip, butt}. Swing by animating rot about the grip.
 // drawSuitcase(ctx, {x, y, scale=1, rot, flip, color, sticker=true})
@@ -82,7 +102,8 @@
 // drawNotepad(ctx, {x, y, scale=1, rot, flip, lines, scribble=1, pencil=false})
 //     spiral pad, origin = centre; lines = array of short handwritten strings.
 // drawChart(ctx, {x, y, scale=1, rot, progress=1})   Barry's hand-drawn "temperature is
-//     going up" graph on a board with a handle (origin = bottom of the handle).
+//     going up" zigzag graph ending in a frowny face, on a board with a handle (origin =
+//     bottom of the handle). progress 0..1 draws the line on.
 // drawSweatDrop(ctx, {x, y, r=6, rot, alpha})         tip up (before rot).
 // drawMotionLines(ctx, {x, y, angle=0, len=70, count=4, spread=44, gap=14, width=3.2,
 //                       color='#FFFFFF', alpha=0.9, t, seed, arc})
@@ -92,14 +113,24 @@
 //     dizzy stars orbiting (x,y). layer 'back' / 'front' lets you sandwich a head.
 // drawZzz(ctx, {x, y, t, scale=1, count=3, period=2.6, color, line})  rising Z's.
 // drawSteamPuff(ctx, {x, y, r=20, life, t, seed, alpha=0.9, rise=1})
-// drawSmokePuff(ctx, {x, y, r=24, life, t, seed, alpha=1, rise=1, tone='grey'|'dark'|'dust'|'white'})
-//     cloud-cluster puffs. life 0..1 = age (grows, rises, fades); omit for a static puff.
+// drawSmokePuff(ctx, {x, y, r=24, life, t, seed, alpha=1, rise=1,
+//                     tone='grey'|'dark'|'dust'|'white'|'soot'})
+//     cartoon cloud puffs. life 0..1 = age (grows, rises, fades); omit for a static puff.
+//     'dust' for scramble/launch puffs, 'dark' for volcanic smoke.
+// drawWaterSplash(ctx, {x, y, r=24, t, seed, big=false, alpha, colors:{top,mid,base,line,foam}})
+//     water crown + droplets + ripple rings where something drops in; (x,y) = entry point on
+//     the surface, t = seconds since entry (done by ~1.4 s). big:true adds a tall centre jet
+//     (raft launch, big plops). Orange plop ≈ r 16-22; falling rock ≈ r 26-34. colors overrides
+//     the water palette (e.g. a darker teal at dusk; or rely on env's drawSpringOverlay grade).
 // drawImpactBurst(ctx, {x, y, r=56, text='BONK!', t, rot=-0.08, seed})
-//     comic starburst; t = seconds since impact (pops in 0-0.14 s, fades 0.55-0.8 s).
+//     comic starburst; t = seconds since impact (pops in 0-0.14 s, fades 0.55-0.8 s);
+//     omit t for a static burst.
 // drawSpeechBubble(ctx, {x, y, text, w=240, size=22, to:{x,y}, style='speech'|'thought'|'shout'})
 //     (x,y) = bubble centre; tail points at `to`. Returns {w, h}.
-// PROP_COLORS — shared palette.   lab — sheets: all, orange, thermometer, thermo_pop,
-//     raft, raft_context, signs, fx, closeup  (node src/lab.js props <sheet> out.png)
+// PROP_COLORS — shared palette.   RAFT — raft geometry constants.
+// lab — sheets (node src/lab.js props <sheet> out.png [--frames 8 --dt 0.1]):
+//     all, orange, thermometer, thermo_pop, raft, raft_context, signs, fx, closeup, context,
+//     context_erupt
 'use strict';
 
 const U = require('./util');
@@ -292,26 +323,32 @@ function paintText(ctx, text, x, y, size, o = {}) {
       cx += cw + sp;
     }
   };
-  if (shadow) { ctx.fillStyle = shadow; pass((ch) => ctx.fillText(ch, size * shOff[0], size * shOff[1])); }
+  // hand-painted drips: only under letters with a flat/round bottom, attached to the stroke
+  const DRIP_OK = 'ELZ2'; // flat-bottomed letters only (a drip under O reads as Q)
+  const drip = (ch, cw, i, ox, oy) => {
+    if (!drips || DRIP_OK.indexOf(ch) < 0 || hash1(seed * 1.7 + i * 5.3) >= drips) return;
+    const wide = 'EZL'.indexOf(ch) >= 0;
+    const dx = ox + (wide ? 0.05 + 0.2 * hash1(seed + i * 2.9) : (hash1(seed + i * 2.9) - 0.5) * 0.16) * cw;
+    const y0 = oy + size * 0.22, L = size * (0.3 + 0.2 * hash1(seed * 3.1 + i));
+    const w0 = size * 0.06, w1 = size * 0.032, br = size * 0.055;
+    ctx.beginPath();
+    ctx.moveTo(dx - w0, y0);
+    ctx.quadraticCurveTo(dx - w1, y0 + L * 0.35, dx - w1, y0 + L);
+    ctx.arc(dx, y0 + L, br, PI * 0.85, PI * 0.15, true);
+    ctx.quadraticCurveTo(dx + w1, y0 + L * 0.35, dx + w0, y0);
+    ctx.closePath();
+    ctx.fill();
+  };
+  if (shadow) {
+    ctx.fillStyle = shadow;
+    pass((ch, cw, i) => { ctx.fillText(ch, size * shOff[0], size * shOff[1]); drip(ch, cw, i, size * shOff[0], size * shOff[1]); });
+  }
   if (outline) {
     ctx.strokeStyle = outline; ctx.lineWidth = outlineW; ctx.lineJoin = 'round';
     pass((ch) => ctx.strokeText(ch, 0, 0));
   }
   ctx.fillStyle = color;
-  pass((ch, cw, i) => {
-    ctx.fillText(ch, 0, 0);
-    // a couple of hand-painted drips under some letters
-    if (drips && hash1(seed * 1.7 + i * 5.3) < drips) {
-      const dx = (hash1(seed + i * 2.9) - 0.5) * cw * 0.5, L = size * (0.07 + 0.12 * hash1(seed * 3.1 + i));
-      ctx.beginPath();
-      ctx.moveTo(dx - size * 0.03, size * 0.3);
-      ctx.lineTo(dx - size * 0.018, size * 0.3 + L);
-      ctx.arc(dx, size * 0.3 + L, size * 0.034, PI, 0, true);
-      ctx.lineTo(dx + size * 0.03, size * 0.3);
-      ctx.closePath();
-      ctx.fill();
-    }
-  });
+  pass((ch, cw, i) => { ctx.fillText(ch, 0, 0); drip(ch, cw, i, 0, 0); });
   ctx.restore();
   return w * sx;
 }
@@ -367,36 +404,38 @@ function puffShape(seed) {
 function puff(ctx, x, y, r, seed, pal, a = 1, lw = 1.4, churn = 0) {
   if (r <= 0.3 || a <= 0.005) return;
   const cs = puffShape(seed);
-  const path = (sc = 1, dx = 0, dy = 0, from = 0, to = cs.length) => {
+  // every layer is ONE union fill (no per-circle strokes), so a translucent puff never
+  // shows the seams of its overlapping circles
+  const path = (sc = 1, dx = 0, dy = 0, from = 0, to = cs.length, grow = 0) => {
     ctx.beginPath();
     for (let i = from; i < to; i++) {
       const [cx, cy, cr] = cs[i];
       const wob = churn ? 1 + 0.05 * Math.sin(churn * 2.1 + i * 1.7) : 1;
-      const px = x + (cx * r + dx), py = y + (cy * r + dy), pr = cr * r * sc * wob;
+      const px = x + (cx * r + dx), py = y + (cy * r + dy), pr = cr * r * sc * wob + grow;
       ctx.moveTo(px + pr, py);
       ctx.arc(px, py, pr, 0, TAU);
     }
   };
   ctx.save();
   const ga = ctx.globalAlpha;
+  // outline = the union inflated by the line width, drawn under the body
   ctx.globalAlpha = ga * a * a;
-  path();
-  ctx.strokeStyle = pal.line;
-  ctx.lineWidth = lw * 2;
-  ctx.stroke();
-  ctx.fillStyle = pal.dark;
+  path(1, 0, 0, 0, cs.length, lw);
+  ctx.fillStyle = pal.line;
   ctx.fill();
+  // body: one gradient fill (lit top → shaded bottom); no clip needed (cheap)
   ctx.globalAlpha = ga * a;
-  ctx.save();
   path();
-  ctx.clip();
-  path(1, -r * 0.04, -r * 0.1);
-  ctx.fillStyle = pal.base;
+  const g = ctx.createLinearGradient(0, y - r * 0.55, 0, y + r * 0.6);
+  g.addColorStop(0, pal.base);
+  g.addColorStop(0.55, pal.base);
+  g.addColorStop(1, pal.dark);
+  ctx.fillStyle = g;
   ctx.fill();
-  path(0.7, -r * 0.1, -r * 0.2, 1, 8);
+  // highlight lobes: the upper circles shrunk + nudged up-left, always inside the body
+  path(0.6, -r * 0.05, -r * 0.085, 1, 8);
   ctx.fillStyle = pal.light;
   ctx.fill();
-  ctx.restore();
   ctx.restore();
 }
 
@@ -897,8 +936,9 @@ function thermoState(o) {
   const popAt = 0.16;
   const atTop = o.breakAt === 'top';
   let level = clamp(o.level != null ? o.level : 0.5);
-  if (atTop) level = lerp(level, 1, smoothstep(0, popAt, b));
-  else level *= 1 - smoothstep(popAt, 0.62, b);
+  // the column surges to the top before the pop (surge:false keeps the given level)
+  if (o.surge !== false) level = lerp(level, 1, smoothstep(0, popAt * 0.85, b));
+  if (!atTop) level *= 1 - smoothstep(popAt, 0.62, b);
   return { b, popAt, atTop, level, popped: b >= popAt, tau: b >= popAt ? (b - popAt) / (1 - popAt) : 0 };
 }
 function thermoAnchors(o = {}) {
@@ -1047,7 +1087,7 @@ function drawThermometer(ctx, o = {}) {
   }
   // printed numbers
   if (labels) {
-    ctx.fillStyle = 'rgba(60,80,98,0.9)';
+    ctx.fillStyle = '#3C5062';
     ctx.font = `600 5.2px ${FONT}`;
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
@@ -1057,6 +1097,11 @@ function drawThermometer(ctx, o = {}) {
       ctx.translate(-hw - 1.6, yy);
       if (o.flip) ctx.scale(-1, 1);
       ctx.textAlign = o.flip ? 'left' : 'right';
+      // printed on a frosted decal so the numbers read over any background
+      ctx.strokeStyle = 'rgba(236,247,253,0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      ctx.strokeText(String(30 + i * 5), 0, 0);
       ctx.fillText(String(30 + i * 5), 0, 0);
       ctx.restore();
     }
@@ -1218,7 +1263,7 @@ function drawThermometer(ctx, o = {}) {
 function splitLines(o) {
   let lines;
   if (o.lines) lines = o.lines.map(String);
-  else lines = String(o.text != null ? o.text : 'EXIT').split(/\n|\s+\/\s+/);
+  else lines = String(o.text != null ? o.text : 'EXIT').split(/\n|\s+(?:\/|—|–|--)\s+/);
   lines = lines.map((s) => s.trim()).filter((s) => s.length);
   if (!lines.length) lines = [''];
   if (o.wrap !== false && !o.lines && lines.length === 1 && lines[0].length > 16) {
@@ -1240,7 +1285,7 @@ function signLayout(o = {}) {
   const arrow = style === 'arrow';
   const glyph = !arrow && !!o.glyph && lines.length === 1;
   const weight = o.weight || 700;
-  const rel = lines.map((l, i) => (o.sizes && o.sizes[i] != null ? o.sizes[i] : i > 0 && /[a-z]/.test(l) ? 0.62 : 1));
+  const rel = lines.map((l, i) => (o.sizes && o.sizes[i] != null ? o.sizes[i] : i > 0 && /[a-z]/.test(l) ? 0.66 : 1));
   const w1 = lines.map((l, i) => textW(l, 1, weight) * rel[i]);
   const h1 = rel.map((r) => r * 1.16);
   const sumH1 = h1.reduce((a, b) => a + b, 0);
@@ -1333,6 +1378,7 @@ function drawSign(ctx, o = {}) {
   const B = begin(ctx, o);
   const k = B.k, t = o.t || 0, seed = o.seed != null ? o.seed : 7;
   const burn = clamp(o.burn || 0);
+  const dripP = o.drips != null ? clamp(o.drips) * 0.5 : 0; // opt-in paint drips (close-ups)
   const W = PROP_COLORS.wood;
   const dirL = (o.arrowDir || 'left') !== 'right';
   const yb = -signStake(o, L);
@@ -1437,9 +1483,17 @@ function drawSign(ctx, o = {}) {
   } else {
     boards.push({ path: () => roundRect(ctx, xL, top, L.w, L.h, 4.5), y0: top, y1: yb, x0: xL, x1: xR, rot: (hash1(seed) - 0.5) * 0.025, lines: L.lines.map((_, i) => i) });
   }
+  // vertical centre of text line li on board bd
+  const lineCY = (bd, li) => {
+    if (L.planks) return bd.cy;
+    const hsum = L.sizes.reduce((a, s2) => a + s2 * 1.16, 0);
+    let acc = (bd.y0 + bd.y1) / 2 - hsum / 2;
+    for (let j = 0; j < li; j++) acc += L.sizes[j] * 1.16;
+    return acc + L.sizes[li] * 0.58;
+  };
   // char frontier (board coords): y below which the wood is charred
   const edgeK = (x) => smoothstep(L.w / 2 - 34, L.w / 2 + 4, Math.abs(x));
-  const front = (x) => yb + 4 - burn * (L.h + 20) * (0.82 + 0.34 * noise1(x * 0.05 + seed * 1.3) + 0.04 * Math.sin(t * 3 + x * 0.1)) - burn * L.h * 0.45 * edgeK(x);
+  const front = (x) => yb + 4 - burn * (L.h + 20) * (0.86 + 0.2 * noise1(x * 0.031 + seed * 1.3) + 0.09 * noise1(x * 0.13 + seed * 4.1) + 0.025 * Math.sin(t * 3 + x * 0.1)) - burn * L.h * 0.45 * edgeK(x);
   const paintCol = o.paint || (boardCol ? '#FFFFFF' : PROP_COLORS.paint);
   for (const bd of boards) {
     ctx.save();
@@ -1474,102 +1528,115 @@ function drawSign(ctx, o = {}) {
         // lower plank shade
         ctx.fillStyle = lin(ctx, 0, bd.y0 + (bd.y1 - bd.y0) * 0.55, 0, bd.y1, ['rgba(60,30,10,0)', 'rgba(60,30,10,0.22)']);
         ctx.fillRect(bd.x0 - 10, bd.y0, bd.x1 - bd.x0 + 20, bd.y1 - bd.y0 + 2);
-        // painted lettering
-        for (const li of bd.lines) {
-          const txt = L.lines[li];
-          const sz = L.sizes[li];
-          let cy;
-          if (L.planks) cy = bd.cy;
-          else {
-            const hsum = L.sizes.reduce((a, s2) => a + s2 * 1.16, 0);
-            let acc = (bd.y0 + bd.y1) / 2 - hsum / 2;
-            for (let j = 0; j < li; j++) acc += L.sizes[j] * 1.16;
-            cy = acc + sz * 0.58;
-          }
-          const lc = mix(paintCol, '#2A1A12', burn * 0.5);
-          const sh = boardCol ? rgba(mix(boardCol, '#000000', 0.6), 0.45) : 'rgba(58,32,14,0.45)';
-          const maxW = (bd.x1 - bd.x0) - (L.arrow ? L.point : 0) - sz * 0.7;
-          if (L.glyph) {
-            const gw = sz * 1.15, tw = textW(txt, sz, L.weight);
-            const total = tw + gw + sz * 0.35;
-            const gx = dirL ? tcx - total / 2 + gw / 2 : tcx + total / 2 - gw / 2;
-            const tx = dirL ? gx + gw / 2 + sz * 0.35 + tw / 2 : gx - gw / 2 - sz * 0.35 - tw / 2;
-            ctx.save();
-            ctx.scale(B.f, 1);
-            arrowGlyph(ctx, gx * B.f, cy, gw, sz * 0.78, B.f > 0 ? dirL : !dirL, lc, sh);
-            paintText(ctx, txt, tx * B.f, cy, sz, { color: lc, shadow: sh, seed: seed + li * 13, weight: L.weight, drips: 0.07 });
-            ctx.restore();
-          } else {
-            ctx.save();
-            ctx.scale(B.f, 1);
-            paintText(ctx, txt, tcx * B.f, cy, sz, { color: lc, shadow: sh, seed: seed + li * 13, weight: L.weight, maxW, drips: L.rel[li] < 0.9 || sz < 18 ? 0 : 0.07 });
-            ctx.restore();
-          }
-        }
-        // burn: char from the bottom up with a glowing ember front
-        if (burn > 0) {
-          const x0 = bd.x0 - 4, x1 = bd.x1 + 4;
-          const charPoly = () => {
-            ctx.beginPath();
-            ctx.moveTo(x0, bd.y1 + 10);
-            for (let xx = x0; xx <= x1 + 0.1; xx += 5) ctx.lineTo(xx, front(xx));
-            ctx.lineTo(x1, bd.y1 + 10);
-            ctx.closePath();
-          };
-          // ash band just behind the ember front
-          ctx.save();
-          ctx.translate(0, -3.5);
-          charPoly();
-          ctx.fillStyle = 'rgba(92,72,62,0.85)';
-          ctx.fill();
-          ctx.restore();
-          charPoly();
-          ctx.fillStyle = lin(ctx, 0, bd.y0, 0, bd.y1, ['#3B2417', '#1E130D']);
-          ctx.fill();
-          ctx.save();
-          charPoly();
-          ctx.clip();
-          // alligator charring: rows of scales with glowing seams
-          const fl = 0.75 + 0.25 * Math.sin(t * 6 + seed);
-          ctx.beginPath();
-          let row = 0;
-          for (let yy = bd.y1 - 2; yy > bd.y0 - 4; row++) {
-            const rh = 4.5 + 2.5 * hash1(seed + row * 3.7);
-            let xx = x0 + hash1(row * 1.3 + seed) * 8;
-            ctx.moveTo(x0, yy);
-            while (xx < x1) {
-              const step = 6 + 9 * hash1(xx * 0.37 + row * 5.1 + seed);
-              ctx.lineTo(xx, yy + (hash1(xx + row) - 0.5) * 1.4);
-              ctx.moveTo(xx, yy);
-              ctx.lineTo(xx + (hash1(xx * 2 + row) - 0.5) * 2, yy - rh + 0.6);
-              ctx.moveTo(xx, yy);
-              xx += step;
-            }
-            yy -= rh;
-          }
-          ctx.strokeStyle = rgba('#FF6A1E', 0.32 * fl);
-          ctx.lineWidth = 0.9 * k;
-          ctx.stroke();
-          // glowing burnt edges of the board
-          bd.path();
-          ctx.strokeStyle = rgba('#FF8A2A', 0.85 * fl);
-          ctx.lineWidth = 3.4 * k;
-          ctx.stroke();
-          ctx.restore();
-          ctx.beginPath();
-          for (let xx = x0; xx <= x1 + 0.1; xx += 5) (xx === x0 ? ctx.moveTo(xx, front(xx)) : ctx.lineTo(xx, front(xx)));
-          ctx.strokeStyle = 'rgba(255,120,30,0.4)';
-          ctx.lineWidth = 6 * k;
-          ctx.stroke();
-          ctx.strokeStyle = '#FF9A2E';
-          ctx.lineWidth = 2.2 * k;
-          ctx.stroke();
-          ctx.strokeStyle = '#FFE58F';
-          ctx.lineWidth = 0.9 * k;
-          ctx.stroke();
-        }
       },
     });
+    // lettering is painted outside the clip (text under an AA clip is ~2x slower);
+    // it always sits inside the board anyway
+    for (const li of bd.lines) {
+      const txt = L.lines[li];
+      const sz = L.sizes[li];
+      const cy = lineCY(bd, li);
+      const lc = mix(paintCol, '#2A1A12', burn * 0.5);
+      const sh = boardCol ? rgba(mix(boardCol, '#000000', 0.6), 0.45) : 'rgba(58,32,14,0.45)';
+      const maxW = (bd.x1 - bd.x0) - (L.arrow ? L.point : 0) - sz * 0.7;
+      if (L.glyph) {
+        const gw = sz * 1.15, tw = textW(txt, sz, L.weight);
+        const total = tw + gw + sz * 0.35;
+        const gx = dirL ? tcx - total / 2 + gw / 2 : tcx + total / 2 - gw / 2;
+        const tx = dirL ? gx + gw / 2 + sz * 0.35 + tw / 2 : gx - gw / 2 - sz * 0.35 - tw / 2;
+        ctx.save();
+        ctx.scale(B.f, 1);
+        arrowGlyph(ctx, gx * B.f, cy, gw, sz * 0.78, B.f > 0 ? dirL : !dirL, lc, sh);
+        paintText(ctx, txt, tx * B.f, cy, sz, { color: lc, shadow: sh, seed: seed + li * 13, weight: L.weight, drips: dripP });
+        ctx.restore();
+      } else {
+        ctx.save();
+        ctx.scale(B.f, 1);
+        paintText(ctx, txt, tcx * B.f, cy, sz, { color: lc, shadow: sh, seed: seed + li * 13, weight: L.weight, maxW, drips: L.rel[li] < 0.9 ? 0 : dripP });
+        ctx.restore();
+      }
+    }
+    if (burn > 0) {
+      ctx.save();
+      bd.path();
+      ctx.clip();
+      // char from the bottom up with a glowing ember front
+      {
+      const x0 = bd.x0 - 4, x1 = bd.x1 + 4;
+      const charPoly = () => {
+        ctx.beginPath();
+        ctx.moveTo(x0, bd.y1 + 10);
+        for (let xx = x0; xx <= x1 + 0.1; xx += 4) ctx.lineTo(xx, front(xx));
+        ctx.lineTo(x1, bd.y1 + 10);
+        ctx.closePath();
+      };
+      // ash band just behind the ember front
+      ctx.save();
+      ctx.translate(0, -3.5);
+      charPoly();
+      ctx.fillStyle = 'rgba(92,72,62,0.85)';
+      ctx.fill();
+      ctx.restore();
+      charPoly();
+      ctx.fillStyle = lin(ctx, 0, bd.y0, 0, bd.y1, ['#3B2417', '#1E130D']);
+      ctx.fill();
+      ctx.save();
+      charPoly();
+      ctx.clip();
+      // charcoal texture: soft ash mottling + irregular cracks (dark), the cracks nearest
+      // the ember front still glowing
+      const fl = 0.75 + 0.25 * Math.sin(t * 6 + seed);
+      const R = rng(seed * 3.7 + bd.y0 * 0.13);
+      const bw2 = bd.x1 - bd.x0, bh2 = bd.y1 - bd.y0;
+      ctx.fillStyle = 'rgba(120,96,84,0.16)';
+      for (let i = 0; i < Math.round(bw2 / 22); i++) {
+        ellipse(ctx, lerp(bd.x0, bd.x1, R()), lerp(bd.y0, bd.y1, R()), R.range(6, 16), R.range(2, 4), R.range(-0.2, 0.2));
+        ctx.fill();
+      }
+      ctx.beginPath();
+      const nCr = Math.round((bw2 * bh2) / 260);
+      for (let i = 0; i < nCr; i++) {
+        let cx = lerp(bd.x0 - 4, bd.x1 + 4, R()), cy = lerp(bd.y0, bd.y1, R());
+        ctx.moveTo(cx, cy);
+        const segs = 2 + Math.floor(R() * 3), dir = R() < 0.5 ? -1 : 1;
+        for (let q = 0; q < segs; q++) {
+          cx += dir * R.range(3, 8);
+          cy += R.range(-2.2, 2.2);
+          ctx.lineTo(cx, cy);
+          if (R() < 0.35) { ctx.lineTo(cx + R.range(-1.5, 1.5), cy + R.range(2.5, 5)); ctx.moveTo(cx, cy); }
+        }
+      }
+      ctx.strokeStyle = 'rgba(8,4,2,0.75)';
+      ctx.lineWidth = 1.1 * k;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+      const fAvg = front((bd.x0 + bd.x1) / 2);
+      const gl = ctx.createLinearGradient(0, fAvg - 6, 0, fAvg + 22);
+      gl.addColorStop(0, rgba('#FF7A22', 0.95 * fl));
+      gl.addColorStop(1, rgba('#FF7A22', 0));
+      ctx.strokeStyle = gl;
+      ctx.lineWidth = 0.9 * k;
+      ctx.stroke();
+      // glowing burnt edges of the board
+      bd.path();
+      ctx.strokeStyle = rgba('#FF8A2A', 0.7 * fl);
+      ctx.lineWidth = 2.6 * k;
+      ctx.stroke();
+      ctx.restore();
+      ctx.beginPath();
+      for (let xx = x0; xx <= x1 + 0.1; xx += 4) (xx === x0 ? ctx.moveTo(xx, front(xx)) : ctx.lineTo(xx, front(xx)));
+      ctx.strokeStyle = 'rgba(255,120,30,0.4)';
+      ctx.lineWidth = 6 * k;
+      ctx.stroke();
+      ctx.strokeStyle = '#FF9A2E';
+      ctx.lineWidth = 2.2 * k;
+      ctx.stroke();
+      ctx.strokeStyle = '#FFE58F';
+      ctx.lineWidth = 0.9 * k;
+      ctx.stroke();
+      }
+      ctx.restore();
+    }
     if (burn > 0) {
       // charred, eaten edges
       bd.path();
@@ -1580,7 +1647,23 @@ function drawSign(ctx, o = {}) {
     // nails
     for (const px of posts) {
       if (px < bd.x0 + 4 || px > bd.x1 - 4) continue;
-      const ys = bd.y1 - bd.y0 > 34 ? [bd.y0 + 7, bd.y1 - 7] : [(bd.y0 + bd.y1) / 2];
+      // keep nails off the lettering: if the text spans the post, nail into the margins
+      const bh = bd.y1 - bd.y0;
+      let half = 0;
+      for (const li of bd.lines) half = Math.max(half, textW(L.lines[li], L.sizes[li], L.weight) / 2 + 4 + (L.glyph ? L.sizes[li] : 0));
+      const covered = Math.abs(px - tcx) < half;
+      let ys;
+      if (!covered) ys = bh > 34 ? [bd.y0 + 7, bd.y1 - 7] : [(bd.y0 + bd.y1) / 2];
+      else {
+        const l0 = bd.lines[0], l1 = bd.lines[bd.lines.length - 1];
+        const tTop = lineCY(bd, l0) - L.sizes[l0] * 0.4;
+        const tBot = lineCY(bd, l1) + L.sizes[l1] * (/[gjpqy]/.test(L.lines[l1]) ? 0.52 : 0.4);
+        ys = [];
+        // hug the board edge, and only where there is a clear gap (a nail just above a letter
+        // reads as a dot/accent)
+        if (tTop - bd.y0 >= 10) ys.push(bd.y0 + 4);
+        if (bd.y1 - tBot >= 10) ys.push(bd.y1 - 4);
+      }
       for (const ny of ys) {
         circle(ctx, px, ny, 1.9);
         ctx.fillStyle = '#4A3A30';
@@ -1602,17 +1685,25 @@ function drawSign(ctx, o = {}) {
       const fh = (12 + 30 * Math.pow(burn, 0.7)) * (0.6 + 0.65 * hash1(seed * 2 + j));
       ft.push([fx, fy, fh, 10 + 9 * burn * hash1(j + seed)]);
     }
-    // smoke columns rising off the flames
-    const cols = Math.min(3, nf);
+    // smoke columns rising off the flames (oldest puff first so newer ones overlap it)
+    const cols = Math.min(L.w > 200 ? 3 : 2, nf);
+    const NP = 4;
     for (let c = 0; c < cols; c++) {
       const cx = ft[Math.floor((c + 0.5) * nf / cols)][0];
-      for (let i = 0; i < 7; i++) {
-        const p = frac(t * 0.42 + i / 7 + c * 0.31);
-        const sx = cx + p * 30 + Math.sin(t * 0.9 + i + c) * 5;
-        puff(ctx, sx, top - 16 - p * 130, 13 + p * 30, i + c * 4 + seed, PUFF_PAL.soot, burn * 0.62 * (1 - p) * Math.min(1, p * 4), 0.8 * k, t);
+      const ps = [];
+      for (let i = 0; i < NP; i++) ps.push([frac(t * 0.36 + i / NP + c * 0.37), i]);
+      ps.sort((A, Bq) => Bq[0] - A[0]);
+      for (const [p, i] of ps) {
+        const sx = cx + p * 34 + Math.sin(t * 0.9 + i + c) * 5;
+        const al = burn * 0.8 * (1 - smoothstep(0.45, 1, p)) * smoothstep(0, 0.12, p);
+        puff(ctx, sx, top - 14 - p * 140, 12 + p * 34, i + c * 4 + seed, PUFF_PAL.soot, al, 0.8 * k, t);
       }
     }
-    glow(ctx, 0, (top + yb) / 2, L.w * 0.75, '#FF7A2E', 0.26 * burn);
+    ctx.save();
+    ctx.translate(0, (top + yb) / 2);
+    ctx.scale(1, 0.6);
+    glow(ctx, 0, 0, L.w * 0.7, '#FF7A2E', 0.3 * burn);
+    ctx.restore();
     for (const [fx, fy, fh, fw] of ft) flame(ctx, fx, fy, fh, fw, t, fx * 0.1 + seed, Math.min(1, burn * 3));
     // small licks on the char surface
     for (let j = 0; j < 4 * burn; j++) {
@@ -1639,7 +1730,7 @@ const RAFT = {
     { cy: -31, d: 32, hl: 175, curl: 20 },
     { cy: -12, d: 38, hl: 186, curl: 27 },
   ],
-  taper: 60, mastX: 34, mastBase: -50, mastTop: -262, flagW: 176, flagH: 48,
+  taper: 60, mastX: 34, mastBase: -50, mastTop: -262, flagW: 250, flagH: 50,
   lashX: [-118, -40, 40, 118],
   seats: [-128, -44, 44, 126], seatY: -42,
 };
@@ -1700,11 +1791,36 @@ function raftAnchors(o = {}) {
   const P = xform({ ...o, y: (o.y || 0) + pz.by * s, rot: (o.rot || 0) + pz.ang });
   const bF = RAFT.bundles[2], G = bundleGeom(bF);
   const fd = (o.flip ? -1 : 1) * (o.flagDir === -1 ? -1 : 1);
+  // painted name on the banner: per-word centres (for the "Gerald covers TOLD YOU SO" gag)
+  const FL = flagTextLayout(o), FWv = flagWave(o, o.t || 0);
+  const my = RAFT.mastTop + 4;
+  const along2u = (al) => (fd * (o.flip ? -1 : 1) > 0 ? FL.u0 + al / RAFT.flagW : FL.u0 + (FL.tw - al) / RAFT.flagW);
+  const spanPt = (a0, a1) => {
+    const u = along2u((a0 + a1) / 2);
+    const p = P(RAFT.mastX + fd * (2 + u * RAFT.flagW), my + RAFT.flagH / 2 + FWv.dy(u) + 0.5);
+    return { x: p.x, y: p.y, w: (a1 - a0) * s, h: FL.fs * 0.8 * s };
+  };
+  const flagWords = [];
+  let acc = 0, wStart = null, wText = '';
+  FL.m.chars.forEach((ch, i) => {
+    const cw = (FL.m.ws[i] * FL.fs) / 100;
+    if (ch !== ' ') { if (wStart == null) wStart = acc; wText += ch; }
+    acc += cw;
+    if ((ch === ' ' || i === FL.m.chars.length - 1) && wStart != null) {
+      flagWords.push({ text: wText, ...spanPt(wStart, ch === ' ' ? acc - cw : acc) });
+      wStart = null; wText = '';
+    }
+  });
+  const firstEnd = FL.m.chars.indexOf(' ');
+  let coverA0 = 0;
+  for (let i = 0; i <= firstEnd; i++) coverA0 += (FL.m.ws[i] * FL.fs) / 100;
+  const flagCover = firstEnd > 0 ? spanPt(coverA0, FL.tw) : spanPt(0, FL.tw);
   return {
     seats: RAFT.seats.map((sx) => P(sx, RAFT.seatY)),
     deck: P(0, RAFT.seatY),
     mastTop: P(RAFT.mastX, RAFT.mastTop - 9.6),
     flag: P(RAFT.mastX + fd * RAFT.flagW * 0.5, RAFT.mastTop + 4 + RAFT.flagH / 2),
+    flagWords, flagCover,
     tipL: P(-G.X, G.cyAt(-G.X)), tipR: P(G.X, G.cyAt(G.X)),
     waterline: (o.y || 0) + pz.by * s,
     angle: (o.rot || 0) + pz.ang,
@@ -1791,7 +1907,9 @@ function drawRaft(ctx, o = {}) {
       ctx.save();
       ctx.translate(0, (1 - ease.outBounce(oarA)) * -40);
       ctx.globalAlpha *= Math.min(1, oarA * 3);
-      drawSteeringOar(ctx, k, rim);
+      // the steering oar trails at the STERN (opposite the direction of travel)
+      if (dirLocal < 0) ctx.scale(-1, 1);
+      drawSteeringOar(ctx, k, dirLocal < 0 ? [-rim[0], rim[1]] : rim);
       ctx.restore();
     }
     const a = appear(i);
@@ -1991,15 +2109,31 @@ function drawRaft(ctx, o = {}) {
   }
   ctx.restore();
 }
+// banner wave + painted-name layout shared by drawRaftFlag and raftAnchors
+function flagWave(o, t) {
+  const wind = o.wind != null ? o.wind : 0.6;
+  const ph = t * (3.6 + wind * 3.4);
+  const amp = 1.2 + 4.8 * wind;
+  return {
+    wind, ph, amp,
+    dy: (u) => Math.sin(u * 2.3 * PI - ph) * u * amp + u * u * (1 - wind) * 6,
+  };
+}
+function flagTextLayout(o) {
+  const txt = o.flagText != null ? String(o.flagText) : 'S.S. TOLD YOU SO';
+  const m = charWidths(txt, 700);
+  const avail = RAFT.flagW * 0.77;
+  const fs = Math.min(25, (avail / Math.max(1, m.w)) * 100);
+  const tw = (m.w * fs) / 100;
+  const u0 = 0.065 + (0.77 - tw / RAFT.flagW) / 2;
+  return { txt, m, fs, tw, u0 };
+}
 function drawRaftFlag(ctx, o, mx, my, unfurl, t, k, f) {
   const flagDir = o.flagDir === -1 ? -1 : 1;
   const side = flagDir * f; // local x direction the banner extends to
   const fw = RAFT.flagW * ease.outCubic(unfurl), fh = RAFT.flagH;
   if (fw < 2) return;
-  const wind = o.wind != null ? o.wind : 0.6;
-  const ph = t * (3.6 + wind * 3.4);
-  const amp = 1.2 + 4.8 * wind;
-  const dy = (u) => Math.sin(u * 2.3 * PI - ph) * u * amp + u * u * (1 - wind) * 6;
+  const { wind, ph, amp, dy } = flagWave(o, t);
   const slope = (u) => Math.cos(u * 2.3 * PI - ph) * 2.3 * PI * u * amp / fw + Math.sin(u * 2.3 * PI - ph) * amp / fw;
   const N = 16;
   const X = (u) => mx + side * (2 + u * fw);
@@ -2029,39 +2163,35 @@ function drawRaftFlag(ctx, o, mx, my, unfurl, t, k, f) {
       ctx.strokeStyle = '#E2463F';
       ctx.lineWidth = 3 * k;
       ctx.stroke();
-      // painted name, letter by letter riding the wave (reads left→right in caller space)
-      const txt = o.flagText != null ? String(o.flagText) : 'S.S. TOLD YOU SO';
-      const m = charWidths(txt, 700);
-      const avail = RAFT.flagW * 0.8;
-      const fs = Math.min(17, (avail / m.w) * 100);
-      const tw = (m.w * fs) / 100;
-      const u0 = 0.08 + (0.8 - tw / RAFT.flagW) / 2;
-      ctx.font = `700 ${fs}px ${FONT}`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      let acc = 0;
-      const worldLR = flagDir > 0; // banner extends to the right in caller space
-      for (let i = 0; i < m.chars.length; i++) {
-        const cw = (m.ws[i] * fs) / 100;
-        const along = acc + cw / 2;
-        acc += cw;
-        if (m.chars[i] === ' ') continue;
-        const uu = worldLR ? u0 + along / RAFT.flagW : u0 + (tw - along) / RAFT.flagW;
-        const u = uu * (RAFT.flagW / Math.max(fw, 1)) * (fw / RAFT.flagW);
-        if (u > unfurl) continue;
-        const px = mx + side * (2 + uu * fw), py = my + fh / 2 + dy(uu) + 0.5;
-        ctx.save();
-        ctx.translate(px, py);
-        ctx.scale(f, 1);
-        ctx.rotate(Math.atan(slope(uu)) * flagDir + (hash1(i * 3.1) - 0.5) * 0.08);
-        ctx.fillStyle = 'rgba(120,30,20,0.25)';
-        ctx.fillText(m.chars[i], fs * 0.05, fs * 0.07);
-        ctx.fillStyle = '#C8322A';
-        ctx.fillText(m.chars[i], 0, 0);
-        ctx.restore();
-      }
     },
   });
+  // painted name drawn outside the clip (cheaper; it always sits inside the banner)
+  // painted name, letter by letter riding the wave (reads left→right in caller space)
+  const { m, fs, tw, u0 } = flagTextLayout(o);
+  ctx.font = `700 ${fs}px ${FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  let acc = 0;
+  const worldLR = flagDir > 0; // banner extends to the right in caller space
+  for (let i = 0; i < m.chars.length; i++) {
+    const cw = (m.ws[i] * fs) / 100;
+    const along = acc + cw / 2;
+    acc += cw;
+    if (m.chars[i] === ' ' || (o.flagShow != null && i >= o.flagShow)) continue;
+    const uu = worldLR ? u0 + along / RAFT.flagW : u0 + (tw - along) / RAFT.flagW;
+    const u = uu * (RAFT.flagW / Math.max(fw, 1)) * (fw / RAFT.flagW);
+    if (u > unfurl) continue;
+    const px = mx + side * (2 + uu * fw), py = my + fh / 2 + dy(uu) + 0.5;
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.scale(f, 1);
+    ctx.rotate(Math.atan(slope(uu)) * flagDir + (hash1(i * 3.1) - 0.5) * 0.08);
+    ctx.fillStyle = 'rgba(120,30,20,0.25)';
+    ctx.fillText(m.chars[i], fs * 0.05, fs * 0.07);
+    ctx.fillStyle = '#C8322A';
+    ctx.fillText(m.chars[i], 0, 0);
+    ctx.restore();
+  }
   // ties to the mast
   for (const yy of [my + 4, my + fh - 4]) {
     ellipse(ctx, mx, yy, 4.6, 2.4);
@@ -3287,6 +3417,159 @@ function drawSmokePuff(ctx, o = {}) {
   const a = (o.alpha != null ? o.alpha : 1) * L.a;
   puff(ctx, x + Math.sin(t * 1.1 + seed) * r * 0.06, y + L.dy, L.rr, seed, PUFF_PAL[tone] || PUFF_PAL.grey, a, 1.3 * Math.pow(r / 24, 0.5), t);
 }
+// Water splash where something drops into the pool/river. (x, y) = entry point ON the
+// water surface; t = seconds since entry (nothing for t < 0, done after ~1.4 s).
+// r ≈ half-width of the crown. big:true adds a tall centre jet (raft launch, big plops).
+const WATER_DEF = { top: '#C9F4EE', mid: '#7FDCDC', base: '#5CC9C9', deep: '#2E8F9E', line: '#2A7F8C', foam: '#FFFFFF' };
+function drawWaterSplash(ctx, o = {}) {
+  const { x = 0, y = 0, r = 24, t = 0, seed = 4, big = false } = o;
+  if (t < 0 || t > 1.6) return;
+  const WATER = o.colors ? { ...WATER_DEF, ...o.colors } : WATER_DEF;
+  const k = Math.pow(r / 24, 0.55);
+  const R = rng(seed * 5.1 + 1);
+  ctx.save();
+  ctx.translate(x, y);
+  if (o.alpha != null && o.alpha < 1) ctx.globalAlpha *= clamp(o.alpha);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  // ripple rings on the surface (perspective ellipses)
+  for (let i = 0; i < 3; i++) {
+    const p = clamp((t - i * 0.16) / 1.25);
+    if (p <= 0 || p >= 1) continue;
+    const rx = r * (0.7 + 2.3 * ease.outCubic(p));
+    ellipse(ctx, 0, 0, rx, rx * 0.24);
+    ctx.strokeStyle = rgba(WATER.foam, 0.75 * (1 - p));
+    ctx.lineWidth = (2.6 - 1.6 * p) * k;
+    ctx.stroke();
+  }
+  // crown: a continuous water wall with a few splayed peaks (back half, then the front lip)
+  const pc = clamp(t / 0.62);
+  if (pc < 1) {
+    const hgt = r * (big ? 1.45 : 1.1) * Math.sin(PI * Math.pow(pc, 0.65));
+    const spread = r * (0.5 + 0.7 * ease.outCubic(pc));
+    const wall = (backSide) => {
+      const n = backSide ? 5 : 4;
+      const sgn = backSide ? -1 : 1;
+      const peaks = [];
+      for (let i = 0; i < n; i++) {
+        const u = (i + 0.5) / n;                       // 0..1 along the arc, left → right
+        const a = PI - u * PI;                          // PI..0
+        const bx = Math.cos(a) * spread, by = sgn * Math.sin(a) * spread * 0.26;
+        const mid = 1 - Math.abs(u - 0.5) * 0.7; // taller toward the middle
+        const h = hgt * mid * (backSide ? 0.5 + 0.5 * hash1(seed + i * 3.3) : 0.36 + 0.26 * hash1(seed * 2 + i));
+        const lean = (hash1(seed * 1.3 + i * 7.7) - 0.5) * 0.3 * h;
+        peaks.push({ bx, by, h, tx: bx * (1 + 0.6 * h / Math.max(1, r)) + lean, ty: by - h });
+      }
+      const base = (u) => { const a = PI - u * PI; return [Math.cos(a) * spread * 1.04, sgn * Math.sin(a) * spread * 0.27]; };
+      const outline = () => {
+        ctx.beginPath();
+        let p0 = base(0);
+        ctx.moveTo(p0[0], p0[1]);
+        peaks.forEach((pk, i) => {
+          const prevU = i / n, v = base(prevU);
+          const vy = (i === 0 ? p0[1] : v[1] - hgt * (backSide ? 0.22 : 0.14));
+          const vx = i === 0 ? p0[0] : v[0];
+          ctx.quadraticCurveTo(lerp(vx, pk.tx, 0.6), vy, pk.tx, pk.ty);
+          const nu = (i + 1) / n, nv = base(nu);
+          const ny = i === n - 1 ? nv[1] : nv[1] - hgt * (backSide ? 0.22 : 0.14);
+          ctx.quadraticCurveTo(lerp(nv[0], pk.tx, 0.6), ny, nv[0], ny);
+        });
+        // back along the base ellipse
+        for (let j = 12; j >= 0; j--) { const q = base(j / 12); ctx.lineTo(q[0], q[1] + 1.5); }
+        ctx.closePath();
+      };
+      outline();
+      const gr = ctx.createLinearGradient(0, -hgt, 0, spread * 0.27);
+      gr.addColorStop(0, WATER.top);
+      gr.addColorStop(0.6, WATER.mid);
+      gr.addColorStop(1, backSide ? WATER.base : WATER.mid);
+      ctx.strokeStyle = WATER.line;
+      ctx.lineWidth = 2.2 * k;
+      ctx.stroke();
+      ctx.fillStyle = gr;
+      ctx.fill();
+      // glossy streaks up the peaks
+      ctx.beginPath();
+      peaks.forEach((pk) => {
+        ctx.moveTo(lerp(pk.bx, pk.tx, 0.15) - spread * 0.06, pk.by - pk.h * 0.12);
+        ctx.quadraticCurveTo(lerp(pk.bx, pk.tx, 0.45) - spread * 0.07, pk.by - pk.h * 0.55, lerp(pk.bx, pk.tx, 0.92), pk.ty + pk.h * 0.1);
+      });
+      ctx.strokeStyle = rgba(WATER.foam, 0.9);
+      ctx.lineWidth = 1.4 * k;
+      ctx.stroke();
+      // beads pinching off the tallest peaks
+      peaks.forEach((pk, i) => {
+        if (!backSide || hash1(seed * 5 + i * 1.9) < 0.45 || pc < 0.22) return;
+        const lift = r * (0.12 + 0.3 * smoothstep(0.22, 0.9, pc)) * (0.6 + 0.4 * hash1(seed + i));
+        const br = r * (0.06 + 0.03 * hash1(seed * 3 + i)) * (1 - pc * 0.4);
+        circle(ctx, pk.tx * (1 + 0.15 * pc), pk.ty - br - lift, br);
+        ctx.fillStyle = WATER.top;
+        ctx.fill();
+        ctx.strokeStyle = WATER.line;
+        ctx.lineWidth = 1.1 * k;
+        ctx.stroke();
+      });
+    };
+    wall(true);
+    // foam in the middle
+    ellipse(ctx, 0, 0, spread * 0.85, spread * 0.2);
+    ctx.fillStyle = rgba(WATER.foam, 0.9 * (1 - pc));
+    ctx.fill();
+    // centre jet (Worthington column) for big splashes
+    if (big) {
+      const pj = clamp((t - 0.12) / 0.6);
+      if (pj > 0 && pj < 1) {
+        const jh = r * 2.3 * Math.sin(PI * pj), jw = r * 0.2 * (1 - pj * 0.4);
+        ctx.beginPath();
+        ctx.moveTo(-jw * 1.4, 2);
+        ctx.bezierCurveTo(-jw * 0.4, -jh * 0.3, -jw * 0.6, -jh * 0.8, 0, -jh);
+        ctx.bezierCurveTo(jw * 0.6, -jh * 0.8, jw * 0.4, -jh * 0.3, jw * 1.4, 2);
+        ctx.closePath();
+        const gj = ctx.createLinearGradient(0, -jh, 0, 0);
+        gj.addColorStop(0, WATER.top);
+        gj.addColorStop(1, WATER.mid);
+        ctx.strokeStyle = WATER.line;
+        ctx.lineWidth = 2 * k;
+        ctx.stroke();
+        ctx.fillStyle = gj;
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(-jw * 0.35, -jh * 0.15);
+        ctx.quadraticCurveTo(-jw * 0.45, -jh * 0.6, -jw * 0.1, -jh * 0.88);
+        ctx.strokeStyle = rgba(WATER.foam, 0.9);
+        ctx.lineWidth = 1.4 * k;
+        ctx.stroke();
+        circle(ctx, 0, -jh - jw * 0.9 - pj * r * 0.45, jw * 1.05);
+        ctx.fillStyle = WATER.top;
+        ctx.fill();
+        ctx.strokeStyle = WATER.line;
+        ctx.lineWidth = 1.2 * k;
+        ctx.stroke();
+      }
+    }
+    wall(false);
+  }
+  // flying droplets
+  const nd = big ? 16 : 10;
+  for (let i = 0; i < nd; i++) {
+    const t0 = 0.04 + R() * 0.12;
+    const tt = t - t0;
+    if (tt <= 0) continue;
+    const a = -PI / 2 + R.range(-1.1, 1.1);
+    const v = r * R.range(4, 7.5) * (big ? 1.25 : 1);
+    const vx = Math.cos(a) * v, vy = Math.sin(a) * v, g = r * 22;
+    const px = vx * tt, py = vy * tt + 0.5 * g * tt * tt;
+    if (py > r * 0.1) continue; // fell back in
+    const dr = r * R.range(0.05, 0.1);
+    dropPath(ctx, px, py, dr, trailAng(vx, vy + g * tt), 1.6, false, 0.5);
+    ctx.fillStyle = WATER.top;
+    ctx.fill();
+    ctx.strokeStyle = WATER.line;
+    ctx.lineWidth = 0.9 * k;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
 function drawImpactBurst(ctx, o = {}) {
   const { x = 0, y = 0, r = 56, text = 'BONK!', rot = -0.08, seed = 5 } = o;
   const t = o.t;
@@ -3465,9 +3748,9 @@ function waterStrip(ctx, x0, x1, y, h = 60) {
 const lab = {
   all(ctx, t) {
     sheetBg(ctx);
-    const cw = 1280 / 6, ch = 720 / 5;
+    const cw = 1280 / 7, ch = 720 / 5;
     const cell = (i, name, fn) => {
-      const cx = (i % 6) * cw + cw / 2, cy = Math.floor(i / 6) * ch + ch / 2;
+      const cx = (i % 7) * cw + cw / 2, cy = Math.floor(i / 7) * ch + ch / 2;
       ctx.save();
       ctx.fillStyle = 'rgba(255,255,255,0.28)';
       roundRect(ctx, cx - cw / 2 + 5, cy - ch / 2 + 5, cw - 10, ch - 10, 12);
@@ -3478,21 +3761,21 @@ const lab = {
     };
     let i = 0;
     cell(i++, 'drawOrange', (x, y) => drawOrange(ctx, { x, y, r: 26, t }));
-    cell(i++, 'orange squash .6 / 1', (x, y) => { drawOrange(ctx, { x: x - 40, y: y + 8, r: 22, squash: 0.6, t, seed: 2 }); drawOrange(ctx, { x: x + 42, y: y + 8, r: 22, squash: 1, t, seed: 3 }); });
+    cell(i++, 'orange squash .6 / 1', (x, y) => { drawOrange(ctx, { x: x - 42, y: y + 8, r: 17, squash: 0.6, t, seed: 2 }); drawOrange(ctx, { x: x + 40, y: y + 8, r: 17, squash: 1, t, seed: 3 }); });
     cell(i++, 'drawJuiceSplat t=.18', (x, y) => drawJuiceSplat(ctx, { x, y: y + 10, r: 26, t: 0.18 }));
     cell(i++, 'drawHelmet', (x, y) => drawHelmet(ctx, { x, y: y + 10, scale: 1.2 }));
     cell(i++, 'drawThermometer', (x, y) => drawThermometer(ctx, { x: x - 20, y: y + 42, scale: 0.85, level: thermoLevel(39.2), reading: '39.2' }));
     cell(i++, 'drawSign arrow', (x, y) => drawSign(ctx, { x, y: y + 40, text: 'EXIT', style: 'arrow', scale: 0.95 }));
-    cell(i++, 'drawSign wood', (x, y) => drawSign(ctx, { x, y: y + 44, text: 'SNOOZE SPRINGS / No Worries Allowed', size: 17, scale: 0.92 }));
-    cell(i++, 'drawRaft', (x, y) => drawRaft(ctx, { x, y: y + 40, scale: 0.4, t }));
+    cell(i++, 'drawSign wood', (x, y) => drawSign(ctx, { x, y: y + 44, text: 'SNOOZE SPRINGS / No Worries Allowed', size: 17, scale: 0.82 }));
+    cell(i++, 'drawRaft', (x, y) => drawRaft(ctx, { x: x - 16, y: y + 42, scale: 0.3, t }));
     cell(i++, 'drawBackpack', (x, y) => drawBackpack(ctx, { x, y: y + 44, scale: 0.9 }));
     cell(i++, 'backpack open', (x, y) => drawBackpack(ctx, { x, y: y + 44, scale: 0.9, open: 1 }));
     cell(i++, 'drawHammer', (x, y) => drawHammer(ctx, { x, y: y + 30, scale: 1.05, rot: 0.5 }));
     cell(i++, 'drawSuitcase', (x, y) => drawSuitcase(ctx, { x, y: y - 22, scale: 1.4 }));
     cell(i++, 'drawRock', (x, y) => drawRock(ctx, { x, y, r: 28, rot: 0.3 }));
-    cell(i++, 'rock glow + trail', (x, y) => drawRock(ctx, { x: x + 30, y: y + 18, r: 18, glow: 1, trail: 1, dir: 2.2, t }));
+    cell(i++, 'rock glow + trail', (x, y) => drawRock(ctx, { x: x + 26, y: y + 22, r: 14, glow: 1, trail: 0.4, dir: 2.3, t }));
     cell(i++, 'drawWhistle', (x, y) => drawWhistle(ctx, { x: x + 6, y: y - 8, scale: 1.4 }));
-    cell(i++, 'drawFlashlight on', (x, y) => drawFlashlight(ctx, { x: x - 40, y, scale: 1.2, on: true, beam: 80, t }));
+    cell(i++, 'drawFlashlight on', (x, y) => drawFlashlight(ctx, { x: x - 36, y, scale: 1.05, on: true, beam: 70, t }));
     cell(i++, 'drawBandage roll/strip', (x, y) => { drawBandage(ctx, { x: x - 36, y: y - 6, scale: 1.1 }); drawBandage(ctx, { x: x + 46, y, scale: 1, type: 'strip', rot: -0.4 }); });
     cell(i++, 'drawMap', (x, y) => drawMap(ctx, { x, y, scale: 1.4, rot: -0.06 }));
     cell(i++, 'drawCandle', (x, y) => drawCandle(ctx, { x, y: y + 36, scale: 1.25, t }));
@@ -3504,9 +3787,14 @@ const lab = {
     cell(i++, 'drawZzz', (x, y) => drawZzz(ctx, { x: x - 20, y: y + 30, t: t + 1 }));
     cell(i++, 'drawSteamPuff', (x, y) => drawSteamPuff(ctx, { x, y, r: 30, t }));
     cell(i++, 'drawSmokePuff', (x, y) => { drawSmokePuff(ctx, { x: x - 30, y, r: 26, t }); drawSmokePuff(ctx, { x: x + 36, y, r: 22, t, tone: 'dark', seed: 4 }); });
-    cell(i++, 'drawImpactBurst', (x, y) => drawImpactBurst(ctx, { x, y, r: 46 }));
+    cell(i++, 'drawWaterSplash t=.25', (x, y) => drawWaterSplash(ctx, { x, y: y + 34, r: 30, t: 0.25, big: true }));
+    cell(i++, 'drawImpactBurst', (x, y) => drawImpactBurst(ctx, { x, y: y + 4, r: 40, t: 0.3 }));
     cell(i++, 'drawSpeechBubble', (x, y) => drawSpeechBubble(ctx, { x, y: y - 8, text: 'No reason.', w: 160, size: 18, to: { x: x - 50, y: y + 40 } }));
     cell(i++, 'thought / shout', (x, y) => { drawSpeechBubble(ctx, { x: x - 44, y: y - 10, text: 'hm', w: 70, size: 16, style: 'thought', to: { x: x - 70, y: y + 40 } }); drawSpeechBubble(ctx, { x: x + 46, y: y - 6, text: 'RUN!', w: 90, size: 18, style: 'shout', to: { x: x + 30, y: y + 44 } }); });
+    cell(i++, 'sign burn .4', (x, y) => drawSign(ctx, { x, y: y + 46, text: 'EXIT', style: 'arrow', burn: 0.4, t, scale: 0.75 }));
+    cell(i++, 'thermo broken .3', (x, y) => drawThermometer(ctx, { x, y: y + 42, scale: 0.85, level: 0.7, broken: 0.3, t }));
+    cell(i++, 'raft build .55', (x, y) => drawRaft(ctx, { x, y: y + 30, scale: 0.36, t, build: 0.55 }));
+    cell(i++, 'hammer swing', (x, y) => { drawMotionLines(ctx, { x: x - 30, y: y + 30, t, count: 3, arc: { r: 62, a0: -2.2, a1: -0.5 } }); drawHammer(ctx, { x: x - 30, y: y + 30, rot: 0.9, scale: 0.9 }); drawImpactBurst(ctx, { x: x + 40, y: y + 34, r: 22, text: '', t: 0.1 }); });
   },
   orange(ctx, t) {
     sheetBg(ctx);
@@ -3528,121 +3816,229 @@ const lab = {
   },
   thermometer(ctx, t) {
     sheetBg(ctx, '#D7EEF4', '#EFE3CC');
-    [0, 0.25, thermoLevel(38.6), thermoLevel(39.2), 1].forEach((lv, i) => {
-      drawThermometer(ctx, { x: 70 + i * 74, y: 330, scale: 1.6, level: lv });
-      lbl(ctx, `lvl ${lv.toFixed(2)}`, 70 + i * 74, 370, 13);
+    // levels
+    [0, 0.25, thermoLevel(38.6), thermoLevel(39.2), thermoLevel(39.8), 1].forEach((lv, i) => {
+      drawThermometer(ctx, { x: 50 + i * 62, y: 300, scale: 1.5, level: lv });
+      lbl(ctx, `${lv.toFixed(2)}`, 50 + i * 62, 334, 13);
     });
-    drawThermometer(ctx, { x: 520, y: 660, scale: 4.6, level: thermoLevel(39.2), reading: '39.2', t });
-    lbl(ctx, 'close-up, reading tag', 610, 700);
-    drawThermometer(ctx, { x: 860, y: 300, scale: 1.4, level: 0.62, reading: '38.6', rot: -1.2, t });
-    lbl(ctx, 'rot -1.2 (tag stays upright)', 900, 340, 13);
-    drawThermometer(ctx, { x: 1130, y: 330, scale: 1.6, level: 0.7, reading: '39.6', flip: true, tagSide: 'left', t });
-    lbl(ctx, 'flip + tag left', 1100, 370, 13);
-    // breaking sequence
-    [0, 0.08, 0.15, 0.2, 0.32, 0.5, 0.8, 1].forEach((b, i) => {
-      const x = 800 + (i % 4) * 120, y = 530 + Math.floor(i / 4) * 0;
-      if (i < 4) drawThermometer(ctx, { x, y: 560, scale: 1.3, level: 0.95, broken: b, t: t + i * 0.01 });
-      else drawThermometer(ctx, { x: x, y: 700, scale: 1.3, level: 0.95, broken: b, t });
-      lbl(ctx, `broken ${b}`, x, i < 4 ? 590 : 712, 12);
-      void y;
+    lbl(ctx, 'level (thermoLevel(°C))', 205, 356, 14);
+    // close-up with reading tag + printed scale
+    ctx.save();
+    ctx.fillStyle = lin(ctx, 0, 420, 0, 720, ['#5CC9C9', '#2E8F9E']);
+    ctx.fillRect(400, 430, 330, 290);
+    ctx.restore();
+    drawThermometer(ctx, { x: 470, y: 660, scale: 4.4, level: thermoLevel(39.4), reading: '39.4', t });
+    lbl(ctx, 'close-up: reading tag (over water)', 565, 708, 14, '#FFFFFF');
+    drawThermometer(ctx, { x: 790, y: 250, scale: 1.4, level: 0.62, reading: '38.6', rot: -1.2, t });
+    lbl(ctx, 'rot -1.2 (tag upright)', 830, 290, 13);
+    drawThermometer(ctx, { x: 1010, y: 300, scale: 1.6, level: thermoLevel(39.8), reading: '39.8', flip: true, tagSide: 'left', t });
+    lbl(ctx, 'flip + tagSide left', 990, 334, 13);
+    // breaking sequence (bulb), and the animated pop driven by t
+    const seq = [0, 0.08, 0.14, 0.18, 0.26, 0.4, 0.62, 1];
+    seq.forEach((b, i) => {
+      const x = 800 + i * 62;
+      drawThermometer(ctx, { x, y: 640, scale: 1.25, level: 0.96, broken: b, t: t + i * 0.013 });
+      lbl(ctx, `${b}`, x, 676, 12);
     });
+    lbl(ctx, 'broken 0..1  (pops at 0.16)', 1015, 700, 14);
+    const bb = clamp((t % 1.6) / 1.2);
+    drawThermometer(ctx, { x: 1190, y: 400, scale: 1.6, level: lerp(thermoLevel(39.8), 1, smoothstep(0, 0.15, bb)), broken: bb, t });
+    lbl(ctx, `animated: broken ${bb.toFixed(2)}`, 1170, 434, 12);
   },
   thermo_pop(ctx, t) {
     sheetBg(ctx, '#2B2440', '#6B4C8A');
     const b = clamp(t / 1.2);
-    drawThermometer(ctx, { x: 400, y: 600, scale: 4.2, level: lerp(0.62, 1, smoothstep(0, 0.15, b)), broken: b, reading: b < 0.16 ? '39.2' : null, t });
+    drawThermometer(ctx, { x: 400, y: 600, scale: 4.2, level: thermoLevel(39.8), broken: b, reading: b < 0.03 ? '39.8' : null, t });
     drawThermometer(ctx, { x: 900, y: 620, scale: 3.6, level: 0.6, broken: b, breakAt: 'top', t });
     lbl(ctx, `bulb  broken=${b.toFixed(2)}`, 400, 680, 18, '#FFFFFF');
     lbl(ctx, 'breakAt top', 900, 680, 18, '#FFFFFF');
   },
   raft(ctx, t) {
     sheetBg(ctx, '#BFE3F0', '#F2E3C6');
-    const stages = [0.05, 0.2, 0.38, 0.5, 0.62, 0.76, 0.88, 1];
+    const stages = [0.06, 0.2, 0.4, 0.55, 0.68, 0.78, 0.9, 1];
     stages.forEach((b, i) => {
-      const x = 170 + (i % 4) * 315, y = 200 + Math.floor(i / 4) * 210;
-      groundStrip(ctx, x - 150, x + 150, y + 6);
-      drawRaft(ctx, { x, y, scale: 0.68, t, build: b });
-      lbl(ctx, `build ${b}`, x, y + 28);
+      const x = 150 + (i % 4) * 318, y = 300 + Math.floor(i / 4) * 330;
+      groundStrip(ctx, x - 145, x + 145, y + 4);
+      drawRaft(ctx, { x, y, scale: 0.56, t, build: b });
+      lbl(ctx, `build ${b}`, x, y + 20, 14, '#FFFFFF');
     });
-    waterStrip(ctx, 0, 1280, 640, 80);
-    drawRaft(ctx, { x: 640, y: 652, scale: 0.75, t, bob: 1, wake: 0.8 });
-    lbl(ctx, 'bob 1, wake .8 (heading left)', 640, 705, 14, '#FFFFFF');
+    lbl(ctx, 'bundles drop in 0-.42 · lashings .42-.7 · mast .7-.82 · banner .82-.95 · oar .95-1', 640, 40, 15);
   },
   raft_context(ctx, t) {
     sheetBg(ctx, '#F7A26B', '#6B4C8A');
     waterStrip(ctx, 0, 1280, 470, 250);
-    const ro = { x: 640, y: 520, scale: 1.25, t, bob: 1 };
+    const ro = { x: 560, y: 520, scale: 1.2, t, bob: 1, wake: 0.7, dir: -1 };
     drawRaft(ctx, ro);
     const A = raftAnchors(ro);
     let chars = null;
     try { chars = require('./characters'); } catch (e) { chars = null; }
     if (chars && chars.drawCapybara) {
-      const sc = 0.62;
+      const sc = 0.6;
       const who = ['sunny', 'barry', 'doreen'];
       [A.seats[0], A.seats[1], A.seats[2]].forEach((p, i) => {
         try {
-          const ground = 58 * sc;
-          chars.drawCapybara(ctx, { x: p.x + 20 * i, y: p.y - ground, scale: sc, who: who[i], pose: 'stand', t, mood: i === 1 ? 'smug' : 'chill', flip: i === 2, accessories: i === 1 ? { helmet: true } : {} });
-        } catch (e) { /* ignore */ }
+          chars.drawCapybara(ctx, { x: p.x + 20 * i, y: p.y - 58 * sc, scale: sc, who: who[i], pose: 'stand', t, mood: i === 1 ? 'smug' : 'chill', flip: i === 2, accessories: i === 1 ? { glasses: true, helmet: true } : {} });
+        } catch (e) { /* sibling WIP */ }
       });
-      if (chars.drawVulture) {
-        try { chars.drawVulture(ctx, { x: A.mastTop.x, y: A.mastTop.y, scale: 0.55, t, pose: 'perch' }); } catch (e) { /* ignore */ }
-      }
     }
     for (const p of [...A.seats, A.mastTop, A.flag, A.tipL, A.tipR]) { circle(ctx, p.x, p.y, 3.5); ctx.fillStyle = '#FF3B7F'; ctx.fill(); }
-    lbl(ctx, 'raftAnchors: seats, mastTop, flag, tips (pink)', 640, 700, 15, '#FFFFFF');
+    // the flagCover anchor: where Gerald sits to hide "TOLD YOU SO"
+    const c = A.flagCover;
+    ctx.save();
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = '#FF3B7F';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(c.x - c.w / 2, c.y - c.h / 2, c.w, c.h);
+    ctx.restore();
+    lbl(ctx, 'flagCover', c.x, c.y - c.h / 2 - 12, 13, '#FFFFFF');
+    lbl(ctx, 'raftAnchors: seats, mastTop, flag, tips (pink dots) · bob 1 · wake .7 heading left', 640, 700, 15, '#FFFFFF');
+    // small flipped raft heading right, flag streaming the other way
+    drawRaft(ctx, { x: 1110, y: 600, scale: 0.42, t, bob: 1, flip: true, wake: 1, dir: 1, flagDir: -1 });
+    lbl(ctx, 'flip, flagDir -1', 1110, 640, 13, '#FFFFFF');
+    drawRaft(ctx, { x: 1080, y: 300, scale: 0.36, t, bob: 1, flagShow: 4 });
+    lbl(ctx, 'flagShow: 4', 1080, 330, 13, '#FFFFFF');
+  },
+  // props placed in Snooze Springs (uses env.js / characters.js when available)
+  context(ctx, t) {
+    let E = null, C = null;
+    try { E = require('./env'); } catch (e) { E = null; }
+    try { C = require('./characters'); } catch (e) { C = null; }
+    const S = (E && E.SPRING) || { exitSignSpots: [{ x: 182, y: 452 }, { x: 290, y: 449 }, { x: 400, y: 446 }], raftMoor: { x: 70, y: 597 }, thermometerSpot: { x: 770, y: 598 } };
+    if (E && E.drawSpringDay) E.drawSpringDay(ctx, t, {}); else { sheetBg(ctx); waterStrip(ctx, 0, 1280, 458, 262); }
+    const ex = S.exitSignSpots;
+    drawSign(ctx, { x: ex[0].x, y: ex[0].y, text: 'EXIT', style: 'arrow', scale: 0.62, seed: 1, t });
+    drawSign(ctx, { x: ex[1].x, y: ex[1].y, lines: ['EVACUATION', 'ROUTE'], style: 'arrow', scale: 0.5, seed: 2, t });
+    drawSign(ctx, { x: ex[2].x, y: ex[2].y, lines: ['NO, REALLY.', 'THIS WAY.'], style: 'arrow', scale: 0.5, seed: 3, t });
+    drawSign(ctx, { x: 520, y: 452, text: 'YES, YOU, SUNNY', style: 'arrow', scale: 0.36, size: 20, seed: 5, t });
+    drawSign(ctx, { x: 700, y: 452, lines: ['SPRING RULES', '1. Introduce yourself', '2. Say goodbye', '3. No vultures on heads'], scale: 0.42, seed: 9, t });
+    drawRaft(ctx, { x: S.raftMoor.x, y: S.raftMoor.y, scale: 0.5, t, bob: 0.6 });
+    const th = S.thermometerSpot;
+    drawThermometer(ctx, { x: th.x, y: th.y - 6, scale: 0.75, rot: 0.12, level: thermoLevel(39.4), t });
+    if (C && C.drawCapybara) {
+      try { C.drawCapybara(ctx, { who: 'barry', x: 650, y: 600, t, pose: 'swim', mood: 'worried', accessories: { glasses: true, helmet: true } }); } catch (e) { /* sibling WIP */ }
+      try { C.drawCapybara(ctx, { who: 'sunny', x: 360, y: 590, t, pose: 'swim', mood: 'chill', accessories: { orange: true, necklace: true } }); } catch (e) { /* sibling WIP */ }
+      try { C.drawCapybara(ctx, { who: 'doreen', x: 945, y: 588, scale: 0.97, flip: true, t, pose: 'swim', mood: 'happy', accessories: { orange: true, flower: true } }); } catch (e) { /* sibling WIP */ }
+    }
+    if (E && E.drawWaterFront) { try { E.drawWaterFront(ctx, t, {}); } catch (e) { /* sibling WIP */ } }
+    drawOrange(ctx, { x: 810, y: 640, r: 15, t, rot: 0.3 });
+    drawHelmet(ctx, { x: 1050, y: 470, scale: 0.8, rot: -0.15 });
+    drawBackpack(ctx, { x: 1110, y: 468, scale: 0.5, open: 0.3, rot: 0.08 });
+    drawSteamPuff(ctx, { x: 560, y: 520, r: 22, life: frac(t * 0.3), t, seed: 2 });
+    drawZzz(ctx, { x: 990, y: 520, t, scale: 0.8 });
+  },
+  // the eruption beats: orange/rock rain into the boiling spring, the bonk on Doreen's
+  // orange, the rock bouncing off Barry's helmet, a sign catching fire
+  context_erupt(ctx, t) {
+    let E = null, C = null;
+    try { E = require('./env'); } catch (e) { E = null; }
+    try { C = require('./characters'); } catch (e) { C = null; }
+    const eo = { setting: 'evening', dusk: 0.2, erupt: 0.5, waterHeat: 0.9, rumble: 0.5 };
+    if (E && E.drawSpringEvening) E.drawSpringEvening(ctx, t, eo); else { sheetBg(ctx, '#F7A26B', '#6B4C8A'); waterStrip(ctx, 0, 1280, 458, 262); }
+    const S = (E && E.SPRING) || { exitSignSpots: [{ x: 182, y: 452 }, { x: 290, y: 449 }, { x: 400, y: 446 }] };
+    const ex = S.exitSignSpots;
+    drawSign(ctx, { x: ex[0].x, y: ex[0].y, text: 'EXIT', style: 'arrow', scale: 0.62, seed: 1, t });
+    drawSign(ctx, { x: ex[1].x, y: ex[1].y, lines: ['EVACUATION', 'ROUTE'], style: 'arrow', scale: 0.5, seed: 2, t });
+    drawSign(ctx, { x: ex[2].x, y: ex[2].y, lines: ['NO, REALLY.', 'THIS WAY.'], style: 'arrow', scale: 0.5, seed: 3, t, burn: 0.35 });
+    if (C && C.drawCapybara) {
+      try { C.drawCapybara(ctx, { who: 'barry', x: 650, y: 600, t, pose: 'swim', mood: 'deadpan', accessories: { glasses: true, helmet: true } }); } catch (e) { /* sibling WIP */ }
+      try { C.drawCapybara(ctx, { who: 'doreen', x: 945, y: 588, scale: 0.97, flip: true, t, pose: 'swim', mood: 'shock', accessories: { orange: 'squashed', flower: true, juice: 1 } }); } catch (e) { /* sibling WIP */ }
+    }
+    if (E && E.drawWaterFront) { try { E.drawWaterFront(ctx, t, eo); } catch (e) { /* sibling WIP */ } }
+    // rain: a loop of falling oranges and hot rocks with splashes
+    const loop = 1.8;
+    const drops = [[300, 560, 'orange', 0], [480, 520, 'rock', 0.5], [820, 540, 'orange', 0.9], [1100, 560, 'rock', 1.3]];
+    for (const [dx, dy, kind, off] of drops) {
+      const tt = frac((t + off) / loop) * loop;
+      const fallT = 0.55;
+      if (tt < fallT) {
+        const p = tt / fallT;
+        const px = dx + (1 - p) * 120, py = dy - (1 - p * p) * 420;
+        if (kind === 'orange') drawOrange(ctx, { x: px, y: py, r: 13, rot: t * 4 + off, t });
+        else drawRock(ctx, { x: px, y: py, r: 15, glow: 1, trail: 0.7, dir: Math.atan2(840 * p, -120), t, rot: t * 3, seed: off * 10 });
+      } else {
+        drawWaterSplash(ctx, { x: dx, y: dy, r: kind === 'rock' ? 30 : 20, t: tt - fallT, seed: off * 7 + 1 });
+      }
+    }
+    // bonk + juice on Doreen's orange, rock bouncing off Barry's helmet
+    const tb = frac(t / 1.2) * 1.2;
+    drawJuiceSplat(ctx, { x: 930, y: 488, r: 26, t: tb });
+    drawImpactBurst(ctx, { x: 905, y: 430, r: 34, text: 'SPLAT!', t: tb, seed: 3 });
+    const tr = frac((t + 0.4) / 1.2) * 1.2;
+    drawImpactBurst(ctx, { x: 640, y: 470, r: 30, text: 'TINK!', t: tr, rot: 0.1 });
+    drawRock(ctx, { x: 640 + tr * 160, y: 470 - tr * 220 + 0.5 * 500 * tr * tr, r: 11, rot: tr * 8, seed: 7 });
+    drawMotionLines(ctx, { x: 640 + tr * 160, y: 470 - tr * 220 + 0.5 * 500 * tr * tr, angle: Math.atan2(-220 + 500 * tr, 160), len: 40, count: 3, spread: 22, t });
+    for (let i = 0; i < 3; i++) drawSmokePuff(ctx, { x: 160 + i * 40, y: 470, r: 18, life: frac(t * 0.8 + i / 3), t, seed: i + 3, tone: 'dust' });
+    // the env's colour grade sits over everything (props included)
+    if (E && E.drawSpringOverlay) { try { E.drawSpringOverlay(ctx, t, { ...eo, grade: 1 }); } catch (e) { /* sibling WIP */ } }
   },
   signs(ctx, t) {
     sheetBg(ctx, '#BFE3F0', '#E9F2D8');
-    groundStrip(ctx, 0, 1280, 250);
-    groundStrip(ctx, 0, 1280, 480);
+    groundStrip(ctx, 0, 1280, 220);
+    groundStrip(ctx, 0, 1280, 470);
     groundStrip(ctx, 0, 1280, 690);
-    drawSign(ctx, { x: 110, y: 250, text: 'EXIT', style: 'arrow', seed: 1 });
-    drawSign(ctx, { x: 330, y: 250, text: 'EVACUATION ROUTE', style: 'arrow', seed: 2 });
-    drawSign(ctx, { x: 620, y: 250, text: 'NO, REALLY. THIS WAY.', style: 'arrow', seed: 3 });
-    drawSign(ctx, { x: 870, y: 250, text: 'EXIT', style: 'wood', glyph: true, board: '#D9473C', seed: 4 });
-    drawSign(ctx, { x: 1110, y: 250, text: 'SUNNY, THIS MEANS YOU', style: 'arrow', arrowDir: 'right', size: 16, seed: 5 });
-    drawSign(ctx, { x: 190, y: 480, text: 'SNOOZE SPRINGS / No Worries Allowed', seed: 6 });
-    drawSign(ctx, { x: 520, y: 480, text: 'S.S. TOLD YOU SO', seed: 8 });
-    drawSign(ctx, { x: 830, y: 480, lines: ['SPRING RULES', '1. Introduce yourself', '2. Say goodbye', '3. No vultures on heads'], size: 22, seed: 9 });
-    drawSign(ctx, { x: 1120, y: 480, text: 'EXIT', style: 'arrow', drive: 0, rot: signWobble(0.08), seed: 10 });
-    lbl(ctx, 'drive 0 + wobble', 1120, 500, 12);
+    // row 1: the montage's escape-route arrows (one per hammer hit)
+    drawSign(ctx, { x: 90, y: 220, text: 'EXIT', style: 'arrow', seed: 1 });
+    drawSign(ctx, { x: 315, y: 220, text: 'EVACUATION ROUTE', style: 'arrow', seed: 2 });
+    drawSign(ctx, { x: 610, y: 220, text: 'NO, REALLY. THIS WAY.', style: 'arrow', seed: 3 });
+    drawSign(ctx, { x: 830, y: 220, text: 'YES, YOU, SUNNY', style: 'arrow', size: 15, seed: 5 });
+    drawSign(ctx, { x: 1005, y: 220, text: 'EXIT', style: 'wood', glyph: true, board: '#D9473C', seed: 4 });
+    drawSign(ctx, { x: 1175, y: 220, lines: ['EVACUATION', 'ROUTE'], style: 'arrow', size: 18, seed: 12 });
+    // row 2: planked signs
+    drawSign(ctx, { x: 160, y: 470, text: 'SNOOZE SPRINGS / No Worries Allowed', seed: 6 });
+    drawSign(ctx, { x: 450, y: 470, text: 'SNOOZE SPRINGS 2 / Barry Approved', seed: 7, size: 22 });
+    drawSign(ctx, { x: 720, y: 470, text: 'S.S. TOLD YOU SO', size: 20, seed: 8 });
+    drawSign(ctx, { x: 965, y: 470, lines: ['SPRING RULES', '1. Introduce yourself', '2. Say goodbye', '3. No vultures on heads'], size: 22, seed: 9 });
+    // hammered in: drive 0→1 + post-hit wobble (animated with t)
+    const hit = t % 1.4;
+    drawSign(ctx, { x: 1180, y: 470, text: 'EXIT', style: 'arrow', drive: clamp(hit / 0.25), rot: signWobble(hit - 0.25), seed: 10 });
+    lbl(ctx, 'drive + signWobble', 1180, 490, 12);
+    // row 3: burning
     [0.2, 0.45, 0.7, 1].forEach((b, i) => {
-      drawSign(ctx, { x: 180 + i * 300, y: 690, text: i % 2 ? 'SNOOZE SPRINGS / No Worries Allowed' : 'EVACUATION ROUTE', style: i % 2 ? 'wood' : 'arrow', burn: b, t, seed: 11 + i });
-      lbl(ctx, `burn ${b}`, 180 + i * 300, 708, 12);
+      drawSign(ctx, { x: 170 + i * 310, y: 690, text: i % 2 ? 'SNOOZE SPRINGS / No Worries Allowed' : 'EVACUATION ROUTE', style: i % 2 ? 'wood' : 'arrow', burn: b, t, seed: 11 + i, size: 21 });
+      lbl(ctx, `burn ${b}`, 170 + i * 310, 708, 12);
     });
   },
   fx(ctx, t) {
     sheetBg(ctx, '#9FD3E8', '#F3E2C4');
     const tt = frac(t / 1.2) * 1.2;
-    drawJuiceSplat(ctx, { x: 150, y: 170, r: 36, t: tt });
-    lbl(ctx, `juice splat t=${tt.toFixed(2)}`, 150, 300);
-    drawImpactBurst(ctx, { x: 420, y: 160, r: 64, t: tt });
-    lbl(ctx, 'impact burst (t)', 420, 300);
-    drawStars(ctx, { x: 680, y: 160, r: 50, t, size: 12 });
-    lbl(ctx, 'dizzy stars', 680, 300);
-    drawZzz(ctx, { x: 860, y: 230, t, scale: 1.3 });
-    lbl(ctx, 'zzz', 900, 300);
-    drawSweatDrop(ctx, { x: 1060, y: 150 + frac(t) * 60, r: 12, alpha: 1 - frac(t) * 0.5 });
-    drawSweatDrop(ctx, { x: 1120, y: 170, r: 9, rot: 0.6 });
-    lbl(ctx, 'sweat', 1090, 300);
+    drawJuiceSplat(ctx, { x: 120, y: 140, r: 34, t: tt });
+    lbl(ctx, `juice splat t=${tt.toFixed(2)}`, 120, 250);
+    drawImpactBurst(ctx, { x: 360, y: 130, r: 58, t: tt });
+    lbl(ctx, 'impact burst', 360, 250);
+    drawStars(ctx, { x: 580, y: 140, r: 50, t, size: 12 });
+    lbl(ctx, 'dizzy stars', 580, 250);
+    drawZzz(ctx, { x: 760, y: 200, t, scale: 1.3 });
+    lbl(ctx, 'zzz', 790, 250);
+    drawSweatDrop(ctx, { x: 920, y: 110 + frac(t) * 60, r: 12, alpha: 1 - frac(t) * 0.5 });
+    drawSweatDrop(ctx, { x: 975, y: 140, r: 9, rot: 0.6 });
+    lbl(ctx, 'sweat', 950, 250);
+    const fall = frac(t / 1.5);
+    drawRock(ctx, { x: 1090 + fall * 100, y: 60 + fall * 160, r: 18, glow: 1, trail: 1, dir: Math.atan2(160, 100), t, rot: t * 3 });
+    lbl(ctx, 'falling hot rock', 1160, 250);
     for (let i = 0; i < 4; i++) {
       const life = frac(t * 0.5 + i / 4);
-      drawSteamPuff(ctx, { x: 100 + i * 70, y: 520, r: 26, life, t, seed: i + 1 });
-      drawSmokePuff(ctx, { x: 420 + i * 70, y: 520, r: 30, life, t, seed: i + 5, tone: 'dark' });
-      drawSmokePuff(ctx, { x: 740 + i * 60, y: 520, r: 24, life, t, seed: i + 9, tone: 'dust' });
+      drawSteamPuff(ctx, { x: 70 + i * 62, y: 400, r: 24, life, t, seed: i + 1 });
+      drawSmokePuff(ctx, { x: 350 + i * 62, y: 400, r: 27, life, t, seed: i + 5, tone: 'dark' });
+      drawSmokePuff(ctx, { x: 640 + i * 55, y: 400, r: 22, life, t, seed: i + 9, tone: 'dust' });
     }
-    lbl(ctx, 'steam puffs (life)', 200, 600);
-    lbl(ctx, 'volcano smoke (dark)', 520, 600);
-    lbl(ctx, 'dust', 830, 600);
-    drawMotionLines(ctx, { x: 1110, y: 470, angle: -0.3, t, len: 90 });
-    drawRock(ctx, { x: 1120, y: 466, r: 16, rot: t });
-    drawMotionLines(ctx, { x: 1110, y: 560, t, count: 3, color: '#FFFFFF', arc: { r: 60, a0: -2.6, a1: -0.6 } });
-    lbl(ctx, 'motion lines / swoosh', 1110, 600);
-    const fall = frac(t / 1.5);
-    drawRock(ctx, { x: 1000 + fall * 120, y: 330 + fall * 300, r: 22, glow: 1, trail: 1, dir: Math.atan2(300, 120), t, rot: t * 3 });
-    lbl(ctx, 'falling hot rock', 1000, 690);
-    drawSign(ctx, { x: 620, y: 700, text: 'EXIT', style: 'arrow', burn: 0.6, t, scale: 0.8 });
+    lbl(ctx, 'steam puffs (life)', 160, 460);
+    lbl(ctx, 'smoke (dark)', 445, 460);
+    lbl(ctx, 'dust', 720, 460);
+    drawMotionLines(ctx, { x: 960, y: 360, angle: -0.3, t, len: 90 });
+    drawRock(ctx, { x: 970, y: 356, r: 16, rot: t });
+    drawMotionLines(ctx, { x: 1130, y: 420, t, count: 3, color: '#FFFFFF', arc: { r: 60, a0: -2.6, a1: -0.6 } });
+    lbl(ctx, 'motion lines / swoosh', 1050, 460);
+    // water splashes (t = seconds since entry), looping
+    waterStrip(ctx, 0, 1280, 620, 100);
+    const ts = frac(t / 1.6) * 1.6;
+    drawWaterSplash(ctx, { x: 160, y: 640, r: 22, t: ts, seed: 2 });
+    drawOrange(ctx, { x: 160, y: 640 - 160 + Math.min(160, 160 * Math.pow(clamp((ts + 0.3) / 0.3), 2)), r: 12, t, alpha: ts < 0.02 ? 1 : 0 });
+    lbl(ctx, 'splash (orange plop)', 160, 700, 14, '#FFFFFF');
+    drawWaterSplash(ctx, { x: 480, y: 650, r: 34, t: ts, seed: 5 });
+    lbl(ctx, 'splash r34', 480, 700, 14, '#FFFFFF');
+    drawWaterSplash(ctx, { x: 840, y: 660, r: 48, t: ts, big: true, seed: 8 });
+    lbl(ctx, 'big splash', 840, 708, 14, '#FFFFFF');
+    drawSign(ctx, { x: 1150, y: 600, text: 'EXIT', style: 'arrow', burn: 0.6, t, scale: 0.8 });
   },
   closeup(ctx, t) {
     sheetBg(ctx, '#CDE8F2', '#F6E6C8');
@@ -3650,7 +4046,7 @@ const lab = {
     drawHelmet(ctx, { x: 560, y: 240, scale: 4.2 });
     drawBackpack(ctx, { x: 930, y: 330, scale: 3, open: 0 });
     drawRock(ctx, { x: 1160, y: 200, r: 90, glow: 0.7, t });
-    drawSign(ctx, { x: 260, y: 720, text: 'NO, REALLY. THIS WAY.', style: 'arrow', scale: 2.2 });
+    drawSign(ctx, { x: 260, y: 720, text: 'NO, REALLY. THIS WAY.', style: 'arrow', scale: 2.2, drips: 1 });
     drawCandle(ctx, { x: 620, y: 690, scale: 3.4, t });
     drawRaft(ctx, { x: 1060, y: 660, scale: 1.1, t, build: 1 });
   },
@@ -3664,7 +4060,7 @@ module.exports = {
   drawBackpack, backpackAnchors, drawHammer, hammerAnchors, drawSuitcase, drawRock,
   drawWhistle, drawFlashlight, drawBandage, drawMap, drawCandle, drawNotepad, drawChart,
   drawSweatDrop, drawMotionLines, drawStars, drawZzz, drawSteamPuff, drawSmokePuff,
-  drawImpactBurst, drawSpeechBubble,
+  drawImpactBurst, drawSpeechBubble, drawWaterSplash,
   PROP_COLORS, RAFT,
   lab,
 };

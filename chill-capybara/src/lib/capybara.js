@@ -106,40 +106,46 @@ const mAbout = (px, py, m) => mChain(mT(px, py), m, mT(-px, -py));
 const apply = (ctx, m) => ctx.transform(m[0], m[1], m[2], m[3], m[4], m[5]);
 
 // ─────────────────────────────────────────────────────────────── characters
+// eye: eye centre (head space), lensR: glasses lens radius, dome: extra skull height (Barry's
+// high Woody-Allen forehead gives his brows room above the frames), neck: neck thickness.
 const CHARS = {
   barry: {
-    base: '#9A6A45', dark: '#7A4F33', belly: '#B88A62',
-    build: { len: 0.94, h: 0.9 }, head: 1.04, size: 1,
+    base: '#9A6A45', dark: '#734A33', belly: '#B88A62', topTint: '#F4D6B4', lowTint: '#3B3A58',
+    build: { len: 0.86, h: 0.82 }, head: 1.12, size: 0.94, neck: 0.78,
+    eye: [36, -22], lensR: 18, dome: 5,
     seed: 3.7, breath: 2.6, blinkEvery: 2.6, blinkDur: 0.13,
-    pupil: 3.3, iris: false, lids: 0, lashes: false, blush: 0, tuft: true,
+    pupil: 3.4, iris: false, lids: 0, lashes: false, blush: 0, tuft: true,
     acc: { glasses: true }, mood: 'neutral',
     moodMod: {
-      neutral: { browTilt: 7, browY: 2, mouth: -0.12, lidSlope: 4 },
-      chill: { browTilt: 2 }, deadpan: { browTilt: 2 }, happy: { browTilt: 14 },
+      neutral: { browTilt: 8, browY: 1, mouth: -0.14, lidSlope: 4 },
+      chill: { browTilt: 3, pupil: 1.3, lid: 0.5 }, deadpan: { browTilt: 1, pupil: 1.3, lid: 0.47 },
+      happy: { browTilt: 14 }, smug: { pupil: 1.2, lid: 0.42 }, sleepy: { pupil: 1.25 }, sad: { pupil: 1.2 },
     },
   },
   sunny: {
-    base: '#B8834F', dark: '#8E6036', belly: '#D9B184',
-    build: { len: 1.1, h: 1.17 }, head: 1.07, size: 1.06,
+    base: '#B8834F', dark: '#8E6036', belly: '#D9B184', topTint: '#FFD88A', lowTint: '#5A3A40',
+    build: { len: 1.1, h: 1.17 }, head: 1.07, size: 1.06, neck: 1.08,
     seed: 8.1, breath: 4.4, blinkEvery: 4.8, blinkDur: 0.6,
-    pupil: 6.6, iris: true, lids: 0.5, lashes: false, blush: 0.2, tuft: false,
+    pupil: 6.6, iris: true, lids: 0.5, lashes: false, blush: 0.25, tuft: false,
     acc: { necklace: true, orange: true }, mood: 'chill',
     moodMod: {
-      neutral: { lid: 0.5, mouth: 0.5, low: 0.12 }, chill: { lid: 0.56 }, happy: { lid: 0.1, low: 0.4 }, smug: { lid: 0.58 },
-      deadpan: { lid: 0.6 }, sleepy: { lid: 0.84 }, worried: { lid: 0.2 }, sad: { lid: 0.48 },
+      neutral: { lid: 0.46, mouth: 0.6, low: 0.3, bulge: 3, browY: 2, arch: 0.6, sway: 0.5 },
+      chill: { lid: 0.54, low: 0.36, bulge: 4, browY: 3, browTilt: 6, arch: 0.85, mouth: 1, blush: 0.45, sway: 1 },
+      happy: { lid: 0.1, low: 0.42 }, smug: { lid: 0.56, bulge: 2 },
+      deadpan: { lid: 0.6, bulge: -1 }, sleepy: { lid: 0.84 }, worried: { lid: 0.16 }, sad: { lid: 0.48 },
     },
   },
   doreen: {
-    base: '#A86A4C', dark: '#844C33', belly: '#CFA07E',
-    build: { len: 1.0, h: 1.02 }, head: 0.99, size: 0.97,
+    base: '#A86A4C', dark: '#844C33', belly: '#CFA07E', topTint: '#FFD6B8', lowTint: '#5A3048',
+    build: { len: 1.0, h: 1.02 }, head: 0.99, size: 0.97, neck: 0.96,
     seed: 5.3, breath: 3.5, blinkEvery: 3.4, blinkDur: 0.17,
     pupil: 6.4, iris: true, lids: 0.1, lashes: true, blush: 0.6, tuft: false,
     acc: { flower: true, orange: true }, mood: 'happy',
-    moodMod: { neutral: { mouth: 0.55, low: 0.14, lid: 0.16 }, chill: { mouth: 0.75 } },
+    moodMod: { neutral: { mouth: 0.55, low: 0.16, lid: 0.16 }, chill: { mouth: 0.85, low: 0.3, bulge: 2.5 } },
   },
   extra: {
     base: '#946446', dark: null, belly: null,
-    build: { len: 1, h: 1 }, head: 1, size: 0.95,
+    build: { len: 1, h: 1 }, head: 1, size: 0.95, neck: 1,
     seed: 1, breath: 4.0, blinkEvery: 5.0, blinkDur: 0.5,
     pupil: 6, iris: true, lids: 0.55, lashes: false, blush: 0.1, tuft: false,
     acc: {}, mood: 'sleepy', moodMod: {},
@@ -147,23 +153,31 @@ const CHARS = {
 };
 const EXTRA_FUR = ['#8E6243', '#A0714A', '#93684B', '#B07A4E', '#856048', '#A5794F', '#7F5A40', '#9C6B52', '#B3895A', '#8A6A50'];
 
-// mood → face parameters
+// mood → face parameters (all numeric, so moods can be blended — see moodWeights)
 //   lid: upper-lid closure 0..1   lidSlope: deg (+ = lid edge higher at the front)
+//   bulge: extra lid-edge curvature (+ = rounder/droopier, − = flatter)   closed: shape of the
+//   lash line when the eye shuts (+1 relaxed ◡, −1 happy ︵)
 //   low: lower-lid raise          eyeS: eye scale        pupil: pupil-size multiplier
 //   browY: lift   browTilt: deg (+ = front end up = worried)   arch: brow curvature
-//   mouth: −1 frown … +1 smile    open: jaw   tilt: head deg (+ = up)
-//   tremble, sweat, blush, droop (ears), teeth (show incisors), flat/wavy/sly mouth styles
+//   mouth: −1 frown … +1 smile    open: jaw   jawX: extra jaw drop (deg)   tilt: head deg (+ = up)
+//   tremble, sweat, blush, droop (ears), earUp, tuftUp, teeth (show incisors), sway (slow head
+//   sway), lookX/lookY (default gaze), flat / wavy / sly mouth styles, askew (glasses knocked)
+const MOOD_DEFAULTS = {
+  lid: 0.14, lidSlope: 0, bulge: 0, closed: 1, low: 0.06, eyeS: 1, pupil: 1, browY: 0, browTilt: 0, arch: 0.25,
+  mouth: 0.08, open: 0, jawX: 0, tilt: 0, tremble: 0, sweat: 0, blush: 0, droop: 0, earUp: 0, tuftUp: 0, teeth: 0,
+  sway: 0, lookX: 0.3, lookY: 0, flat: 0, wavy: 0, sly: 0, askew: 0,
+};
 const MOODS = {
-  neutral: { lid: 0.14, lidSlope: 0, low: 0.06, eyeS: 1, pupil: 1, browY: 0, browTilt: 0, arch: 0.25, mouth: 0.08, open: 0, tilt: 0, tremble: 0, sweat: 0, blush: 0, droop: 0 },
+  neutral: {},
   worried: { lid: 0.06, lidSlope: 16, low: 0.1, eyeS: 1.04, pupil: 0.82, browY: 6, browTilt: 30, arch: 0.1, mouth: -0.55, wavy: 1, tilt: -1, tremble: 0.15, sweat: 0.25 },
   panic: { lid: 0, lidSlope: 6, low: 0, eyeS: 1.24, pupil: 0.55, browY: 12, browTilt: 32, arch: 0.3, mouth: -0.8, open: 0.62, tilt: 4, tremble: 1, sweat: 0.8, teeth: 1, tuftUp: 0.7 },
-  chill: { lid: 0.52, lidSlope: -2, low: 0.22, eyeS: 1, pupil: 1.05, browY: 1, browTilt: 8, arch: 0.55, mouth: 0.75, tilt: 3 },
-  happy: { lid: 0.04, lidSlope: 0, low: 0.45, eyeS: 1.02, pupil: 1.08, browY: 7, browTilt: 10, arch: 0.7, mouth: 1, open: 0.3, tilt: 5, blush: 0.65, teeth: 1 },
-  smug: { lid: 0.44, lidSlope: -8, low: 0.26, eyeS: 1, pupil: 1, browY: 15, browTilt: -18, arch: 1, mouth: 0.8, sly: 1, tilt: 7, lookX: 0.75 },
-  deadpan: { lid: 0.52, lidSlope: 0, low: 0.2, eyeS: 1, pupil: 0.9, browY: -2, browTilt: 0, arch: 0, mouth: 0, flat: 1, tilt: 0, lookX: 0.1 },
-  shock: { lid: 0, lidSlope: 0, low: 0, eyeS: 1.45, pupil: 0.42, browY: 18, browTilt: 10, arch: 0.5, mouth: -0.3, open: 1, tilt: 7, tremble: 0.55, sweat: 0.3, askew: 1, teeth: 1, tuftUp: 1, earUp: 1 },
+  chill: { lid: 0.52, lidSlope: -2, bulge: 2, low: 0.22, pupil: 1.05, browY: 1, browTilt: 8, arch: 0.55, mouth: 0.75, tilt: 3 },
+  happy: { lid: 0.04, closed: -1, low: 0.45, eyeS: 1.02, pupil: 1.08, browY: 7, browTilt: 10, arch: 0.7, mouth: 1, open: 0.3, tilt: 5, blush: 0.65, teeth: 1 },
+  smug: { lid: 0.44, lidSlope: -8, low: 0.26, browY: 15, browTilt: -18, arch: 1, mouth: 0.8, sly: 1, tilt: 7, lookX: 0.75 },
+  deadpan: { lid: 0.52, bulge: -2.2, low: 0.2, pupil: 0.9, browY: -2, browTilt: 0, arch: 0, mouth: 0, flat: 1, lookX: 0.1 },
+  shock: { lid: 0, eyeS: 1.45, pupil: 0.42, browY: 18, browTilt: 10, arch: 0.5, mouth: -0.3, open: 1, jawX: 7, tilt: 7, tremble: 0.55, sweat: 0.3, askew: 1, teeth: 1, tuftUp: 1, earUp: 1 },
   sad: { lid: 0.38, lidSlope: 18, low: 0.12, eyeS: 1.02, pupil: 1.15, browY: 3, browTilt: 28, arch: -0.15, mouth: -0.9, tilt: -8, droop: 1, lookY: 0.6, lookX: 0.2 },
-  sleepy: { lid: 0.8, lidSlope: -4, low: 0.18, eyeS: 1, pupil: 1, browY: -4, browTilt: -4, arch: 0.2, mouth: 0.25, open: 0.06, tilt: -4, droop: 0.5 },
+  sleepy: { lid: 0.8, lidSlope: -4, bulge: 1.5, low: 0.18, browY: -4, browTilt: -4, arch: 0.2, mouth: 0.25, open: 0.06, tilt: -4, droop: 0.5 },
 };
 const MOOD_NAMES = Object.keys(MOODS);
 const POSES = ['swim', 'stand', 'walk', 'run', 'sit', 'lie'];
@@ -195,20 +209,24 @@ function profile(o) {
     c.dark = mix(c.dark, o.tint.color, ta * 0.8);
     c.belly = mix(c.belly, o.tint.color, ta);
   }
+  c.eye = c.eye || EYE;
+  c.lensR = c.lensR || LENS_R;
+  c.geo = headGeo(c.dome || 0);
   const base = c.base;
   c.pal = {
     base,
     dark: c.dark,
     belly: c.belly,
     hi: o.rim ? mix(base, o.rim, 0.75) : mix(base, '#FFE9C6', 0.5),
-    top: mix(base, '#FFDDB0', 0.2),
-    low: mix(c.dark, '#4E3346', 0.22),
+    top: mix(base, c.topTint || '#FFDDB0', who === 'sunny' ? 0.3 : 0.2),
+    low: mix(c.dark, c.lowTint || '#4E3346', 0.26),
     line: mix(shade(c.dark, -0.45), '#2A1610', 0.3),
     fur: rgba(shade(c.dark, -0.35), 0.45),
     furLight: rgba(mix(base, '#FFF1DA', 0.6), 0.5),
     muzzle: mix(shade(c.dark, -0.35), '#463A40', 0.3),
     earIn: mix(c.dark, '#C97C78', 0.5),
-    brow: mix(shade(c.dark, -0.62), '#24140E', 0.3),
+    brow: mix(shade(c.dark, -0.5), '#3A1E12', 0.45),
+    browHi: rgba(mix(base, '#FFE8CC', 0.5), 0.55),
     paw: mix(shade(c.dark, -0.18), '#4E4246', 0.3),
     lid: mix(base, c.dark, 0.18),
     far: mix(c.dark, '#4C3442', 0.14),
@@ -217,10 +235,38 @@ function profile(o) {
   return c;
 }
 
-function moodParams(c, mood) {
-  const m = { ...MOODS.neutral, ...MOODS[mood], ...((c.moodMod && c.moodMod[mood]) || {}) };
+function moodOne(c, mood) {
+  const m = { ...MOOD_DEFAULTS, ...MOODS[mood], ...((c.moodMod && c.moodMod[mood]) || {}) };
   if (c.lids && !(c.moodMod && mood in c.moodMod) && !['panic', 'shock', 'happy', 'worried', 'sad'].includes(mood)) m.lid = Math.max(m.lid, c.lids);
   return m;
+}
+// o.mood: 'name' | {name: weight, ...};  o.moodFrom + o.moodK: crossfade moodFrom → mood.
+// → [[name, weight], ...] normalised, heaviest first.
+function moodWeights(o, c) {
+  const acc = {};
+  const add = (n, w) => { if (MOODS[n] && w > 0) acc[n] = (acc[n] || 0) + w; };
+  const spec = o.mood;
+  if (spec && typeof spec === 'object') for (const k in spec) add(k, +spec[k] || 0);
+  else add(spec, 1);
+  if (!Object.keys(acc).length) add(c.mood, 1);
+  if (o.moodFrom && MOODS[o.moodFrom] && o.moodK != null) {
+    const k = clamp(+o.moodK);
+    for (const n in acc) acc[n] *= k;
+    add(o.moodFrom, 1 - k);
+  }
+  let list = Object.entries(acc).filter(([, w]) => w > 1e-4);
+  if (!list.length) list = [[c.mood, 1]];
+  const tot = list.reduce((a, [, w]) => a + w, 0);
+  return list.map(([n, w]) => [n, w / tot]).sort((a, b) => b[1] - a[1]);
+}
+function moodParams(c, list) {
+  if (list.length === 1) return moodOne(c, list[0][0]);
+  const out = {};
+  for (const [name, w] of list) {
+    const p = moodOne(c, name);
+    for (const k in p) out[k] = (out[k] || 0) + p[k] * w;
+  }
+  return out;
 }
 
 function resolveAcc(c, o) {
@@ -280,19 +326,84 @@ const JAW_PTS = [[50, 16.5], [66, 14.5], [80, 12], [91, 10], [94.5, 13.5], [92, 
 const JAW_TOP = [[91, 10], [80, 12], [66, 14.5], [48, 17]];
 const LIP = [[46, 19.5], [67, 13.5], [81, 10.5], [94, 8]];
 const HINGE = [45, 18];
-const EYE = [38, -26];
+const EYE = [38, -26];          // default eye centre (per-character override: c.eye)
 const EAR = [-1, -48];          // ear centre (head space)
 const EAR_BASE = [4, -43];
-const CROWN = [28, -57];
+const PERCH_X = 10;             // headTop: over the back of the skull, behind the brows
+const ORANGE_X = 30;            // the head orange sits over the middle of the skull
+const HELMET_X = 35.5;          // helmet origin (centre of its bottom rim)
 const LENS_R = 20.5;
+const ORANGE_R = 18;
+
+// Catmull-Rom (as util.blob) sampled into a polyline — for outline lookups.
+function sampleBlob(pts, tension, steps = 10) {
+  const n = pts.length, out = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
+    const c1 = [p1[0] + ((p2[0] - p0[0]) / 6) * tension, p1[1] + ((p2[1] - p0[1]) / 6) * tension];
+    const c2 = [p2[0] - ((p3[0] - p1[0]) / 6) * tension, p2[1] - ((p3[1] - p1[1]) / 6) * tension];
+    for (let k = 0; k < steps; k++) {
+      const u = k / steps, v = 1 - u;
+      out.push([
+        v * v * v * p1[0] + 3 * v * v * u * c1[0] + 3 * v * u * u * c2[0] + u * u * u * p2[0],
+        v * v * v * p1[1] + 3 * v * v * u * c1[1] + 3 * v * u * u * c2[1] + u * u * u * p2[1],
+      ]);
+    }
+  }
+  return out;
+}
+// Per-dome head geometry (pure function of a constant → cached): dome'd outline points and a
+// lookup of the skull's top edge y(x) used to clamp brows and to seat the perch/orange/helmet.
+const _geo = new Map();
+function headGeo(dome) {
+  let g = _geo.get(dome);
+  if (g) return g;
+  const bump = (x) => smoothstep(-22, 10, x) * (1 - smoothstep(56, 88, x));
+  const pts = HEAD_PTS.map(([x, y]) => (y < -28 ? [x, y - dome * bump(x)] : [x, y]));
+  const poly = sampleBlob(pts, 0.95, 12);
+  const top = new Float32Array(140).fill(0); // x from -20..119 → min y
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    if (a[1] > -5 && b[1] > -5) continue;
+    const n = Math.ceil(Math.abs(b[0] - a[0])) + 1;
+    for (let k = 0; k <= n; k++) {
+      const x = lerp(a[0], b[0], k / n), y = lerp(a[1], b[1], k / n);
+      const j = Math.round(x) + 20;
+      if (j >= 0 && j < 140 && y < top[j]) top[j] = y;
+    }
+  }
+  const topY = (x) => {
+    const f = clamp(x + 20, 0, 139), i = Math.floor(f), k = f - i;
+    return lerp(top[i], top[Math.min(139, i + 1)], k);
+  };
+  g = { pts, topY, dome, helmetLift: dome * 0.92 };
+  _geo.set(dome, g);
+  return g;
+}
 
 // ─────────────────────────────────────────────────────────────── rig
+// gait: q = phase (cycles), d = duty (stance fraction) → x −1..1 (+ = forward) and lift 0..1.
+// During stance the foot moves back LINEARLY, so it stays planted when the body advances by
+// `stride` per cycle (see STRIDE / anchors.stride).
+function gait(q, d) {
+  const u = q - Math.floor(q);
+  if (u < d) return { x: 1 - (2 * u) / d, lift: 0 };
+  const k = (u - d) / (1 - d);
+  return { x: -1 + 2 * U.ease.inOutSine(k), lift: Math.sin(Math.PI * k) };
+}
+const WALK = { A: 14, duty: 0.62, H: 9 };
+const RUN = { A: 23, duty: 0.34, H: 15 };
+const STRIDE = { walk: (2 * WALK.A) / WALK.duty, run: (2 * RUN.A) / RUN.duty }; // local units / cycle
+const rotV = (x, y, a) => ({ x: x * Math.cos(a) - y * Math.sin(a), y: x * Math.sin(a) + y * Math.cos(a) });
+
 function rig(o) {
   const c = profile(o);
   const t = o.t || 0;
   const pose = POSES.includes(o.pose) ? o.pose : 'swim';
-  const mood = MOODS[o.mood] ? o.mood : c.mood;
-  const m = moodParams(c, mood);
+  const moods = moodWeights(o, c);
+  const mood = moods[0][0];
+  const m = moodParams(c, moods);
+  if (o.moodTilt === false) m.tilt = 0;
   const acc = resolveAcc(c, o);
   const talk = clamp(o.talk || 0);
   const s = (o.scale == null ? 1 : o.scale) * c.size * K;
@@ -301,6 +412,8 @@ function rig(o) {
   const seed = c.seed;
   const len = c.build.len, bh = c.build.h;
   const turn = clamp(o.headTurn || 0);
+  // small-size level of detail: 0 at normal sizes → 1 for tiny background/wide-shot figures
+  const lod = o.lod != null ? clamp(o.lod) : clamp((0.72 - s / K) / 0.4);
 
   // idle signals
   const br = Math.sin((TAU * t) / c.breath + seed);
@@ -313,9 +426,10 @@ function rig(o) {
   // pose → body matrix (local → local)
   const Sbuild = mAbout(BODY_C[0], BODY_C[1], mS(len, bh));
   const Sbreath = mAbout(BODY_C[0], BODY_C[1], mS(1 + 0.005 * br, 1 + 0.016 * br));
-  const bodyY = 43 * 1; // belly bottom (pre-build) — build scales about it, so it stays put
+  const bodyY = 43; // belly bottom (pre-build) — build scales about it, so it stays put
   let Bpose = mT(tx, ty);
   let headBase = 0, neckOff = [0, 0];
+  let ext = 0; // run: +1 stretched (flight) … −1 gathered
   if (pose === 'swim') {
     // float so that every character's neck pivot sits at the same height above the water
     const nkY0 = BODY_C[1] + (NECK[1] - BODY_C[1]) * bh;
@@ -325,17 +439,24 @@ function rig(o) {
   } else if (pose === 'stand') {
     Bpose = mT(tx, ty + (GROUND - 21) - bodyY);
   } else if (pose === 'walk') {
-    Bpose = mT(tx, ty + (GROUND - 21) - bodyY - Math.abs(Math.cos(TAU * wp)) * 2.4 + 1);
+    Bpose = mT(tx, ty + (GROUND - 21) - bodyY - 1.3 * Math.cos(TAU * wp * 2) + 0.6);
     headBase = Math.sin(TAU * wp * 2) * 1.2;
   } else if (pose === 'run') {
     const ph = TAU * wp;
-    Bpose = mChain(mT(tx + 4, ty + (GROUND - 30) - bodyY - Math.abs(Math.sin(ph)) * 8 + 2), mAbout(-34, 0, mR(Math.sin(ph) * 5 * D2R)), mAbout(-34, 20, mS(1.08, 0.94)));
-    headBase = -6 + Math.sin(ph) * 3;
-    neckOff = [6, 7];
+    ext = Math.cos(ph);
+    const air = 7 * Math.max(0, ext) + 1.5 * Math.max(0, -ext);
+    Bpose = mChain(
+      mT(tx + 4 + ext * 3, ty + (GROUND - 30) - bodyY - air + 3),
+      mAbout(-34, 10, mR(-ext * 3.5 * D2R)),
+      mAbout(-34, 20, mS(1 + 0.1 * ext, 0.93 - 0.045 * ext)),
+    );
+    headBase = -5 + ext * 3;
+    neckOff = [7 + ext * 6, 6];
   } else if (pose === 'sit') {
-    Bpose = mChain(mT(tx + 6, ty + (GROUND - bodyY) - 6), mAbout(-92, 30, mR(-38 * D2R)));
-    headBase = -6;
-    neckOff = [0, 0];
+    // on the haunches: body tipped up ~22° about the rump, chest held high, head level
+    Bpose = mChain(mT(tx + 4, ty + 31), mAbout(-96, 26, mR(-22 * D2R)));
+    headBase = -3;
+    neckOff = [2, -2];
   } else if (pose === 'lie') {
     Bpose = mChain(mT(tx, ty + (GROUND - bodyY) - 3), mAbout(BODY_C[0], BODY_C[1], mS(1.03, 0.86)));
     headBase = -2;
@@ -346,83 +467,121 @@ function rig(o) {
 
   // head
   const nk = bp(NECK[0], NECK[1]);
-  const tiltDeg = (o.headTilt || 0) + (m.tilt || 0) + headBase;
+  const sway = (m.sway || 0) * Math.sin(t * 0.85 + seed * 1.3) * 3;
+  const tiltDeg = (o.headTilt || 0) + (m.tilt || 0) + headBase + sway;
   const nod = noise1(t * 2.3 + seed) * 2.2 * talk;
   const headAngle = (-tiltDeg - talk * 3 + nod - (pose === 'lie' ? talk * 4 : 0)) * D2R;
   const px = nk.x + neckOff[0] * len, py = nk.y + neckOff[1] - talk * 2.2 - br * 0.9;
   const hs = c.head;
-  // headTurn: foreshorten the head along its length (3/4 view) about the eye
   const H = mChain(mT(px, py), mR(headAngle), mS(hs));
   const front = turn >= 0.5; // 3/4 head (pose-to-pose switch)
 
   // jaw
   const mo = m.open || 0;
   const open = clamp(mo + talk * (1 - mo * 0.55));
-  const jawA = open * 22 * D2R + (mood === 'shock' ? 7 * D2R * open : 0);
+  const jawA = open * 22 * D2R + (m.jawX || 0) * D2R * open;
 
   // eyes
   const bl = o.blink !== false ? blinkAt(t, seed, c.blinkEvery, c.blinkDur) : 0;
   let lid = m.lid;
   if (o.eyes != null) lid = 1 - clamp(o.eyes);
   lid = lid + (1 - lid) * bl;
-  const look = o.look || (turn >= 0.5 ? { x: 0, y: m.lookY || 0 } : { x: m.lookX != null ? m.lookX : 0.3, y: m.lookY || 0 });
+  const look = o.look || (front ? { x: 0, y: m.lookY || 0 } : { x: m.lookX, y: m.lookY || 0 });
 
   // ears
   const tw = twitchAt(t, seed);
   let earA = tw * 16 * D2R - (m.droop || 0) * 30 * D2R + (m.earUp || 0) * 14 * D2R;
   if (pose === 'run') earA -= 45 * D2R;
 
-  // legs (local space)
+  // legs (local space). Each leg: joints from the hip down + a foot pad.
   const legs = [];
   const G0 = GROUND;
   const pawUp = clamp(o.pawUp != null ? o.pawUp : acc.thermometer && acc.thermometer.at === 'paw' ? 1 : 0);
-  const L = (hx, hy, fx, fy, far, kind, w0 = 15, w1 = 10.5) => legs.push({ hip: bp(hx, hy), foot: { x: fx, y: fy }, far, kind, w0, w1 });
+  // front leg: shoulder (inside the body) → elbow (at the chest line) → wrist → paw
+  const frontLeg = (hx, hy, ex, ey, foot, far, fa = 0, w = 1) => {
+    const hip = bp(hx, hy), elb = bp(ex, ey);
+    const wr = rotV(-1, -9, fa);
+    legs.push({ kind: 'front', far, pts: [hip, elb, { x: foot.x + wr.x, y: foot.y + wr.y }], ws: [14 * w, 11.5 * w, 7.6 * w], foot, fa, fs: 0.95 });
+  };
+  // hind leg: hip (in the haunch) → knee (front of the haunch, at the belly line) → hock → paw
+  const hindLeg = (hx, hy, kx, ky, foot, far, fa = 0, w = 1) => {
+    const hip = bp(hx, hy), knee = bp(kx, ky);
+    const hk = rotV(-9, -12.5, fa);
+    legs.push({ kind: 'hind', far, pts: [hip, knee, { x: foot.x + hk.x, y: foot.y + hk.y }], ws: [18 * w, 12.5 * w, 7.4 * w], foot, fa, fs: 1.05, long: true });
+  };
   if (pose === 'stand' || pose === 'walk') {
-    const A = pose === 'walk' ? 15 : 0, lift = pose === 'walk' ? 9 : 0;
-    const leg = (hx, hy, off, far, kind) => {
-      const ph = TAU * (wp + off), h = bp(hx, hy);
-      L(hx, hy, h.x + 3 + A * Math.sin(ph), G0 - lift * Math.max(0, Math.cos(ph)), far, kind);
+    const walk = pose === 'walk';
+    const leg = (kind, hx, q, far) => {
+      const g = walk ? gait(wp + q, WALK.duty) : { x: 0, lift: 0 };
+      const h = bp(hx, 30);
+      const fx = h.x + (kind === 'front' ? 3 : 7) + WALK.A * g.x;
+      const foot = { x: fx, y: G0 - WALK.H * g.lift };
+      const fa = g.lift * (kind === 'front' ? 0.55 : -0.25) + (walk ? g.x * (kind === 'front' ? -0.05 : 0.08) : 0);
+      const sw = (fx - h.x) * 0.22;
+      if (kind === 'front') frontLeg(hx, 14, hx - 3 + sw, 34, foot, far, fa);
+      else hindLeg(hx - 6, 8, hx + 6 + sw, 35, foot, far, fa);
     };
-    leg(16, 22, 0.5, true, 'front'); leg(-88, 20, 0, true, 'hind');
-    leg(27, 22, 0, false, 'front'); leg(-74, 20, 0.5, false, 'hind');
+    leg('front', 16, 0.75, true); leg('hind', -84, 0.5, true);
+    leg('front', 27, 0.25, false); leg('hind', -72, 0, false);
   } else if (pose === 'run') {
-    const leg = (hx, hy, off, far, kind) => {
-      const ph = TAU * (wp + off), h = bp(hx, hy);
-      const reach = kind === 'front' ? 26 : 24;
-      const fx = h.x + (kind === 'front' ? 12 : -4) + reach * Math.sin(ph);
-      const fy = G0 - 16 * Math.max(0, Math.cos(ph)) - 2;
-      L(hx, hy, fx, fy, far, kind, 14, 9.5);
+    const leg = (kind, hx, cc, far) => {
+      const g = gait(wp - (cc - RUN.duty / 2), RUN.duty);
+      const h = bp(hx, 30);
+      const fx = h.x + (kind === 'front' ? 8 : 2) + RUN.A * g.x;
+      const foot = { x: fx, y: G0 - RUN.H * g.lift };
+      // reaching paw points forward/up, trailing paw points back (toes down)
+      const fa = kind === 'front' ? (g.lift > 0 ? (g.x > 0 ? -0.25 : 0.9) * g.lift : 0) : (g.lift > 0 ? (g.x < 0 ? 0.6 : -0.3) * g.lift : 0);
+      const sw = (fx - h.x) * 0.3;
+      if (kind === 'front') frontLeg(hx, 12, hx - 2 + sw, 32, foot, far, fa, 0.96);
+      else hindLeg(hx - 6, 6, hx + 6 + sw, 33, foot, far, fa, 0.96);
     };
-    leg(16, 20, 0.1, true, 'front'); leg(-88, 16, 0.6, true, 'hind');
-    leg(27, 20, 0, false, 'front'); leg(-74, 16, 0.5, false, 'hind');
+    leg('front', 16, 0.39, true); leg('hind', -84, 0.67, true);
+    leg('front', 27, 0.33, false); leg('hind', -72, 0.6, false);
   } else if (pose === 'sit') {
-    const f1 = bp(18, 24), f2 = bp(28, 24);
-    L(18, 24, f1.x + 4, G0, true, 'front', 13, 9.5);
-    L(28, 24, f2.x + 6, G0, false, 'front', 13, 9.5);
-    const hh = bp(-72, 10);
-    legs.push({ hip: { x: hh.x + 8, y: G0 - 14 }, foot: { x: hh.x + 30, y: G0 }, far: true, kind: 'hindSit', w0: 10, w1: 9 });
-    legs.push({ hip: { x: hh.x + 14, y: G0 - 12 }, foot: { x: hh.x + 40, y: G0 }, far: false, kind: 'hindSit', w0: 10.5, w1: 9.5 });
+    // short front legs straight down from the chest; hind paws tucked under the haunch
+    const c1 = bp(16, 30), c2 = bp(26, 30);
+    frontLeg(16, 14, 15, 34, { x: c1.x + 3, y: G0 }, true, 0, 0.95);
+    frontLeg(26, 14, 25, 34, { x: c2.x + 4, y: G0 }, false, 0, 0.95);
+    const hh = bp(-70, 22);
+    legs.push({ kind: 'hindTuck', far: true, foot: { x: hh.x + 22, y: G0 }, fs: 1.05, long: true });
+    legs.push({ kind: 'hindTuck', far: false, foot: { x: hh.x + 30, y: G0 }, fs: 1.1, long: true });
   } else if (pose === 'lie') {
-    L(14, 26, 112, G0 - 1, true, 'paw', 12.5, 9.5);
-    L(25, 26, 128, G0, false, 'paw', 12.5, 9.5);
-    const hh = bp(-72, 18);
-    legs.push({ hip: { x: hh.x + 10, y: G0 - 12 }, foot: { x: hh.x + 34, y: G0 }, far: false, kind: 'hindTuck', w0: 10.5, w1: 9.5 });
+    const s1 = bp(14, 26), s2 = bp(25, 26);
+    legs.push({ kind: 'paw', far: true, pts: [s1, { x: s1.x + 34, y: G0 - 8 }, { x: 108, y: G0 - 6.5 }], ws: [13, 10.5, 7.5], foot: { x: 112, y: G0 }, fa: 0, fs: 0.95 });
+    legs.push({ kind: 'paw', far: false, pts: [s2, { x: s2.x + 36, y: G0 - 8 }, { x: 124, y: G0 - 6.5 }], ws: [13, 10.5, 7.5], foot: { x: 128, y: G0 }, fa: 0, fs: 0.95 });
+    const hh = bp(-70, 18);
+    legs.push({ kind: 'hindTuck', far: false, foot: { x: hh.x + 32, y: G0 }, fs: 1.05, long: true });
   }
+
+  // raised near front paw (gesture / holding things)
   let arm = null;
   if (pawUp > 0.001) {
-    const swim = pose === 'swim';
-    const sh = swim ? bp(34, 24) : bp(30, 12);
-    const rest = swim ? { x: sh.x + 20, y: sh.y + 46 } : pose === 'lie' ? { x: 128, y: G0 } : { x: sh.x + 4, y: G0 };
-    const tgt = o.pawAt || (swim ? { x: 148, y: -30 } : { x: 142, y: -14 });
     const k = U.ease.inOutCubic(pawUp);
-    arm = { sh, goal: { x: lerp(rest.x, tgt.x, k), y: lerp(rest.y, tgt.y, k) }, l1: swim ? 66 : 42, l2: swim ? 54 : 46 };
+    const chin = mAp(H, 84, 27);
+    let sh, rest, tgt, l1, l2, elbowFix = null;
+    if (pose === 'swim') {
+      sh = bp(40, 4); l1 = 30; l2 = 34;
+      rest = { x: sh.x + 10, y: sh.y + 58 };
+      tgt = o.pawAt || { x: chin.x + 20, y: chin.y - 26 };
+    } else if (pose === 'lie') {
+      // the chin-rest paw lifts off the couch; the elbow stays planted
+      sh = bp(25, 26); l1 = 36; l2 = 40;
+      rest = { x: 124, y: G0 - 6.5 };
+      tgt = o.pawAt || { x: chin.x + 18, y: chin.y - 34 };
+      elbowFix = { x: sh.x + 36, y: G0 - 8 };
+    } else {
+      sh = bp(28, 12); l1 = 32; l2 = 36;
+      rest = { x: sh.x + 4, y: G0 - 8 };
+      tgt = o.pawAt || { x: chin.x + 22, y: chin.y - 26 };
+    }
+    arm = { sh, goal: { x: lerp(rest.x, tgt.x, k), y: lerp(rest.y, tgt.y, k) }, l1, l2, elbowFix, k };
     const near = legs.findIndex((l) => !l.far && (l.kind === 'front' || l.kind === 'paw'));
     if (near >= 0) legs.splice(near, 1);
   }
 
   return {
-    o, c, m, t, pose, mood, acc, talk, s, flip, rot, seed, G, B, H, hs, headAngle, px, py, nk,
-    open, jawA, lid, bl, look, earA, legs, arm, pawUp, br, len, bh, turn, front,
+    o, c, m, t, pose, mood, moods, acc, talk, s, flip, rot, seed, G, B, H, hs, headAngle, px, py, nk,
+    open, jawA, lid, bl, look, earA, legs, arm, pawUp, br, len, bh, turn, front, lod, ext, geo: c.geo,
   };
 }
 
@@ -434,52 +593,89 @@ function jawPt(r, x, y) {
 }
 function armSolve(arm) {
   const { sh, goal, l1, l2 } = arm;
+  if (arm.elbowFix) {
+    const e = arm.elbowFix;
+    return { elbow: e, paw: goal, ang: Math.atan2(goal.y - e.y, goal.x - e.x) };
+  }
   const dx = goal.x - sh.x, dy = goal.y - sh.y;
   const d = Math.hypot(dx, dy) || 1;
   const dd = Math.min(d, l1 + l2 - 0.5);
   const a = Math.atan2(dy, dx);
   const b = Math.acos(clamp((l1 * l1 + dd * dd - l2 * l2) / (2 * l1 * dd), -1, 1));
+  const elbow = { x: sh.x + Math.cos(a + b) * l1, y: sh.y + Math.sin(a + b) * l1 };
+  const paw = { x: sh.x + Math.cos(a) * dd, y: sh.y + Math.sin(a) * dd };
+  return { elbow, paw, ang: Math.atan2(paw.y - elbow.y, paw.x - elbow.x) };
+}
+// head-space positions of the head-mounted accessories (profile / 3/4)
+function crownPos(r) {
+  if (r.front) return { perch: [F34.crown[0], F34.crown[1]], orange: [32, F34.crown[1]], helmet: [HELMET_X, -57] };
+  const g = r.geo;
   return {
-    elbow: { x: sh.x + Math.cos(a + b) * l1, y: sh.y + Math.sin(a + b) * l1 },
-    paw: { x: sh.x + Math.cos(a) * dd, y: sh.y + Math.sin(a) * dd },
+    perch: [PERCH_X, g.topY(PERCH_X)],
+    orange: [ORANGE_X, g.topY(ORANGE_X)],
+    helmet: [HELMET_X, -57 - g.helmetLift],
   };
+}
+// helmet / orange placement in HEAD space: {x, y (origin = middle of the bottom rim), top}
+function helmetPlace(r) { const p = crownPos(r).helmet; return { x: p[0], y: p[1], top: p[1] - 24 }; }
+function orangePlace(r) {
+  const a = r.acc;
+  const base = a.helmet ? helmetPlace(r).top + 1 : crownPos(r).orange[1] + 1.5;
+  const x = crownPos(r).orange[0] + (a.helmet ? -2 : 0);
+  if (a.orange === 'squashed') return { x, y: base - 1, r: 15, top: base - 9, squashed: true };
+  return { x, y: base - ORANGE_R, r: ORANGE_R, top: base - 2 * ORANGE_R - 2 };
 }
 
 // ─────────────────────────────────────────────────────────────── anchors
+// angle (caller space) of a head/local-space direction vector
+function dirAngle(M, dx, dy) { const a = mAp(M, 0, 0), b = mAp(M, dx, dy); return Math.atan2(b.y - a.y, b.x - a.x); }
 function capyAnchors(o) {
   const r = rig(o);
   const a = r.acc;
   const F = r.front;
-  const crown = F ? F34.crown : CROWN;
-  const crownY = a.helmet ? -81 : crown[1];
-  const top = headPt(r, crown[0], crownY);
-  const angle = r.rot + (r.flip ? -1 : 1) * r.headAngle;
+  const GH = mMul(r.G, r.H);
+  const cp = crownPos(r);
+  const hp = helmetPlace(r);
+  const top = a.helmet ? headPt(r, hp.x, hp.top) : headPt(r, cp.perch[0], cp.perch[1]);
+  // "up" for an object resting on the head (caller space); 0 = upright
+  const angle = dirAngle(GH, 0, -1) + Math.PI / 2;
   let stack = { x: top.x, y: top.y };
-  if (a.orange === 'squashed') stack = headPt(r, crown[0], crownY - 7);
-  else if (a.orange) stack = headPt(r, crown[0] + 2, crownY - 36);
-  else if (a.bird) stack = headPt(r, crown[0], crownY - 19);
+  const op = a.orange || a.bird ? orangePlace(r) : null;
+  if (a.orange) stack = headPt(r, op.x, op.top);
+  else if (a.bird) stack = headPt(r, cp.orange[0], (a.helmet ? hp.top : cp.orange[1]) - 19);
   const openK = clamp(r.jawA / (22 * D2R));
   let mouth, chin;
   if (F) {
     mouth = headPt(r, F34.mouth[0], F34.mouth[1] + 2 + openK * 9);
-    chin = headPt(r, F34.chin[0], F34.chin[1] + 2 + openK * 17);
+    chin = headPt(r, F34.chin[0], F34.chin[1] + 2 + openK * 14);
   } else {
     const jf = jawPt(r, 90, 11), lip = headPt(r, 91, 9);
     mouth = { x: (jf.x + lip.x) / 2, y: (jf.y + lip.y) / 2 };
     chin = jawPt(r, 82, 25);
   }
-  let paw;
-  if (r.arm) { const p = armSolve(r.arm).paw; paw = localPt(r, p.x, p.y); }
-  else {
+  let paw, pawAngle;
+  if (r.arm) {
+    const sol = armSolve(r.arm);
+    paw = localPt(r, sol.paw.x, sol.paw.y);
+    pawAngle = dirAngle(r.G, Math.cos(sol.ang), Math.sin(sol.ang));
+  } else {
     const fl = r.legs.find((l) => !l.far && (l.kind === 'front' || l.kind === 'paw'));
     paw = fl ? localPt(r, fl.foot.x + 5, fl.foot.y - 4) : bodyPt(r, 40, 30);
+    pawAngle = dirAngle(r.G, 1, 0);
   }
+  paw.angle = pawAngle;
   const wl = r.o.waterline != null ? r.o.waterline : 0;
+  const hScale = (r.s * r.hs) / K; // head-mounted props: scale relative to a default scale-1 head
+  const hel = headPt(r, hp.x, hp.y);
+  const orC = headPt(r, orangePlace(r).x, orangePlace(r).y);
+  const eye = F ? F34.eyeN : r.c.eye;
   return {
     headTop: { x: top.x, y: top.y, angle },
     stackTop: { x: stack.x, y: stack.y, angle },
+    helmet: { x: hel.x, y: hel.y, angle, scale: hScale, flip: r.flip },
+    orange: { x: orC.x, y: orC.y, r: orangePlace(r).r * r.s * r.hs, angle, flip: r.flip, squashed: a.orange === 'squashed' },
     mouth,
-    eye: F ? headPt(r, F34.eyeN[0], F34.eyeN[1]) : headPt(r, EYE[0], EYE[1]),
+    eye: headPt(r, eye[0], eye[1]),
     snout: F ? headPt(r, F34.nose[0], F34.nose[1]) : headPt(r, 105, -22),
     ear: F ? headPt(r, F34.earN[0], F34.earN[1]) : headPt(r, EAR[0], EAR[1]),
     chin,
@@ -489,10 +685,12 @@ function capyAnchors(o) {
     paw,
     ground: r.pose === 'swim' ? bodyPt(r, -34, 43) : localPt(r, -34, GROUND),
     waterline: { y: (r.o.y || 0) + wl * r.s },
+    stride: r.pose === 'run' ? STRIDE.run * r.s : STRIDE.walk * r.s,
     scale: r.s / K,
     flip: r.flip,
     facing: r.flip ? -1 : 1,
     headAngle: angle,
+    mood: r.mood,
   };
 }
 
@@ -508,6 +706,59 @@ function limbPath(ctx, x0, y0, x1, y1, w0, w1) {
   ctx.lineTo(x0 - nx * w0, y0 - ny * w0);
   ctx.arc(x0, y0, w0, an + Math.PI, an + TAU, true);
   ctx.closePath();
+}
+// util.blob without beginPath (so shapes can be combined into one clip path)
+function blobTo(ctx, pts, tension = 1) {
+  const n = pts.length;
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
+    ctx.bezierCurveTo(p1[0] + ((p2[0] - p0[0]) / 6) * tension, p1[1] + ((p2[1] - p0[1]) / 6) * tension,
+      p2[0] - ((p3[0] - p1[0]) / 6) * tension, p2[1] - ((p3[1] - p1[1]) / 6) * tension, p2[0], p2[1]);
+  }
+  ctx.closePath();
+}
+// open Catmull-Rom through pts, continuing the current path (current point = pts[0])
+function crTo(ctx, pts, tension = 1) {
+  const n = pts.length;
+  for (let i = 0; i < n - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(n - 1, i + 2)];
+    ctx.bezierCurveTo(p1.x + ((p2.x - p0.x) / 6) * tension, p1.y + ((p2.y - p0.y) / 6) * tension,
+      p2.x - ((p3.x - p1.x) / 6) * tension, p2.y - ((p3.y - p1.y) / 6) * tension, p2.x, p2.y);
+  }
+}
+// smooth tapered limb through joints pts [{x,y}...] with half-widths ws; round caps.
+function taperPath(ctx, pts, ws) {
+  const n = pts.length, L = [], R = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+    let dx = b.x - a.x, dy = b.y - a.y;
+    const d = Math.hypot(dx, dy) || 1;
+    dx /= d; dy /= d;
+    L.push({ x: pts[i].x - dy * ws[i], y: pts[i].y + dx * ws[i] });
+    R.push({ x: pts[i].x + dy * ws[i], y: pts[i].y - dx * ws[i] });
+  }
+  const angEnd = Math.atan2(pts[n - 1].y - pts[n - 2].y, pts[n - 1].x - pts[n - 2].x);
+  const angStart = Math.atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x);
+  ctx.beginPath();
+  ctx.moveTo(L[0].x, L[0].y);
+  crTo(ctx, L, 1);
+  ctx.arc(pts[n - 1].x, pts[n - 1].y, ws[n - 1], angEnd + Math.PI / 2, angEnd - Math.PI / 2, true);
+  const Rr = R.slice().reverse();
+  ctx.lineTo(Rr[0].x, Rr[0].y);
+  crTo(ctx, Rr, 1);
+  ctx.arc(pts[0].x, pts[0].y, ws[0], angStart - Math.PI / 2, angStart + Math.PI / 2, true);
+  ctx.closePath();
+}
+// clip to the body silhouette (inside) or to everything outside it
+function bodyClip(ctx, r, outside) {
+  ctx.beginPath();
+  if (outside) ctx.rect(-3000, -3000, 6000, 6000);
+  ctx.save();
+  apply(ctx, r.B);
+  blobTo(ctx, BODY_PTS, 1);
+  ctx.restore();
+  ctx.clip(outside ? 'evenodd' : 'nonzero');
 }
 function teardrop(ctx, x, y, r, ang = 0) { // tip points up (before rotation)
   const s = Math.sin(ang), c = Math.cos(ang);
@@ -586,68 +837,107 @@ function rotAbout(p, c, a) {
 }
 
 // ─────────────────────────────────────────────────────────────── body parts
-function drawFoot(ctx, r, x, y, far, scale = 1) {
+// foot pad: sole flat on y (the outline's bottom edge lands exactly on y), toes → +x.
+// ang rotates it about the ankle (lifted / pointing paws); long = hind foot (longer heel).
+function drawFoot(ctx, r, x, y, far, scale = 1, ang = 0, long = false) {
   const P = r.c.pal;
   ctx.save();
-  ctx.translate(x, y);
+  ctx.translate(x, y - 6 * scale);
+  ctx.rotate(ang);
+  ctx.translate(0, 6 * scale);
   ctx.scale(scale, scale);
+  const hb = long ? -13 : -9; // heel
   ctx.beginPath();
-  ctx.moveTo(-9, 0);
-  ctx.bezierCurveTo(-10, -8, -2, -10.5, 6, -9);
-  ctx.bezierCurveTo(13, -8, 17, -4, 16.5, -0.5);
-  ctx.quadraticCurveTo(16, 1, 13, 1);
-  ctx.lineTo(-7, 1);
-  ctx.quadraticCurveTo(-9, 1, -9, 0);
+  ctx.moveTo(hb, -1);
+  ctx.bezierCurveTo(hb - 1, -8, -2, -10.5, 6, -9.5);
+  ctx.bezierCurveTo(13, -8.5, 17, -5, 16.5, -2);
+  ctx.quadraticCurveTo(16, -1, 13, -1);
+  ctx.lineTo(hb + 2, -1);
+  ctx.quadraticCurveTo(hb, -1, hb, -1);
   ctx.closePath();
   ctx.fillStyle = far ? shade(P.paw, -0.22) : P.paw;
   ctx.fill();
   ctx.strokeStyle = P.line;
-  ctx.lineWidth = (1.9) * LWK;
+  ctx.lineWidth = (1.9) * LWK / scale;
   ctx.stroke();
   if (!far) {
     ctx.strokeStyle = rgba(shade(P.line, -0.1), 0.65);
-    ctx.lineWidth = (1.3) * LWK;
+    ctx.lineWidth = (1.3) * LWK / scale;
     ctx.beginPath();
-    ctx.moveTo(8, 0.5); ctx.lineTo(7.5, -4);
-    ctx.moveTo(12.5, 0.5); ctx.lineTo(12, -3.5);
+    ctx.moveTo(8, -1.5); ctx.lineTo(7.5, -5);
+    ctx.moveTo(12.5, -1.5); ctx.lineTo(12, -4.5);
     ctx.stroke();
     ctx.strokeStyle = 'rgba(255,240,220,0.22)';
     ctx.beginPath();
-    ctx.moveTo(-4, -7.5); ctx.quadraticCurveTo(3, -9.5, 9, -7.5);
+    ctx.moveTo(hb + 5, -8); ctx.quadraticCurveTo(3, -10, 9, -8.3);
     ctx.stroke();
   }
   ctx.restore();
 }
 
-function drawLeg(ctx, r, l) {
+// tapered, jointed leg. merge: drawn over the body — the part inside the body fades in so the
+// limb grows out of the silhouette (no outline across the join).
+function drawLeg(ctx, r, l, merge) {
   const P = r.c.pal;
   const far = l.far;
-  const fill = far ? P.far : P.base;
-  const { hip, foot } = l;
+  if (l.kind === 'hindTuck') { drawFoot(ctx, r, l.foot.x, l.foot.y, far, l.fs, 0, true); return; }
+  const path = () => taperPath(ctx, l.pts, l.ws);
+  const y0 = l.pts[0].y, y1 = l.foot.y;
+  const topC = far ? P.far : mix(mix(P.base, P.dark, 0.4), P.low, 0.28);
+  const botC = far ? shade(P.far, -0.14) : mix(P.base, P.dark, 0.62);
+  const grad = () => { const g = ctx.createLinearGradient(0, y0, 0, y1); g.addColorStop(0, topC); g.addColorStop(0.45, far ? P.far : mix(P.base, P.dark, 0.38)); g.addColorStop(1, botC); return g; };
   ctx.save();
-  limbPath(ctx, hip.x, hip.y, foot.x, foot.y - 4, l.w0, l.w1);
-  const g = ctx.createLinearGradient(0, hip.y, 0, foot.y);
-  g.addColorStop(0, fill);
-  g.addColorStop(1, far ? shade(P.far, -0.12) : mix(P.base, P.dark, 0.6));
-  ctx.fillStyle = g;
-  ctx.fill();
-  ctx.strokeStyle = P.line;
-  ctx.lineWidth = (2) * LWK;
-  ctx.stroke();
-  if (!far) {
-    // front-edge light
+  ctx.lineJoin = 'round';
+  if (merge) {
     ctx.save();
-    limbPath(ctx, hip.x, hip.y, foot.x, foot.y - 4, l.w0, l.w1);
+    bodyClip(ctx, r, true);
+    path();
+    ctx.fillStyle = grad();
+    ctx.fill();
+    ctx.strokeStyle = P.line;
+    ctx.lineWidth = (2) * LWK;
+    ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    bodyClip(ctx, r, false);
+    const j = l.pts[1];
+    const g = ctx.createLinearGradient(0, j.y - 15, 0, j.y + 1);
+    g.addColorStop(0, rgba(topC, 0));
+    g.addColorStop(1, rgba(topC, 1));
+    path();
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.restore();
+  } else {
+    path();
+    ctx.fillStyle = grad();
+    ctx.fill();
+    ctx.strokeStyle = P.line;
+    ctx.lineWidth = (2) * LWK;
+    ctx.stroke();
+  }
+  if (!far) {
+    // front-edge light + a joint crease (elbow / hock)
+    ctx.save();
+    path();
     ctx.clip();
-    ctx.strokeStyle = rgba(P.hi, 0.35);
+    const [a, b, c] = l.pts;
+    ctx.strokeStyle = rgba(P.hi, 0.32);
     ctx.lineWidth = (3) * LWK;
+    ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(hip.x + l.w0 - 2, hip.y + 8);
-    ctx.lineTo(foot.x + l.w1 - 2, foot.y - 6);
+    ctx.moveTo(b.x + l.ws[1] - 1.5, b.y);
+    ctx.lineTo(c.x + l.ws[2] - 1.5, c.y);
+    ctx.stroke();
+    ctx.strokeStyle = rgba(P.dark, 0.55);
+    ctx.lineWidth = (1.6) * LWK;
+    ctx.beginPath();
+    if (l.kind === 'hind') { ctx.moveTo(c.x - 4, c.y - 6); ctx.quadraticCurveTo(c.x - 7, c.y - 1, c.x - 5, c.y + 4); }
+    else { ctx.moveTo(c.x - 5, c.y - 3); ctx.quadraticCurveTo(c.x - 1, c.y - 1, c.x + 3, c.y - 3); }
     ctx.stroke();
     ctx.restore();
   }
-  drawFoot(ctx, r, foot.x - 1, foot.y, far, 0.95);
+  drawFoot(ctx, r, l.foot.x - 1, l.foot.y, far, l.fs, l.fa || 0, !!l.long);
   ctx.restore();
 }
 
@@ -703,7 +993,8 @@ function drawNeck(ctx, r) {
   const a = mAp(r.B, 24, -18);
   const b = mAp(r.H, 4, 8);
   ctx.save();
-  limbPath(ctx, a.x, a.y, b.x, b.y, 25, 23 * r.hs);
+  const nw = r.c.neck || 1;
+  limbPath(ctx, a.x, a.y, b.x, b.y, 25 * nw, 23 * r.hs * nw);
   ctx.fillStyle = mix(P.base, P.dark, 0.18);
   ctx.fill();
   ctx.restore();
@@ -727,63 +1018,149 @@ function drawHeadShadowOnBody(ctx, r) {
   ctx.restore();
 }
 
+// folded thigh for sit / lie, merged into the body: outside the body it extends the silhouette
+// (same paint as the body → no seam); inside only a soft crease + light show the thigh.
 function drawHaunch(ctx, r, sit) {
-  // folded thigh for sit / lie
   const P = r.c.pal;
+  const cx = sit ? -70 : -72, cy = sit ? 14 : 18, rx = sit ? 31 : 28, ry = sit ? 27 : 24, ang = sit ? -0.15 : -0.2;
+  const hp = () => ellipse(ctx, cx, cy, rx, ry, ang);
+  ctx.save();
+  bodyClip(ctx, r, true);
+  apply(ctx, r.B);
+  ctx.save();
+  hp();
+  ctx.clip();
+  ctx.fillStyle = P.hi;
+  ctx.fillRect(-200, -100, 300, 200);
+  ctx.translate(1.4, 4.6);
+  const g = ctx.createLinearGradient(0, -66, 0, 44);
+  g.addColorStop(0, P.top);
+  g.addColorStop(1, mix(P.base, P.dark, 0.45));
+  ctx.fillStyle = g;
+  hp();
+  ctx.fill();
+  ctx.translate(-1.4, -4.6);
+  const sg = ctx.createLinearGradient(0, 4, 0, 46);
+  sg.addColorStop(0, rgba(P.low, 0));
+  sg.addColorStop(1, rgba(P.low, 0.55));
+  ctx.fillStyle = sg;
+  ctx.fillRect(-200, 4, 300, 100);
+  ctx.restore();
+  hp();
+  ctx.strokeStyle = P.line;
+  ctx.lineWidth = (2.4) * LWK;
+  ctx.stroke();
+  ctx.restore();
+  // inside: thigh light + crease along the front/top of the thigh
   ctx.save();
   apply(ctx, r.B);
-  const cx = -72, cy = sit ? 10 : 18, rx = sit ? 31 : 28, ry = sit ? 29 : 24;
-  paintShape(ctx, () => ellipse(ctx, cx, cy, rx, ry, -0.2), {
-    top: P.top, bottom: mix(P.base, P.dark, 0.5), y0: cy - ry, y1: cy + ry, hi: P.hi, rim: [1, 3.4],
-    shadow: P.low, shadowY0: cy, shadowY1: cy + ry, shadowA: 0.4, line: P.line, lw: 2,
-    extra: () => flicks(ctx, [[cx - 12, cy - 16, 11, 1.9, 2.2], [cx - 5, cy - 18, 10, 1.85, 2]], P.fur),
-  });
+  ctx.save();
+  hp();
+  ctx.clip();
+  const lg = ctx.createRadialGradient(cx - 8, cy - 10, 2, cx - 4, cy - 4, rx);
+  lg.addColorStop(0, rgba('#FFF0D8', 0.18));
+  lg.addColorStop(1, rgba('#FFF0D8', 0));
+  ctx.fillStyle = lg;
+  ctx.fillRect(cx - rx, cy - ry, 2 * rx, 2 * ry);
+  ctx.restore();
+  ctx.strokeStyle = rgba(P.dark, 0.7);
+  ctx.lineWidth = (2.1) * LWK;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rx, ry, ang, sit ? -2.2 : -2.0, sit ? 0.55 : 0.4);
+  ctx.stroke();
+  flicks(ctx, [[cx - 12, cy - 16, 11, 1.9, 2.2], [cx - 4, cy - 18, 10, 1.85, 2]], P.fur);
   ctx.restore();
 }
 
+// raised near front paw: tapered upper arm + forearm, wrist, paw pad. Returns the paw pose.
 function drawArm(ctx, r) {
   if (!r.arm) return null;
   const P = r.c.pal;
-  const { elbow, paw } = armSolve(r.arm);
+  const sol = armSolve(r.arm);
+  const { elbow, paw, ang } = sol;
   const sh = r.arm.sh;
+  const wrist = { x: paw.x - Math.cos(ang) * 6, y: paw.y - Math.sin(ang) * 6 };
+  const l = { kind: 'arm', far: false, pts: [sh, elbow, wrist], ws: r.pose === 'swim' ? [12, 10, 7] : [13, 10.5, 7.2] };
+  const path = () => taperPath(ctx, l.pts, l.ws);
+  const topC = mix(mix(P.base, P.dark, 0.3), P.low, 0.15);
   ctx.save();
   ctx.lineJoin = 'round';
-  limbPath(ctx, sh.x, sh.y, elbow.x, elbow.y, 14, 11.5);
-  ctx.fillStyle = mix(P.base, P.dark, 0.25);
-  ctx.fill();
-  ctx.strokeStyle = P.line;
-  ctx.lineWidth = (2) * LWK;
+  const g = ctx.createLinearGradient(sh.x, sh.y, paw.x, paw.y);
+  g.addColorStop(0, topC);
+  g.addColorStop(1, mix(P.top, P.base, 0.4));
+  const swim = r.pose === 'swim';
+  if (!swim) {
+    ctx.save();
+    bodyClip(ctx, r, true);
+    path(); ctx.fillStyle = g; ctx.fill();
+    ctx.strokeStyle = P.line; ctx.lineWidth = (2) * LWK; ctx.stroke();
+    ctx.restore();
+    ctx.save();
+    bodyClip(ctx, r, false);
+    const fg = ctx.createLinearGradient(sh.x, sh.y, elbow.x, elbow.y);
+    fg.addColorStop(0, rgba(topC, 0));
+    fg.addColorStop(0.8, rgba(topC, 1));
+    path(); ctx.fillStyle = fg; ctx.fill();
+    ctx.restore();
+  } else {
+    path(); ctx.fillStyle = g; ctx.fill();
+    ctx.strokeStyle = P.line; ctx.lineWidth = (2) * LWK; ctx.stroke();
+  }
+  // elbow crease + forearm light
+  ctx.save();
+  path();
+  ctx.clip();
+  ctx.strokeStyle = rgba(P.hi, 0.3);
+  ctx.lineWidth = (3) * LWK;
+  ctx.lineCap = 'round';
+  const nx = -Math.sin(ang), ny = Math.cos(ang);
+  ctx.beginPath();
+  ctx.moveTo(elbow.x - nx * 7, elbow.y - ny * 7);
+  ctx.lineTo(wrist.x - nx * 5, wrist.y - ny * 5);
   ctx.stroke();
-  limbPath(ctx, elbow.x, elbow.y, paw.x, paw.y, 11.5, 9.5);
-  const g = ctx.createLinearGradient(elbow.x, elbow.y, paw.x, paw.y);
-  g.addColorStop(0, mix(P.base, P.dark, 0.18));
-  g.addColorStop(1, P.top);
-  ctx.fillStyle = g;
-  ctx.fill();
-  ctx.stroke();
-  circle(ctx, elbow.x, elbow.y, 11.2);
-  ctx.fillStyle = mix(P.base, P.dark, 0.2);
-  ctx.fill();
-  const ang = Math.atan2(paw.y - elbow.y, paw.x - elbow.x);
+  ctx.restore();
+  // paw pad
   ctx.translate(paw.x, paw.y);
   ctx.rotate(ang);
-  ellipse(ctx, 3, 0, 10.5, 9);
+  ellipse(ctx, 1.5, 0, 9.5, 8);
   ctx.fillStyle = P.paw;
   ctx.fill();
   ctx.strokeStyle = P.line;
+  ctx.lineWidth = (1.9) * LWK;
   ctx.stroke();
   ctx.strokeStyle = rgba(P.line, 0.7);
   ctx.lineWidth = (1.3) * LWK;
   ctx.beginPath();
-  ctx.moveTo(8, -5); ctx.lineTo(12, -3);
-  ctx.moveTo(9.5, 0.5); ctx.lineTo(13.5, 1.5);
+  ctx.moveTo(6.5, -5); ctx.lineTo(10, -3.2);
+  ctx.moveTo(8, 0.5); ctx.lineTo(11.5, 1.2);
   ctx.stroke();
   ctx.restore();
   return { paw, ang };
 }
+// the "thumb": a little curl of the paw drawn OVER a held prop so it reads as gripped
+function drawThumb(ctx, r, paw, ang) {
+  const P = r.c.pal;
+  ctx.save();
+  ctx.translate(paw.x, paw.y);
+  ctx.rotate(ang);
+  ctx.beginPath();
+  ctx.ellipse(4.5, -3.5, 6.2, 4.6, 0.5, 0, TAU);
+  ctx.fillStyle = mix(P.paw, P.base, 0.15);
+  ctx.fill();
+  ctx.strokeStyle = P.line;
+  ctx.lineWidth = (1.5) * LWK;
+  ctx.stroke();
+  ctx.strokeStyle = rgba(P.line, 0.6);
+  ctx.lineWidth = (1.1) * LWK;
+  ctx.beginPath();
+  ctx.moveTo(6, -6.5); ctx.lineTo(8.5, -4);
+  ctx.stroke();
+  ctx.restore();
+}
 
 // ─────────────────────────────────────────────────────────────── head
-function headPath(ctx) { blob(ctx, HEAD_PTS, 0.95); }
+function headPath(ctx, r) { blob(ctx, r ? r.geo.pts : HEAD_PTS, 0.95); }
 function jawPath(ctx) { blob(ctx, JAW_PTS, 0.9); }
 
 function drawEar(ctx, r, far) {
@@ -873,51 +1250,57 @@ function drawJaw(ctx, r) {
   ctx.restore();
 }
 
-// mouth line under the snout with a mood-shaped corner
+// mouth line under the snout with a mood-shaped corner (continuous in every mood parameter,
+// so blended moods morph smoothly)
 function drawMouthLine(ctx, r) {
   const P = r.c.pal, m = r.m;
-  const smile = m.mouth || 0;
+  const lod = r.lod || 0;
   const openK = clamp(r.jawA / (10 * D2R));
+  const smile = clamp((m.mouth || 0) * (1 + 0.35 * lod), -1.2, 1.3);
+  const flat = clamp(m.flat || 0), sly = clamp(m.sly || 0);
+  const wav = clamp(m.wavy || 0) * (1 - clamp(openK * 2));
   const F = [94, 8.6], C = [58, 17.5];
+  const L = (a, b, k) => [lerp(a[0], b[0], k), lerp(a[1], b[1], k)];
+  const fr = Math.max(0, -smile) * (1 - flat);
+  // main line F → C as two cubic segments: straight ↔ wavy, with a slight arch for frowns
+  const s1 = [L([89, 9.6], [87, 11.8], wav), L([82.5, 10.575], [81, 8.6], wav), L([76, 11.925], [74, 12.8], wav)];
+  const s2 = [L([69.5, 13.275], [67, 16.6], wav), L([63, 15 - 2.5 * fr], [63, 13.6 - 2 * fr], wav), C];
+  // corner: smile / frown / flat
+  let cp1, cp2, end;
+  if (smile >= 0) {
+    const k = smile * (1 + 0.25 * sly);
+    end = [C[0] - 10 - k * 3, C[1] - 2 - k * 11];
+    cp1 = [C[0] - 5, C[1] + 0.5];
+    cp2 = [end[0] + 1 + k, end[1] + 6 + k * 3];
+  } else {
+    const k = -smile;
+    end = [C[0] - 9 + k, Math.min(21.6, C[1] + 2.5 + 5 * k)];
+    cp1 = [C[0] - 4, C[1] + 0.3];
+    cp2 = [C[0] - 8, C[1] + 0.8 + 1.5 * k];
+  }
+  if (flat > 0) {
+    end = L(end, [C[0] - 11, C[1] + 0.6], flat);
+    cp1 = L(cp1, [C[0] - 4, C[1] + 0.2], flat);
+    cp2 = L(cp2, [C[0] - 8, C[1] + 0.5], flat);
+  }
   ctx.save();
   ctx.strokeStyle = P.line;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.lineWidth = (2.8) * LWK;
+  ctx.lineWidth = (2.8 + 1.6 * lod) * LWK;
   ctx.beginPath();
   ctx.moveTo(F[0], F[1]);
-  if (m.wavy && openK < 0.5) {
-    ctx.bezierCurveTo(87, 11.8, 81, 8.6, 74, 12.8);
-    ctx.bezierCurveTo(67, 16.6, 63, 13.6, C[0], C[1]);
-  } else {
-    ctx.bezierCurveTo(84, 10.6, 68, 12.5, C[0], C[1]);
-  }
-  let end;
-  if (m.flat) {
-    end = [C[0] - 11, C[1] + 0.5];
-    ctx.lineTo(end[0], end[1]);
-  } else if (smile >= 0) {
-    const k = smile * (m.sly ? 1.25 : 1);
-    end = [C[0] - 10 - k * 3, C[1] - 2 - k * 11];
-    ctx.bezierCurveTo(C[0] - 5, C[1] + 0.5, end[0] + 1 + k, end[1] + 6 + k * 3, end[0], end[1]);
-  } else {
-    const k = -smile;
-    end = [C[0] - 10, C[1] + 3 + k * 8];
-    ctx.bezierCurveTo(C[0] - 5, C[1] + 0.5, C[0] - 9, C[1] + 1 + k * 2, end[0], end[1]);
-  }
+  ctx.bezierCurveTo(s1[0][0], s1[0][1], s1[1][0], s1[1][1], s1[2][0], s1[2][1]);
+  ctx.bezierCurveTo(s2[0][0], s2[0][1], s2[1][0], s2[1][1], s2[2][0], s2[2][1]);
+  ctx.bezierCurveTo(cp1[0], cp1[1], cp2[0], cp2[1], end[0], end[1]);
   ctx.stroke();
-  // smile: cheek crease; frown: little chin pucker
-  if (smile > 0.4 && !m.flat) {
-    ctx.lineWidth = (2) * LWK;
-    ctx.strokeStyle = rgba(P.line, 0.6);
+  // smile: cheek crease pushed up by the grin
+  const ck = clamp((smile - 0.35) / 0.35) * (1 - flat);
+  if (ck > 0.01) {
+    ctx.lineWidth = (2 + 0.8 * lod) * LWK;
+    ctx.strokeStyle = rgba(P.line, 0.6 * ck);
     ctx.beginPath();
     ctx.arc(end[0] - 2.5, end[1] + 3, 5.5, -1.75, -0.35);
-    ctx.stroke();
-  } else if (smile < -0.4 && openK < 0.3) {
-    ctx.lineWidth = (1.6) * LWK;
-    ctx.strokeStyle = rgba(P.line, 0.45);
-    ctx.beginPath();
-    ctx.arc(end[0] + 1, end[1] + 1, 4, 2.2, 3.6);
     ctx.stroke();
   }
   ctx.restore();
@@ -925,7 +1308,7 @@ function drawMouthLine(ctx, r) {
 
 function drawUpperHead(ctx, r) {
   const P = r.c.pal;
-  paintShape(ctx, () => headPath(ctx), {
+  paintShape(ctx, () => headPath(ctx, r), {
     top: P.top, bottom: mix(P.base, P.dark, 0.32), y0: -58, y1: 31, hi: P.hi, rim: [1.2, 4],
     shadow: P.low, shadowY0: 4, shadowY1: 33, shadowA: 0.5, line: P.line, lw: 2.4,
     extra: () => {
@@ -1001,73 +1384,113 @@ function drawUpperHead(ctx, r) {
 }
 
 function eyeGeom(r) {
-  const m = r.m;
+  const m = r.m, c = r.c;
   const glasses = !!r.acc.glasses;
-  const es = (m.eyeS || 1) * (glasses ? 1.04 : 1);
-  return { x: EYE[0], y: EYE[1], rx: 12.2 * es, ry: 13.4 * es, es, glasses };
+  const es = (m.eyeS || 1) * (glasses ? 1.04 : 1) * (c.eyeSize || 1);
+  return { x: c.eye[0], y: c.eye[1], rx: 12.2 * es, ry: 13.4 * es, es, glasses, lensR: c.lensR };
+}
+// fur colour behind the eye (matches the head's base gradient) — closed lids blend into it
+function furAt(r, y) {
+  const P = r.c.pal;
+  return mix(P.top, mix(P.base, P.dark, 0.32), clamp((y - 4 + 58) / 89));
+}
+// eyelid curves. Upper lid edge: quadratic (x−W, yA) → ctrl (x, yC) → (x+W, yB).
+// lid 0..~0.62 lowers the upper lid; beyond that the lower lid rises to meet it and the lash
+// line morphs into the mood's closed shape (◡ relaxed / ︵ happy) a little below the centre.
+function eyeLids(r, e) {
+  const m = r.m;
+  const lid = clamp(r.lid);
+  const closeK = smoothstep(0.62, 1, lid);
+  const low = clamp(m.low || 0) * (1 - r.bl * 0.4);
+  const W = e.rx + 3;
+  const k = Math.tan((m.lidSlope || 0) * D2R) * (1 - closeK * 0.75);
+  const yMeet = e.y + e.ry * 0.3;
+  const yl = lerp(e.y - e.ry + 2 * e.ry * Math.min(lid, 0.62), yMeet, closeK);
+  const bulgeOpen = 2.4 + lid * 1.6 + (m.bulge || 0);
+  const bulgeShut = lerp(-7, 4.5, clamp(((m.closed == null ? 1 : m.closed) + 1) / 2));
+  const bulge = lerp(bulgeOpen, bulgeShut, closeK);
+  const up = { yA: yl + k * W, yB: yl - k * W, yC: yl + bulge };
+  const yloOpen = e.y + e.ry - 2 * e.ry * low;
+  const lo0 = { yA: yloOpen + 2, yB: yloOpen + 2, yC: yloOpen - 4 * low - 1 };
+  const lo = { yA: lerp(lo0.yA, up.yA + 0.6, closeK), yB: lerp(lo0.yB, up.yB + 0.6, closeK), yC: lerp(lo0.yC, up.yC + 0.6, closeK) };
+  const at = (c, x) => { const u = clamp((x - (e.x - W)) / (2 * W)); return (1 - u) * (1 - u) * c.yA + 2 * u * (1 - u) * c.yC + u * u * c.yB; };
+  return { lid, closeK, low, W, up, lo, at };
+}
+function lidCurve(ctx, e, W, c, back) { // traced front→back (back=false) or back→front
+  if (!back) { ctx.lineTo(e.x + W, c.yB); ctx.quadraticCurveTo(e.x, c.yC, e.x - W, c.yA); }
+  else { ctx.lineTo(e.x - W, c.yA); ctx.quadraticCurveTo(e.x, c.yC, e.x + W, c.yB); }
 }
 
 function drawEye(ctx, r, eo, mirror) {
   const P = r.c.pal, m = r.m, c = r.c;
   const e = eo || eyeGeom(r);
   if (mirror) { ctx.save(); ctx.translate(e.x, 0); ctx.scale(-1, 1); ctx.translate(-e.x, 0); r = { ...r, look: { x: -(r.look.x || 0), y: r.look.y || 0 } }; }
-  const lid = clamp(r.lid);
-  const low = clamp(m.low || 0) * (1 - r.bl * 0.4);
-  const slope = (m.lidSlope || 0) * D2R;
+  const lod = r.lod || 0;
+  const Ld = eyeLids(r, e);
+  const { lid, closeK, low, W, up, lo } = Ld;
   const eyePath = () => ellipse(ctx, e.x, e.y, e.rx, e.ry);
   ctx.save();
-  // socket shadow
+  // socket shadow (fades as the eye shuts, so a closed eye never reads as a button)
   ellipse(ctx, e.x, e.y + 0.6, e.rx + 2.6, e.ry + 2.6);
-  ctx.fillStyle = rgba(P.low, 0.32);
-  ctx.fill();
-  eyePath();
-  const sg = ctx.createLinearGradient(0, e.y - e.ry, 0, e.y + e.ry);
-  sg.addColorStop(0, '#E4D8CA');
-  sg.addColorStop(0.42, '#FFFBF3');
-  sg.addColorStop(1, '#FFF6E8');
-  ctx.fillStyle = sg;
+  ctx.fillStyle = rgba(P.low, 0.32 * (1 - 0.75 * closeK));
   ctx.fill();
   ctx.save();
+  eyePath();
   ctx.clip();
-  // pupil / iris
-  let pr = c.pupil * (m.pupil || 1);
-  if (c.iris) pr = Math.min(pr, e.rx - 2);
-  const lx = clamp(r.look.x == null ? 0 : r.look.x, -1, 1), ly = clamp(r.look.y == null ? 0 : r.look.y, -1, 1);
-  const ppx = e.x + lx * (e.rx - pr - 1.4), ppy = e.y + ly * (e.ry - pr - 1.4) + (c.iris ? 1 : 0);
-  if (c.iris) {
-    circle(ctx, ppx, ppy, pr);
-    const ig = ctx.createRadialGradient(ppx, ppy + pr * 0.35, 0.5, ppx, ppy, pr);
-    ig.addColorStop(0, '#7A4A2A');
-    ig.addColorStop(1, '#2A150D');
-    ctx.fillStyle = ig;
+  if (closeK < 0.999) {
+    const sg = ctx.createLinearGradient(0, e.y - e.ry, 0, e.y + e.ry);
+    sg.addColorStop(0, '#E4D8CA');
+    sg.addColorStop(0.42, '#FFFBF3');
+    sg.addColorStop(1, '#FFF6E8');
+    ctx.fillStyle = sg;
+    ctx.fillRect(e.x - e.rx, e.y - e.ry, 2 * e.rx, 2 * e.ry);
+    // pupil / iris — kept peeking out between the lids (never fully hidden by a heavy lid)
+    let pr = c.pupil * (m.pupil || 1);
+    if (c.iris) pr = Math.min(pr, e.rx - 2);
+    if (lod > 0) pr = lerp(pr, Math.max(pr, c.iris ? 6.8 : 4.8), lod);
+    const lx = clamp(r.look.x == null ? 0 : r.look.x, -1, 1), ly = clamp(r.look.y == null ? 0 : r.look.y, -1, 1);
+    const ppx = e.x + lx * (e.rx - pr - 1.4);
+    let ppy = e.y + ly * (e.ry - pr - 1.4) + (c.iris ? 1 : 0);
+    const yTop = Ld.at(up, ppx) + 0.5 * up.yC * 0 , yBot = Ld.at(lo, ppx);
+    const lidEdge = Ld.at(up, ppx) + (lid > 0.01 ? 0 : -99), lowEdge = low > 0.01 || closeK > 0 ? yBot : 99;
+    const ellBot = e.y + e.ry * Math.sqrt(Math.max(0, 1 - ((ppx - e.x) / e.rx) ** 2));
+    const hiLim = Math.min(lowEdge, ellBot) - pr * 0.35;
+    const loLim = lidEdge + pr * 0.35;
+    if (hiLim >= loLim) ppy = clamp(ppy, loLim, hiLim);
+    else ppy = (lidEdge + Math.min(lowEdge, ellBot)) / 2;
+    void yTop;
+    if (c.iris) {
+      circle(ctx, ppx, ppy, pr);
+      const ig = ctx.createRadialGradient(ppx, ppy + pr * 0.35, 0.5, ppx, ppy, pr);
+      ig.addColorStop(0, '#7A4A2A');
+      ig.addColorStop(1, '#2A150D');
+      ctx.fillStyle = ig;
+      ctx.fill();
+      circle(ctx, ppx, ppy, pr * 0.56);
+      ctx.fillStyle = '#100705';
+      ctx.fill();
+    } else {
+      circle(ctx, ppx, ppy, pr);
+      ctx.fillStyle = '#130906';
+      ctx.fill();
+    }
+    ctx.fillStyle = '#FFFFFF';
+    const hy = Math.max(ppy - pr * 0.4, Ld.at(up, ppx + pr * 0.36) + 1.4);
+    circle(ctx, ppx + pr * 0.36, hy, Math.max(1.1, pr * 0.34));
     ctx.fill();
-    circle(ctx, ppx, ppy, pr * 0.56);
-    ctx.fillStyle = '#100705';
-    ctx.fill();
-  } else {
-    circle(ctx, ppx, ppy, pr);
-    ctx.fillStyle = '#130906';
-    ctx.fill();
+    if (c.iris) { circle(ctx, ppx - pr * 0.4, ppy + pr * 0.38, pr * 0.13); ctx.fill(); }
   }
-  ctx.fillStyle = '#FFFFFF';
-  circle(ctx, ppx + pr * 0.36, ppy - pr * 0.4, Math.max(1.1, pr * 0.34));
-  ctx.fill();
-  if (c.iris) { circle(ctx, ppx - pr * 0.4, ppy + pr * 0.38, pr * 0.13); ctx.fill(); }
-  // upper lid
-  const W = e.rx + 3;
-  const yl = e.y - e.ry + 2 * e.ry * lid + (lid > 0.97 ? 1.5 : 0);
-  const k = Math.tan(slope);
-  const bulge = 2.4 + lid * 1.6;
+  // upper lid (skin): fur-coloured, a touch darker toward the lash line
+  const furTop = furAt(r, e.y - e.ry), furMid = furAt(r, e.y);
   if (lid > 0.01) {
     ctx.beginPath();
     ctx.moveTo(e.x - W, e.y - e.ry - 20);
     ctx.lineTo(e.x + W, e.y - e.ry - 20);
-    ctx.lineTo(e.x + W, yl - k * W);
-    ctx.quadraticCurveTo(e.x, yl + bulge, e.x - W, yl + k * W);
+    lidCurve(ctx, e, W, up, false);
     ctx.closePath();
-    const lg = ctx.createLinearGradient(0, e.y - e.ry, 0, Math.max(yl, e.y - e.ry + 2));
-    lg.addColorStop(0, P.lid);
-    lg.addColorStop(1, mix(P.lid, P.dark, 0.3));
+    const lg = ctx.createLinearGradient(0, e.y - e.ry, 0, Math.max(up.yC, e.y - e.ry + 2));
+    lg.addColorStop(0, mix(furTop, P.lid, 0.45 * (1 - closeK)));
+    lg.addColorStop(1, mix(mix(P.lid, P.dark, 0.3), furMid, 0.55 * closeK));
     ctx.fillStyle = lg;
     ctx.fill();
   } else {
@@ -1077,82 +1500,132 @@ function drawEye(ctx, r, eo, mirror) {
     ctx.fillStyle = shg;
     ctx.fillRect(e.x - W, e.y - e.ry, 2 * W, 7);
   }
-  let ylo = e.y + e.ry;
-  if (low > 0.01) {
-    ylo = e.y + e.ry - 2 * e.ry * low;
+  const lowOn = low > 0.01 || closeK > 0;
+  if (lowOn) {
     ctx.beginPath();
     ctx.moveTo(e.x - W, e.y + e.ry + 20);
     ctx.lineTo(e.x + W, e.y + e.ry + 20);
-    ctx.lineTo(e.x + W, ylo + 2);
-    ctx.quadraticCurveTo(e.x, ylo - 4 * low - 1, e.x - W, ylo + 2);
+    lidCurve(ctx, e, W, lo, false);
     ctx.closePath();
-    ctx.fillStyle = mix(P.lid, P.belly, 0.25);
+    ctx.fillStyle = mix(mix(P.lid, P.belly, 0.25), furAt(r, e.y + e.ry * 0.6), closeK);
     ctx.fill();
   }
   ctx.restore();
-  // lash lines
+  // eye outline: crisp below the lash line, softer over the lid; fades out as the eye shuts
+  const topA = 1 - 0.8 * smoothstep(0.3, 1, lid);
+  const botA = 1 - 0.88 * closeK;
+  ctx.lineWidth = (1.8 + 0.6 * lod) * LWK;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(e.x - W - 4, e.y + e.ry + 30);
+  ctx.lineTo(e.x + W + 4, e.y + e.ry + 30);
+  ctx.lineTo(e.x + W + 4, up.yB);
+  lidCurve(ctx, { ...e, x: e.x }, W, up, false);
+  ctx.lineTo(e.x - W - 4, up.yA);
+  ctx.closePath();
+  ctx.clip();
+  eyePath();
+  ctx.strokeStyle = rgba(P.line, botA);
+  ctx.stroke();
+  ctx.restore();
+  if (lid > 0.01) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(e.x - W - 4, e.y - e.ry - 30);
+    ctx.lineTo(e.x + W + 4, e.y - e.ry - 30);
+    ctx.lineTo(e.x + W + 4, up.yB);
+    lidCurve(ctx, e, W, up, false);
+    ctx.lineTo(e.x - W - 4, up.yA);
+    ctx.closePath();
+    ctx.clip();
+    eyePath();
+    ctx.strokeStyle = rgba(P.line, topA);
+    ctx.stroke();
+    ctx.restore();
+  }
+  // lash lines (clipped to a slightly grown eye so the ends taper into the outline)
   ctx.strokeStyle = P.line;
   ctx.lineCap = 'round';
   if (lid > 0.01) {
     ctx.save();
-    ellipse(ctx, e.x, e.y, e.rx + 1.6, e.ry + 1.6);
+    ellipse(ctx, e.x, e.y, e.rx + 1.6 + closeK * 1.5, e.ry + 1.6 + closeK * 1.5);
     ctx.clip();
-    ctx.lineWidth = (3.2) * LWK;
+    ctx.lineWidth = (3.2 + 0.4 * closeK + 1.2 * lod) * LWK;
     ctx.beginPath();
-    ctx.moveTo(e.x + W, yl - k * W);
-    ctx.quadraticCurveTo(e.x, yl + bulge, e.x - W, yl + k * W);
+    ctx.moveTo(e.x + W, up.yB);
+    ctx.quadraticCurveTo(e.x, up.yC, e.x - W, up.yA);
     ctx.stroke();
     ctx.restore();
   }
-  if (low > 0.01) {
+  if (lowOn && closeK < 0.95) {
     ctx.save();
     ellipse(ctx, e.x, e.y, e.rx + 1.6, e.ry + 1.6);
     ctx.clip();
+    ctx.strokeStyle = rgba(P.line, 1 - closeK);
     ctx.lineWidth = (1.7) * LWK;
     ctx.beginPath();
-    ctx.moveTo(e.x + W, ylo + 2);
-    ctx.quadraticCurveTo(e.x, ylo - 4 * low - 1, e.x - W, ylo + 2);
+    ctx.moveTo(e.x + W, lo.yB);
+    ctx.quadraticCurveTo(e.x, lo.yC, e.x - W, lo.yA);
     ctx.stroke();
     ctx.restore();
   }
-  eyePath();
-  ctx.lineWidth = (1.8) * LWK;
-  ctx.strokeStyle = P.line;
-  ctx.stroke();
-  // lashes (Doreen): three flicks at the back corner of the lid line
-  if (c.lashes) {
-    const lidY = (x) => {
-      const u = (x - (e.x - W)) / (2 * W);
-      const yA = yl + k * W, yB = yl - k * W; // left, right
-      const q = (1 - u) * (1 - u) * yA + 2 * u * (1 - u) * (yl + bulge) + u * u * yB;
-      const yEll = e.y - e.ry * Math.sqrt(Math.max(0, 1 - ((x - e.x) * (x - e.x)) / (e.rx * e.rx)));
-      return Math.max(q, yEll);
-    };
-    ctx.lineWidth = (2) * LWK;
+  // lashes (Doreen): three flicks at the back corner of the lid line; a relaxed shut eye
+  // (◡) gets two small lashes hanging from the lash line for everyone
+  const flick = (list) => {
     ctx.beginPath();
-    for (const [dx, len, ang] of [[-e.rx * 0.98, 7, -2.6], [-e.rx * 0.78, 6.5, -2.25], [-e.rx * 0.5, 5.5, -1.95]]) {
-      const bx = e.x + dx, by = lidY(bx);
+    for (const [bx, by, len, ang] of list) {
       ctx.moveTo(bx, by);
       ctx.quadraticCurveTo(bx + Math.cos(ang) * len * 0.6, by + Math.sin(ang) * len * 0.6 - 1, bx + Math.cos(ang) * len, by + Math.sin(ang) * len);
     }
     ctx.stroke();
+  };
+  const ellTop = (x) => e.y - e.ry * Math.sqrt(Math.max(0, 1 - ((x - e.x) * (x - e.x)) / (e.rx * e.rx)));
+  if (c.lashes) {
+    ctx.lineWidth = (2) * LWK;
+    const pts = [[-e.rx * 0.98, 7, -2.6], [-e.rx * 0.78, 6.5, -2.25], [-e.rx * 0.5, 5.5, -1.95]].map(([dx, len, ang]) => {
+      const bx = e.x + dx, by = Math.max(Ld.at(up, bx), ellTop(bx));
+      const a2 = lerp(ang, -ang - 0.2, closeK * (m.closed >= 0 ? 1 : 0));
+      return [bx, by, len, a2];
+    });
+    flick(pts);
+  } else if (closeK > 0.5 && (m.closed == null || m.closed >= 0)) {
+    ctx.save();
+    ctx.globalAlpha = smoothstep(0.5, 1, closeK);
+    ctx.lineWidth = (1.6) * LWK;
+    flick([[e.x - e.rx * 0.55, Ld.at(up, e.x - e.rx * 0.55) + 0.5, 3.6, 1.9], [e.x - e.rx * 0.15, Ld.at(up, e.x - e.rx * 0.15) + 0.8, 3.2, 1.7]]);
+    ctx.restore();
   }
   ctx.restore();
   if (mirror) ctx.restore();
 }
 
-function drawBrow(ctx, r, eo, mirror) {
+// Brows. With glasses they sit ON the top of the frame rim (Woody Allen) and are drawn before
+// the frames so the rim tucks under them. Every brow is clamped to stay ≥ 4.5 units inside the
+// skull outline at any lift / tilt (so it never merges with the outline, pokes out, or hides
+// under a perched vulture).
+function drawBrow(ctx, r, eo, mirror, topFn) {
   const P = r.c.pal, m = r.m;
   const e = eo || eyeGeom(r);
-  if (mirror) { ctx.save(); ctx.translate(e.x, 0); ctx.scale(-1, 1); ctx.translate(-e.x, 0); }
-  const askew = r.m.askew ? 1 : 0;
-  const top = e.glasses && !askew ? e.y - (e.lensR || LENS_R) - 1.5 : e.y - e.ry;
-  let by = top - 6 - (m.browY || 0);
-  // keep the brow visible under an orange / bird sitting on the crown
-  if (!e.glasses && (r.acc.orange || r.acc.bird) && !r.front) by = Math.max(by, -55.5);
+  const lod = r.lod || 0;
+  const askew = clamp(m.askew || 0);
+  const onFrames = e.glasses && askew < 0.5;
+  const browY = m.browY || 0;
+  let by = onFrames ? e.y - (e.lensR || LENS_R) - 4.2 - browY * 0.5 : e.y - e.ry - 6 - browY;
   const bx = e.x + 1.5;
-  const tilt = (m.browTilt || 0) * D2R;
-  const half = 13.5 * (e.bw || 1), arch = (m.arch || 0) * 6, th = 3.1;
+  const tilt = (m.browTilt || 0) * D2R * (1 + 0.5 * lod);
+  const half = 13.5 * (e.bw || 1) * (1 + 0.1 * lod), arch = (m.arch || 0) * 6 * (1 + 0.5 * lod), th = 3.1 * (1 + 0.5 * lod);
+  const top = topFn || r.geo.topY;
+  const co = Math.cos(-tilt), si = Math.sin(-tilt);
+  let push = -1e9;
+  for (const u of [0, 0.25, 0.5, 0.75, 1]) {
+    const lx = lerp(-half, half, u);
+    const ly = (1 - u) * (1 - u) * 1.5 + 2 * u * (1 - u) * (-arch - th * 1.9);
+    const x = bx + lx * co - ly * si, y = by + lx * si + ly * co;
+    const hx = mirror ? 2 * e.x - x : x;
+    push = Math.max(push, top(hx) + 4.5 - y);
+  }
+  if (push > 0) by += push;
+  if (mirror) { ctx.save(); ctx.translate(e.x, 0); ctx.scale(-1, 1); ctx.translate(-e.x, 0); }
   ctx.save();
   ctx.translate(bx, by);
   ctx.rotate(-tilt);
@@ -1166,6 +1639,17 @@ function drawBrow(ctx, r, eo, mirror) {
   ctx.closePath();
   ctx.fillStyle = P.brow;
   ctx.fill();
+  ctx.strokeStyle = rgba(shade(P.brow, -0.35), 0.8);
+  ctx.lineWidth = (0.9) * LWK;
+  ctx.stroke();
+  // soft highlight along the top: reads as fur, not as part of the outline
+  ctx.strokeStyle = P.browHi;
+  ctx.lineWidth = (1.1) * LWK;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-half * 0.55, 0.2 - arch * 0.55 - th * 0.75);
+  ctx.quadraticCurveTo(0, -arch - th * 1.25, half * 0.5, -arch * 0.45 - th * 0.55);
+  ctx.stroke();
   ctx.restore();
   if (mirror) ctx.restore();
 }
@@ -1401,7 +1885,7 @@ function drawJuice(ctx, r, amt) {
   ctx.save();
   // glossy juice coating hugging the crown
   ctx.save();
-  headPath(ctx);
+  if (r.front) head34Path(ctx); else headPath(ctx, r);
   ctx.clip();
   const cw = 40 * clamp(amt * 1.4);
   ellipse(ctx, 28, -58, cw, 6.5, 0.03);
@@ -2074,7 +2558,7 @@ function drawHead(ctx, r) {
     drawUpperHead(ctx, r);
     if (r.m.teeth && r.jawA < 0.06) drawTeeth(ctx, r, 0.25);
     drawMouthLine(ctx, r);
-    if (a.soot > 0) sootBlobs(ctx, [[58, -2, 11], [94, -26, 8], [66, -46, 9], [6, -26, 10]], a.soot, 77, () => headPath(ctx));
+    if (a.soot > 0) sootBlobs(ctx, [[58, -2, 11], [94, -26, 8], [66, -46, 9], [6, -26, 10]], a.soot, 77, () => headPath(ctx, r));
     if (a.helmet) drawHelmetStrap(ctx);
     drawEye(ctx, r);
     if (a.flower) drawFlower(ctx, r);
