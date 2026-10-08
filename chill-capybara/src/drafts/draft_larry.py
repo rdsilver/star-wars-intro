@@ -1,20 +1,24 @@
 """CHILL CAPYBARA -- writers' room draft: "CURB" angle (draft_larry).
 
 Same format as script.py -- see DESIGN.md section 2.
+Measured with real TTS: 5:05.3 total, 85 lines, 612 words.
 
 Barry's comedy here is petty social-etiquette grievances that turn out to be
 correct. Every petty thread converges on Mount Snooze in the eruption:
 
-  THREAD                         SETUP                         PAYOFF
-  "Who's touching the thermostat?" s01/s03 (no thermostat!)    s08 "The mountain."  s09 Sunny asks it now
-  Free oranges / "nothing's free"  s03, orange rolls down s04  s07 orange+rock rain "Free oranges!" s08 "The mountain."
-  Orange-hat etiquette / meeting   s01 narrator, s03          s07 the ONE time he wears an orange, it erupts
-  Vulture never introduced himself s03 "Gerald." / "no reason" s07 polite goodbye, s08 takes credit, s09 button
-  Fish left without saying goodbye s04 (rude!)                s07 Gerald's perfect goodbye = doom, s08 "Oh, now they wave."
-  Dormant = asleep = Sunny at noon s04                        s07 eruption
-  Catastrophizing / billing        s05 "We're out of time."   s07 shouted at the sky, s08 refund
-  Umbrella guy "doesn't need credit" s06                      s08 Barry very much wants the credit
-  Signs / rules sign / raft / helmet s06                      s07 helmet saves him, signs + raft save everyone
+  THREAD                              SETUP                              PAYOFF
+  "Who's touching the thermostat?"    s01, s03 "It's a natural spring"   s08 "...The mountain."; s09 Sunny asks it, Barry answers with Sunny's own line
+  Free oranges / "Nothing is free!"   s03; s04 orange rolls off volcano  s07 oranges + rocks rain: "Free oranges!" "Nothing is free!"; s08 "...The mountain, bro."
+  Orange-hat etiquette (tradition)    s01 narrator, s03 "Who decided?"   s07 the ONE time he wears an orange, it erupts ("I wear one orange!")
+  Vulture never introduced himself    s03 "Gerald." "Was that so hard?"  s09 Gerald introduces himself to Sunny unprompted
+  "No reason"                         s03 "Somebody with a reason!"      s08 "all he said was no reason"; s09 Gerald says it to Sunny, Barry says it back (button)
+  "He likes you."                     s03 Doreen about the vulture       s09 Barry says it to Sunny
+  Fish left without saying goodbye    s04 + Gerald "Dreadfully rude"     s07 Gerald's perfect goodbye = doom ("Was that so hard?" callback); s08 "Oh, now they wave."
+  Dormant = asleep = Sunny at noon    s04                                s07 eruption
+  Catastrophizing                     s05 "...We're out of time."        s07 "Is it still catastrophizing if there's a catastrophe?"
+  Therapist billing                   s05 forty oranges ... "Forty-one." (in-scene button)
+  Umbrella guy "doesn't need credit"  s06                                s08 the vulture gets the credit; Barry very much minds
+  Signs / rules sign / raft / helmet  s06 ("I'm not paranoid. I'm early.") s07 helmet bonk, signs + raft save everyone; s09 helmet = the button
 """
 
 CAST = {
@@ -55,19 +59,18 @@ SCENES = [
         ("cam", "trio"),
         ("cue", "barry_holds_thermo", "Barry holds the thermometer up to Sunny like evidence"),
         ("cam", "sunny_cu"),
-        ("say", "sunny", "Barry. Bro. There's no thermostat. It's a natural hot spring.", dict(mood="chill", to="barry")),
+        ("say", "sunny", "Bro. There's no thermostat. It's a natural spring.", dict(mood="chill", to="barry")),
         ("cam", "barry_cu"),
         ("say", "barry", "Then who's touching it?", dict(mood="worried", to="sunny")),
-        ("say", "barry", "Monday, thirty-eight. Tuesday, thirty-eight five. Today, thirty-nine four. That's not nature, Sunny. That's a pattern!", dict(mood="worried", to="sunny")),
         ("cam", "trio"),
-        ("say", "doreen", "Barry, honey, put an orange on your head. You'll feel better.", dict(mood="chill", to="barry")),
+        ("say", "doreen", "Honey, put an orange on your head. You'll feel better.", dict(mood="chill", to="barry")),
         ("cue", "doreen_offers_orange", "Doreen nudges an orange across the water toward Barry with her snout"),
-        ("say", "barry", "Who decided oranges go on our heads? Was there a meeting? Because nobody invited me to the meeting.", dict(mood="worried", to="doreen")),
+        ("say", "barry", "Who decided oranges go on our heads?", dict(mood="worried", to="doreen")),
         ("cam", "sunny_cu"),
         ("say", "sunny", "It's tradition, bro.", dict(mood="chill")),
         ("cam", "barry_cu"),
         ("say", "barry", "Tradition is just a meeting nobody wrote down!", dict(mood="worried")),
-        ("say", "barry", "And where do they even come from? Every morning, a fresh pile. Nobody's paying. Nobody's asking. Nothing is free, Doreen!", dict(mood="worried", to="doreen")),
+        ("say", "barry", "And where do they come from? Nobody's paying! Nothing is free, Doreen!", dict(mood="worried", to="doreen")),
         ("cam", "trio"),
         ("pause", 0.3),
         ("sfx", "flaps"),
@@ -80,12 +83,12 @@ SCENES = [
         ("say", "doreen", "Aww. He likes you.", dict(mood="happy", to="barry")),
         ("cam", "barry_cu"),
         ("say", "barry", "He's a vulture, Doreen. When a vulture likes you, it's not a friendship. It's a waiting list.", dict(mood="deadpan", to="doreen")),
-        ("say", "barry", "Six weeks he's been sitting on my head, and he has never once introduced himself. You sit on a guy, you introduce yourself! That's the bare minimum!", dict(mood="worried")),
+        ("say", "barry", "Six weeks on my head, and he's never once introduced himself. You sit on a guy, you introduce yourself!", dict(mood="worried")),
         ("cam", "gerald_cu"),
         ("say", "gerald", "Gerald.", dict(mood="smug", to="barry")),
         ("cam", "barry_cu"),
         ("say", "barry", "Thank you! Was that so hard?", dict(mood="smug")),
-        ("say", "barry", "Now. Why my head, Gerald? There are forty capybaras in this spring.", dict(mood="worried", to="gerald")),
+        ("say", "barry", "Why my head, Gerald?", dict(mood="worried", to="gerald")),
         ("cam", "gerald_cu"),
         ("say", "gerald", "Oh... no reason.", dict(mood="smug", to="barry")),
         ("cam", "barry_cu"),
@@ -96,33 +99,32 @@ SCENES = [
     dict(id="s04_rumble", setting="spring_day", music=None, events=[
         ("cam", "trio"),
         ("sfx", "rumble_small"),
-        ("beat", "rumble1", 2.0, "The ground rumbles: ripples cross the water, everyone's oranges wobble, Gerald grips tighter"),
+        ("beat", "rumble1", 1.8, "The ground rumbles: ripples cross the water, everyone's oranges wobble, Gerald grips tighter"),
         ("cam", "volcano"),
-        ("beat", "orange_rolls", 2.4, "A single orange tumbles down the green slope of Mount Snooze, bounces off a rock and rolls toward the spring"),
+        ("beat", "orange_rolls", 2.0, "A single orange tumbles down the green slope of Mount Snooze, bounces off a rock and rolls toward the spring"),
         ("cam", "trio"),
         ("sfx", "splash"),
-        ("beat", "orange_plops", 0.8, "The orange plops into the water right beside Barry and bobs there"),
+        ("beat", "orange_plops", 0.6, "The orange plops into the water right beside Barry and bobs there"),
         ("cam", "sunny_cu"),
         ("say", "sunny", "See? The universe provides.", dict(mood="happy")),
         ("cam", "barry_cu"),
-        ("say", "barry", "The universe is rumbling, Sunny. And since when does the mountain smoke?", dict(mood="worried")),
+        ("say", "barry", "Since when does the mountain smoke?", dict(mood="worried")),
         ("cam", "volcano"),
         ("music", "tension", dict(fade=0.4)),
         ("beat", "volcano_puff", 1.5, "Mount Snooze puffs a fat grey smoke cloud"),
         ("cam", "trio"),
-        ("say", "doreen", "That's Mount Snooze, sweetie. It's dormant. It's been asleep for a thousand years.", dict(mood="chill", to="barry")),
+        ("say", "doreen", "That's Mount Snooze, sweetie. It's dormant.", dict(mood="chill", to="barry")),
         ("cam", "barry_cu"),
         ("say", "barry", "Dormant just means sleeping! Sunny sleeps! And every day at noon, Sunny wakes up and eats everything in sight!", dict(mood="panic")),
         ("cam", "sunny_cu"),
         ("pause", 0.3),
         ("say", "sunny", "...Is it noon?", dict(mood="happy")),
         ("cam", "barry_cu"),
-        ("say", "barry", "And the fish left! Did anyone notice the fish left?", dict(mood="worried")),
+        ("say", "barry", "And did anyone notice the fish left?", dict(mood="worried")),
         ("cam", "fish"),
         ("beat", "fish_leave", 2.8, "Three little fish, each carrying a tiny suitcase, hop out of the spring one by one and away over the rocks"),
         ("cam", "trio"),
-        ("say", "doreen", "Maybe they're on vacation, honey.", dict(mood="chill")),
-        ("say", "barry", "This is the vacation! And not one of them said goodbye. Three summers we share a spring. Not even a note!", dict(mood="worried")),
+        ("say", "barry", "They packed! And not one of them said goodbye!", dict(mood="worried")),
         ("say", "gerald", "Dreadfully rude, the fish.", dict(mood="neutral")),
         ("cam", "barry_cu"),
         ("say", "barry", "You know who leaves a party without saying goodbye? Somebody who knows the party's about to be on fire!", dict(mood="panic")),
@@ -132,12 +134,10 @@ SCENES = [
     dict(id="s05_therapy", setting="therapy_office", music="therapy", transition="fade", events=[
         ("cam", "office_wide"),
         ("cue", "gerald_on_couch", "Barry lies on the log-couch; Gerald is still perched on his head the whole session"),
-        ("pause", 0.8),
-        ("say", "shelley", "So... Barry. What... brings you in?"),
-        ("cam", "barry_couch"),
-        ("say", "barry", "Where do I start? The water's getting hotter, the mountain is smoking, the fish packed luggage, and a vulture uses my head as a bench. And I'm the crazy one?", dict(mood="worried", to="shelley")),
+        ("pause", 0.6),
+        ("say", "barry", "The water's hot, the mountain's smoking, the fish packed luggage, a vulture's using my head as a bench... and I'm the crazy one?", dict(mood="worried", to="shelley")),
         ("cam", "shelley_cu"),
-        ("say", "shelley", "This vulture... is he... in the room with us... right now?"),
+        ("say", "shelley", "Is this vulture... in the room with us... right now?"),
         ("cam", "office_wide"),
         ("say", "barry", "He's on my head!", dict(mood="panic")),
         ("say", "gerald", "Hello.", dict(mood="neutral", to="shelley")),
@@ -145,9 +145,8 @@ SCENES = [
         ("say", "shelley", "...Hello."),
         ("cam", "shelley_cu"),
         ("sfx", "paper_scribble"),
-        ("beat", "shelley_writes", 1.4, "Dr. Shelley slowly writes on his notepad"),
-        ("say", "shelley", "Barry... have you heard... of catastrophizing?"),
-        ("say", "shelley", "It's when you... imagine... the worst."),
+        ("beat", "shelley_writes", 1.0, "Dr. Shelley slowly writes on his notepad"),
+        ("say", "shelley", "Barry... you're catastrophizing. Imagining the worst."),
         ("cam", "window"),
         ("beat", "window_puff", 1.6, "Behind Shelley, through the round window, Mount Snooze puffs a big dark smoke cloud. Shelley doesn't turn around"),
         ("cam", "barry_couch"),
@@ -159,7 +158,7 @@ SCENES = [
         ("say", "barry", "We just sat down!", dict(mood="shock")),
         ("cam", "office_wide"),
         ("say", "shelley", "That'll be... forty oranges."),
-        ("say", "barry", "Forty oranges? You charge by the hour, and you talk like that? That's not therapy. That's a business model!", dict(mood="panic", to="shelley")),
+        ("say", "barry", "You charge by the hour, and you talk like that? That's not therapy. That's a business model!", dict(mood="panic", to="shelley")),
         ("pause", 0.4),
         ("cam", "shelley_cu"),
         ("say", "shelley", "...Forty-one."),
@@ -169,16 +168,16 @@ SCENES = [
     dict(id="s06_montage", setting="spring_day", music="montage", transition="wipe", events=[
         ("cam", "signs"),
         ("sfx", "hammer"),
-        ("beat", "hammer_signs", 3.5, "Barry hammers three wooden signs along a jungle path: 'EXIT ->', 'EVACUATION ROUTE', 'NO, REALLY. THIS WAY.'"),
+        ("beat", "hammer_signs", 3.0, "Barry hammers three wooden signs along a jungle path: 'EXIT ->', 'EVACUATION ROUTE', 'NO, REALLY. THIS WAY.'"),
         ("cam", "rules"),
         ("sfx", "hammer"),
         ("beat", "rules_sign", 3.0, "Barry plants a big sign by the pool: 'SPRING RULES: 1. Introduce yourself 2. Say goodbye 3. No vultures on heads'. Gerald lands on the sign, reads it, then hops onto Barry's head anyway"),
         ("cam", "raft"),
-        ("beat", "build_raft", 3.5, "Barry lashes reeds into a raft and raises a little flag: 'S.S. TOLD YOU SO'"),
+        ("beat", "build_raft", 3.0, "Barry lashes reeds into a raft and raises a little flag: 'S.S. TOLD YOU SO'"),
         ("cam", "helmet"),
         ("beat", "helmet_on", 2.0, "Barry snaps on a tiny red bike helmet and lowers himself into the spring with dignity"),
         ("cam", "trio"),
-        ("say", "sunny", "Bro's wearing a helmet... in a hot tub.", dict(mood="happy")),
+        ("say", "sunny", "Bro. A helmet. In a hot tub.", dict(mood="happy")),
         ("say", "doreen", "Honey, it's a little paranoid.", dict(mood="happy", to="barry")),
         ("cam", "barry_cu"),
         ("say", "barry", "I'm not paranoid. I'm early.", dict(mood="smug")),
@@ -195,13 +194,13 @@ SCENES = [
         ("cue", "gerald_on_sign", "Gerald is perched on the SPRING RULES sign, not on Barry"),
         ("say", "doreen", "Barry, honey. One orange. For me.", dict(mood="happy", to="barry")),
         ("pause", 0.5),
-        ("say", "barry", "Fine. One orange. But I want it on the record, I'm doing this under protest.", dict(mood="deadpan", to="doreen")),
+        ("say", "barry", "Fine. One orange. Under protest.", dict(mood="deadpan", to="doreen")),
         ("beat", "barry_orange", 2.0, "Barry takes off the helmet, sets it on a rock, places an orange on his head and closes his eyes"),
         ("music", "serene", dict(fade=1.0)),
         ("cam", "barry_cu"),
         ("say", "barry", "Oh. Oh, wow. This is how you guys feel all day? No wonder nobody notices anything. I could get used to—", dict(mood="chill", cut=5.6)),
         ("cam", "gerald_cu"),
-        ("say", "gerald", "Well. I'll be off, then. Goodbye, Barry. Goodbye, everyone. It's been lovely knowing you.", dict(mood="neutral", gap=0.05)),
+        ("say", "gerald", "Well. Goodbye, Barry. Goodbye, everyone. Lovely knowing you.", dict(mood="neutral", gap=0.05)),
         ("sfx", "flaps"),
         ("beat", "vulture_leaves", 1.5, "Gerald lifts off the rules sign and flies away, fast, without looking back"),
         ("cam", "barry_cu"),
@@ -233,7 +232,7 @@ SCENES = [
         ("sfx", "bonk"),
         ("beat", "helmet_bonk", 0.8, "A rock bounces harmlessly off Barry's helmet. He doesn't even flinch"),
         ("cam", "barry_cu"),
-        ("say", "barry", "Everybody to the raft! Follow the signs! The signs you all laughed at!", dict(mood="panic")),
+        ("say", "barry", "Everybody to the raft! Follow the signs!", dict(mood="panic")),
         ("cam", "escape"),
         ("beat", "run_to_raft", 2.0, "Everyone scrambles out of the spring and runs past the EXIT signs"),
         ("say", "barry", "Is it still catastrophizing if there's a catastrophe?", dict(mood="panic", gap=0.0)),
@@ -245,24 +244,22 @@ SCENES = [
     dict(id="s08_aftermath", setting="river_sunset", music="sunset", transition="fade", events=[
         ("cam", "raft_wide"),
         ("cue", "gerald_on_flag", "Gerald is perched on top of the raft's flagpole ('S.S. TOLD YOU SO')"),
-        ("pause", 1.5),
+        ("pause", 1.2),
         ("say", "sunny", "Barry... you were right.", dict(mood="sad", to="barry")),
         ("cam", "barry_cu"),
         ("say", "barry", "Sorry, the river's loud. What was that?", dict(mood="smug", to="sunny")),
         ("cam", "raft_wide"),
         ("say", "sunny", "You were right, bro!", dict(mood="sad")),
-        ("say", "doreen", "About everything, honey. The water. The mountain. The fish.", dict(mood="sad", to="barry")),
         ("cam", "barry_cu"),
         ("say", "barry", "And who was touching the thermostat?", dict(mood="smug")),
         ("say", "doreen", "...The mountain.", dict(mood="sad")),
-        ("say", "barry", "And where were all the free oranges coming from?", dict(mood="smug")),
+        ("say", "barry", "And the free oranges?", dict(mood="smug")),
         ("say", "sunny", "...The mountain, bro.", dict(mood="sad")),
         ("say", "barry", "The mountain!", dict(mood="happy")),
         ("cam", "gerald_flag"),
-        ("say", "gerald", "And, if I may, I did sit on you. Rather a clear sign, I thought.", dict(mood="smug")),
+        ("say", "gerald", "I did sit on him. Rather a clear sign, I thought.", dict(mood="smug")),
         ("cam", "raft_wide"),
-        ("say", "sunny", "Whoa. Gerald totally tried to warn us.", dict(mood="happy")),
-        ("say", "doreen", "Thank you, Gerald!", dict(mood="happy", to="gerald")),
+        ("say", "doreen", "Oh! Thank you, Gerald!", dict(mood="happy", to="gerald")),
         ("cam", "barry_cu"),
         ("say", "barry", "Thank you, Gerald? Six weeks on my head, and all he said was no reason!", dict(mood="panic")),
         ("cam", "gerald_flag"),
@@ -278,15 +275,14 @@ SCENES = [
         ("say", "barry", "My whole life, I wanted to be right. Now I'm right, I'm homeless, and the vulture's getting the credit.", dict(mood="deadpan")),
         ("pause", 0.8),
         ("say", "barry", "...Still. Pretty, pretty, pretty good.", dict(mood="chill")),
-        ("say", "sunny", "Welcome to chill, bro.", dict(mood="happy")),
         ("pause", 1.0),
     ]),
 
     # ---------------------------------------------------------------- EPILOGUE
     dict(id="s09_epilogue", setting="new_spring", music="lounge", transition="fade", events=[
-        ("beat", "three_weeks_later", 2.2, "Caption: THREE WEEKS LATER"),
+        ("beat", "three_weeks_later", 2.0, "Caption: THREE WEEKS LATER"),
         ("cam", "sign"),
-        ("beat", "sign_reveal", 1.6, "Sign 'SNOOZE SPRINGS 2 -- Barry Approved', with the SPRING RULES sign planted beside it"),
+        ("beat", "sign_reveal", 1.5, "Sign 'SNOOZE SPRINGS 2 -- Barry Approved', with the SPRING RULES sign planted beside it"),
         ("cam", "trio"),
         ("cue", "roles_reversed", "Barry soaks blissfully with an orange on his head, helmet on a rock beside him; Sunny holds the thermometer, worried"),
         ("say", "sunny", "Barry... thirty-nine point two. Who's touching the thermostat?", dict(mood="worried", to="barry")),
@@ -306,7 +302,7 @@ SCENES = [
         ("say", "gerald", "Oh... no reason.", dict(mood="smug")),
         ("cam", "barry_cu"),
         ("pause", 0.4),
-        ("beat", "barry_eye_opens", 0.9, "Barry's eyes slowly open"),
+        ("beat", "barry_eyes_open", 0.9, "Barry's eyes slowly open behind the glasses"),
         ("beat", "helmet_swap", 1.6, "Barry calmly lifts the orange off his head and straps on the red helmet"),
         ("cam", "trio"),
         ("say", "sunny", "Barry... why are you putting on the helmet?", dict(mood="panic", to="barry")),
