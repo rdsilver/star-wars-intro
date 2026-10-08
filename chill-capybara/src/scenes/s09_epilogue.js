@@ -32,6 +32,12 @@ const posv = (v, d = 1, m = 0.001) => { v = fin(v, d); return v < m ? m : v; };
 const rampE = (t, t0, dur, fn = ease.inOutCubic) => (dur > 0 ? fn(clamp((t - t0) / dur)) : t >= t0 ? 1 : 0);
 const bump = (t, t0, dur) => { const u = (t - t0) / Math.max(1e-6, dur); return u > 0 && u < 1 ? Math.sin(PI * u) : 0; };
 const keysE = (t, frames, fn = ease.inOutSine) => U.keys(t, frames, fn);
+// does a world rect touch the camera's view (generous margin: shake, rotation, outlines)?
+function inView(cam, x0, y0, x1, y1) {
+  if (!cam) return true;
+  const z = posv(cam.zoom, 1, 0.05), hw = 640 / z + 30, hh = 360 / z + 30;
+  return !(x1 < cam.x - hw || x0 > cam.x + hw || y1 < cam.y - hh || y0 > cam.y + hh);
+}
 
 // ─────────────────────────────────────────────────────────────── set dressing (world units)
 // Barry's rock is moved back (the env's spot is exactly the gap between Barry's and Doreen's snouts):
@@ -48,6 +54,7 @@ const HILL = NS.hillPuffPos;                                      // {880, 318}
 // frame then holds the whole board (rule 1 is the gag) and cuts cleanly before SNOOZE SPRINGS 2
 const RULES = { setting: 'new_spring', x: NS.rulesSignSpot.x - 20 };
 const RULES_X0 = K.rulesSignAnchors(RULES).left.x;
+const RAFT_FLAG_X1 = 232;     // the moored raft's banner tail (S.S. TOLD YOU SO) never reaches past this x
 const GRADE = 'new';
 
 // ─────────────────────────────────────────────────────────────── timing (memoised per timeline)
@@ -160,6 +167,8 @@ function barryCfg(S, m, t, sh) {
     tilt += 4 + 1.6 * Math.sin(S.T * 0.8);
     dy += 4;
   }
+  // "Aw. He likes you." — a fond little head tilt
+  if (m.bL2) tilt += 4 * bump(t, m.bL2.ls - 0.15, m.bL2.le - m.bL2.ls + 0.6);
   // ── eyes open: blank ahead → a slow slide back to Gerald on Sunny's head → down to the job
   if (t >= m.eyes && t < m.swap + 0.1) {
     o.look = t < m.eyes + 0.45 ? { x: 0.35, y: 0 } : t < m.swap - 0.05 ? { x: -0.95, y: -0.45 } : { x: 0.5, y: 0.3 };
@@ -231,14 +240,16 @@ function barryCfg(S, m, t, sh) {
 
 // ─────────────────────────────────────────────────────────────── SUNNY
 function sunnyCfg(S, m, t, sh) {
-  const o = { rest: 'worried' };
+  const o = { rest: 'worried', nod: false };
   // the thermometer: read close (tilted to his eye), then held up as Exhibit A
   const read = t < m.wWho;
   o.accessories = { orange: false, thermometer: false };
   // ...and lowers it into the water as he finishes the line (it stays out of everyone's close-ups)
   const lower = rampE(t, m.sL1.le - 0.42, 0.32, ease.inOutSine);
   if (lower < 1) {
-    o.accessories.thermometer = { at: 'paw', level: P.thermoLevel(39.2), reading: THERMO_READING, angle: (read ? -0.25 : -0.05) + 0.5 * lower };
+    // two little taps on the glass at "thirty-nine point two" (Barry's old habit, now his)
+    const tap = m.sL1 ? 0.1 * (bump(t, m.sL1.ls + 0.55, 0.12) + bump(t, m.sL1.ls + 0.78, 0.12)) : 0;
+    o.accessories.thermometer = { at: 'paw', level: P.thermoLevel(39.2), reading: THERMO_READING, angle: (read ? -0.25 : -0.05) + 0.5 * lower + tap };
     o.pawUp = 1 - lower;
   }
   if (t < m.wWho) { o.look = { x: 0.65, y: 0.55 }; o.tiltAdd = -4; }
@@ -251,6 +262,11 @@ function sunnyCfg(S, m, t, sh) {
     const w = smoothstep(m.touch - 0.04, m.touch + 0.06, t) * (1 - smoothstep(m.touch + 0.35, m.touch + 0.8, t));
     if (w > 0.01 && !S.speaking('sunny')) o.mood = { shock: w, worried: 1 - w };
     o.look = { x: 0.1, y: -1 };
+  }
+  // "Gerald. Pleased to meet you." — eyes locked on the vulture overhead; one reflexive, polite little nod
+  if (m.gL1 && t >= m.touch + 0.5 && t < m.gL1.le + 0.3) {
+    o.look = { x: 0.15, y: -1 };
+    o.tiltAdd = -5 * bump(t, m.wPleased + 0.05, 0.5);
   }
   // "Barry... there's a vulture on my head." — to Barry, then the eyes roll up at "vulture"
   if (m.sL2 && t >= m.sL2.ls && t < m.sL2.le + 0.4) o.look = t < m.wVulture - 0.1 ? { x: 1, y: -0.1 } : { x: 0.15, y: -1 };
@@ -565,7 +581,15 @@ function framings(m) {
   return {
     sign: { x: 1080, y: 420, zoom: 1.72, push: 0.008 },
     // shifted right a little: the moored raft's banner stays out of frame (no cropped "YOU SO")
-    sunny_cu: (I) => { const b = F.sunny_cu(I); return b ? { ...b, x: b.x + 62 } : b; },
+    sunny_cu: (I) => {
+      const b = F.sunny_cu(I);
+      if (!b) return b;
+      // a touch tighter, framed between the moored raft's banner (left) and Barry's helmet on its
+      // rock (right): neither peeks in cropped at an edge. Sunny's eye stays at the kit's screen y.
+      const z = 2.6, x0 = RAFT_FLAG_X1 + 640 / z, x1 = HELMET_REST.x - 34 - 640 / z;
+      const eyeY = b.y - (360 - 418) / b.zoom;
+      return { ...b, zoom: z, x: clamp(b.x + 62, x0, Math.max(x0, x1)), y: eyeY + (360 - 418) / z };
+    },
     // the kit's group frame a touch tighter: the rules sign whole on the right, SNOOZE SPRINGS 2 out
     trio: (I) => { const b = K.trioFrame(I, { zoom: 1.6 }); return { ...b, x: 636 }; },
     barry_cu: (I) => {
@@ -588,6 +612,8 @@ function framings(m) {
         const k = (z - 1) / z;
         return { ...base, x: lerp(base.x, eye.x + 6, Math.min(1, k * 1.25)), y: lerp(base.y, eye.y + 14, Math.min(1, k * 1.25)), zoom: base.zoom * z, push: 0.004, drift: 0.4 };
       }
+      // the button: "Almost nothing." — a slow push on his serene face
+      if (sh.t0 >= m.sneeze) return { ...base, push: 0.022 };
       return base;
     },
     wide: { x: 640, y: 360, zoom: 1.0, foliage: 1, push: 0, move: { at: m.nL ? m.nL.ls - 0.2 : 27.3, dur: Math.max(1, m.puff1 - 0.15 - (m.nL ? m.nL.ls - 0.2 : 27.3)), to: { x: 775, y: 432, zoom: 1.3 }, ease: 'inOutSine' } },
@@ -609,7 +635,7 @@ module.exports = {
     // the rolling orange + the flying helmet: in front of Barry
     items.push({ x: 650, y: 600.6, draw: (c, st) => { drawRollingOrange(c, st, m, t); drawFlyingHelmet(c, st, m, t); } });
     const fo = floatOrangeAt(m, t);
-    if (fo) items.push({ x: fo.x, y: fo.wy, draw: (c) => P.drawOrange(c, { x: fo.x, y: fo.y, r: 15, t: S.T, rot: fo.rot, seed: 3, waterY: fo.wy, grade: GRADE }) });
+    if (fo) items.push({ x: fo.x, y: fo.wy, draw: (c, st) => { if (inView(st.cam, fo.x - 20, fo.y - 20, fo.x + 20, fo.wy + 10)) P.drawOrange(c, { x: fo.x, y: fo.y, r: 15, t: S.T, rot: fo.rot, seed: 3, waterY: fo.wy, grade: GRADE }); } });
     // the bolt's spray (back half behind them, front half + puffs in front of everyone)
     if (t >= m.zip0 - 0.02 && t < m.bolt + 2.4) items.push({ x: 360, y: 560, draw: (c, st) => drawBoltFx(c, st, m, t, 'back') });
 
@@ -621,19 +647,24 @@ module.exports = {
       framings: framings(m),
       hooks: {
         behind: (c, st) => {
+          const vis = (x0, y0, x1, y1) => inView(st.cam, x0, y0, x1, y1);
           // Barry's rock (moved back, see ROCK)
-          c.save(); c.translate(ROCK.x, ROCK.y); c.scale(ROCK.s, ROCK.s); c.translate(-ENV_ROCK.x, -ENV_ROCK.y);
-          ES.drawBarryRock(c, st.T, { setting: 'new_spring' });
-          c.restore();
+          if (vis(ROCK.x - 50, ROCK.y - 30, ROCK.x + 50, ROCK.y + 30)) {
+            c.save(); c.translate(ROCK.x, ROCK.y); c.scale(ROCK.s, ROCK.s); c.translate(-ENV_ROCK.x, -ENV_ROCK.y);
+            ES.drawBarryRock(c, st.T, { setting: 'new_spring' });
+            c.restore();
+          }
           // the SPRING RULES sign beside the SNOOZE SPRINGS 2 board; rule 1 lights up under Gerald's glance
-          const hk = rampE(t, m.rule1 + 0.08, 0.24, ease.outCubic) * (1 - rampE(t, m.gL1.le + 0.6, 0.5));
-          K.drawRulesSign(c, st.T, hk > 0.001 ? { ...RULES, highlight: 1, highlightK: hk, grade: GRADE } : { ...RULES, grade: GRADE });
+          if (vis(RULES_X0 - 10, 370, RULES_X0 + 125, 460)) {
+            const hk = rampE(t, m.rule1 + 0.08, 0.24, ease.outCubic) * (1 - rampE(t, m.gL1.le + 0.6, 0.5));
+            K.drawRulesSign(c, st.T, hk > 0.001 ? { ...RULES, highlight: 1, highlightK: hk, grade: GRADE } : { ...RULES, grade: GRADE });
+          }
           // the hill's sneeze extras (ring, spray, birds)
-          drawHillRing(c, m, t); drawHillSpray(c, m, t); drawHillBirds(c, m, t);
+          if (t >= m.boom - 0.05) { drawHillRing(c, m, t); drawHillSpray(c, m, t); drawHillBirds(c, m, t); }
           // Barry's old chart, planted in his rock (Doreen's homework)
-          P.drawChart(c, { x: CHART.x, y: CHART.y, scale: CHART.scale, rot: CHART.rot, grade: GRADE });
+          if (vis(CHART.x - 40, CHART.y - 90, CHART.x + 40, CHART.y + 4)) P.drawChart(c, { x: CHART.x, y: CHART.y, scale: CHART.scale, rot: CHART.rot, grade: GRADE });
           // the helmet on its rock
-          if (t < m.sw.launch) {
+          if (t < m.sw.launch && vis(HELMET_REST.x - 40, HELMET_REST.y - 40, HELMET_REST.x + 40, HELMET_REST.y + 30)) {
             const nudge = t > m.sw.dip1 - 0.08 ? 0.12 * bump(t, m.sw.dip1 - 0.08, 0.16) : 0;
             P.drawHelmet(c, { x: HELMET_REST.x, y: HELMET_REST.y - 3 * nudge, scale: HELMET_REST.scale, rot: HELMET_REST.rot - nudge, strap: true, grade: GRADE });
           }

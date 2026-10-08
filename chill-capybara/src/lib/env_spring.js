@@ -489,9 +489,9 @@ const PAL = {
   },
   dusk: {
     skyTop: '#46397A', skyMid: '#B4668E', skyBot: '#F7A26B', sunX: 618, sunY: 338, sunCol: '#FFA070', sunA: 0.65, sunDisc: 0.7,
-    haze: '#9C7AA6', hazeAmt: 0.8, tint: '#7D4A8C', tintAmt: 0.1, mul: '#ECBACB', mulA: 0.24, shadow: '#1A1A40', dark: 0.26,
-    rim: '#FFA48E', rimA: 0.4, cloud: '#F2A6A2', cloudShade: '#7A5A8A',
-    w0: '#E2A2AA', w1: '#7593B1', w2: '#4D6C93', w3: '#304B73', wHi: '#FFD2C8', wRefl: '#2B2F52',
+    haze: '#9C7AA6', hazeAmt: 0.85, tint: '#7D4A8C', tintAmt: 0.14, mul: '#E4AACB', mulA: 0.3, shadow: '#1A1A40', dark: 0.34,
+    rim: '#FFA48E', rimA: 0.4, cloud: '#D69AA6', cloudShade: '#6A4E80',
+    w0: '#D898A6', w1: '#6A7EA6', w2: '#44587F', w3: '#2A3A60', wHi: '#FFD2C8', wRefl: '#2B2F52',
     steam: '#F8E4EE', rays: 0.2, glow: 0.2,
   },
   fresh: {
@@ -790,7 +790,7 @@ function makeClouds(seed, farXs, nearList) {
   return list;
 }
 const CLOUDS = makeClouds(77, [-1180, -560, 80, 1250, 1600],
-  [[-200, 20], [560, -60], [1000, 40], [300, -210], [1420, 70], [1900, -150], [-900, -40], [-1400, 60]]);
+  [[-200, 20], [560, -60], [1000, 92], [300, -210], [1420, 70], [1900, -150], [-900, -40], [-1400, 60]]);
 function cloudShape(p, c, ox, oy, k, lift) {
   for (const [px, py, pr] of c.puffs) circleP(p, ox + px, oy + py + lift, pr * k);
   const first = c.puffs[0], last = c.puffs[c.puffs.length - 1];
@@ -2561,14 +2561,19 @@ function drawRays(g, P) {
     const ang = 1.08 + i * 0.085;
     const sp = 0.012 + hash1(i * 1.3) * 0.014;
     const len = 380 + hash1(i * 2.2) * 120;
-    const gr = g.createLinearGradient(sx, sy, sx + Math.cos(ang) * len, sy + Math.sin(ang) * len);
-    const a = (0.05 + hash1(i * 3.1) * 0.035) * P.rays;
-    gr.addColorStop(0, rgba(P.sunCol, a)); gr.addColorStop(0.7, rgba(P.sunCol, a * 0.6)); gr.addColorStop(1, rgba(P.sunCol, 0));
+    // soft broad shafts: each starts as a band (not a point) and fades in, so they never converge
+    // into crisp lines at the top
+    const ox = sx + (i - 2) * 26, w0 = 10 + 6 * hash1(i * 4.7);
+    const gr = g.createLinearGradient(ox, sy, ox + Math.cos(ang) * len, sy + Math.sin(ang) * len);
+    const a = (0.045 + hash1(i * 3.1) * 0.03) * P.rays;
+    gr.addColorStop(0, rgba(P.sunCol, 0)); gr.addColorStop(0.22, rgba(P.sunCol, a)); gr.addColorStop(0.7, rgba(P.sunCol, a * 0.6)); gr.addColorStop(1, rgba(P.sunCol, 0));
     g.fillStyle = gr;
+    const nx = -Math.sin(ang), ny = Math.cos(ang), sp2 = sp * 1.6;
     g.beginPath();
-    g.moveTo(sx, sy);
-    g.lineTo(sx + Math.cos(ang - sp) * len, sy + Math.sin(ang - sp) * len);
-    g.lineTo(sx + Math.cos(ang + sp) * len * 0.96, sy + Math.sin(ang + sp) * len * 0.96);
+    g.moveTo(ox + nx * w0, sy + ny * w0);
+    g.lineTo(ox + Math.cos(ang - sp2) * len + nx * w0, sy + Math.sin(ang - sp2) * len + ny * w0);
+    g.lineTo(ox + Math.cos(ang + sp2) * len * 0.96 - nx * w0, sy + Math.sin(ang + sp2) * len * 0.96 - ny * w0);
+    g.lineTo(ox - nx * w0, sy - ny * w0);
     g.closePath(); g.fill();
   }
   g.restore();
@@ -4838,7 +4843,18 @@ function drawMountSnooze(ctx, t, o = {}) {
   ctx.translate(o.x ?? 860, o.y ?? 150);
   ctx.scale(s, s);
   ctx.translate(-860, -150);
+  // standalone: the base ends in a soft rounded foot (no straight-cut tray), everything clipped to it
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(380, -700); ctx.lineTo(1380, -700);
+  for (let x = 1380; x >= 380; x -= 20) ctx.lineTo(x, 438 - 70 * ((x - 860) / 500) ** 2);
+  ctx.closePath(); ctx.clip();
   drawVolcanoStatic(ctx, P);
+  // the foot dissolves into the haze (inside the silhouette only)
+  clipP(ctx, VOLC_SIL);
+  const hz = ctx.createLinearGradient(0, 330, 0, 438);
+  hz.addColorStop(0, rgba(P.haze, 0)); hz.addColorStop(0.6, rgba(P.haze, 0.45)); hz.addColorStop(1, rgba(P.haze, 0.92));
+  ctx.fillStyle = hz; ctx.fillRect(380, 330, 1000, 110);
+  ctx.restore();
   drawCraterHeat(ctx, t, P, op);
   drawLavaRivers(ctx, t, P, op);
   drawGrove(ctx, t, P, op);
@@ -4926,7 +4942,7 @@ const HILL_FLOWERS = (() => {
   return byCol;
 })();
 const FIELD_STRIPES = newPath((p) => { for (let k = 0; k < 20; k++) { const x0 = -1300 + k * 150; p.moveTo(x0, 470); p.quadraticCurveTo(x0 + 40, 410, x0 + 120, 350); } });
-const NEW_CLOUDS = makeClouds(313, [-1100, -420, 300, 1450], [[-640, -40], [180, -150], [640, 10], [1150, -90], [1720, 30], [-1250, -120]]);
+const NEW_CLOUDS = makeClouds(313, [-1100, -420, 300, 1450], [[-640, -40], [180, -150], [640, 66], [1150, -90], [1720, 30], [-1250, -120]]);
 const RAINBOW = (() => {
   const cols = ['#FF7A7A', '#FFB86A', '#FFE680', '#9EE38A', '#7FC8FF', '#B79CFF'];
   return cols.map((c, i) => {
