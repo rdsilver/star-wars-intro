@@ -329,16 +329,61 @@ def mix(tl, clips):
 
     stems = dict(dialog=dialog, music=music_bus * 0.55, sfx=sfx_bus * 0.8, ambience=amb_bus * 0.35)
     out = stems["dialog"] + stems["music"] + stems["sfx"] + stems["ambience"]
-    # gentle soft limiter, then peak-normalise
-    out = np.tanh(out * 1.1) / np.tanh(1.1)
-    peak = float(np.abs(out).max()) or 1.0
-    out *= 0.89 / peak
+    # master: loudness-normalise to TARGET_LUFS, then a look-ahead peak limiter
+    n_out = int(tl["duration"] * SR)
+    out = out[:n_out]
+    lufs = integrated_lufs(out)
+    g = 10 ** ((TARGET_LUFS - lufs) / 20.0)
+    out = limiter(out * g, ceiling=CEILING)
+    print(f"master: {lufs:.1f} LUFS -> {integrated_lufs(out):.1f} LUFS (gain {20 * np.log10(g):+.1f} dB), "
+          f"peak {20 * np.log10(np.abs(out).max() + 1e-9):.1f} dBFS")
     if STEMS_DIR:
         os.makedirs(STEMS_DIR, exist_ok=True)
-        g = 0.89 / peak  # same gain as the master (pre-limiter levels)
-        for k, v in stems.items():
-            sf.write(os.path.join(STEMS_DIR, k + ".wav"), (v * g)[: int(tl["duration"] * SR)], SR, subtype="FLOAT")
-    return out[: int(tl["duration"] * SR)]
+        for k, v in stems.items():  # stems at the master gain (pre-limiter)
+            sf.write(os.path.join(STEMS_DIR, k + ".wav"), (v[:n_out] * g), SR, subtype="FLOAT")
+    return out
+
+
+
+# ------------------------------------------------------------------------ mastering
+TARGET_LUFS = -16.0   # web/streaming-friendly level for a dialogue-led short
+CEILING = 10 ** (-1.0 / 20)  # -1 dBFS
+
+
+def integrated_lufs(x):
+    """ITU-R BS.1770 integrated loudness (K-weighting, 400 ms blocks, gating)."""
+    from scipy.signal import lfilter
+    # K-weighting stage 1 (high shelf) and stage 2 (high pass), coefficients for 48 kHz
+    b1, a1 = [1.53512485958697, -2.69169618940638, 1.19839281085285], [1.0, -1.69065929318241, 0.73248077421585]
+    b2, a2 = [1.0, -2.0, 1.0], [1.0, -1.99004745483398, 0.99007225036621]
+    y = lfilter(b2, a2, lfilter(b1, a1, x, axis=0), axis=0)
+    blk, hop = int(0.4 * SR), int(0.1 * SR)
+    if len(y) < blk:
+        return -70.0
+    ms = np.array([np.mean(y[i:i + blk] ** 2, axis=0).sum() for i in range(0, len(y) - blk + 1, hop)])
+    lk = -0.691 + 10 * np.log10(ms + 1e-12)
+    ms = ms[lk > -70]
+    if not len(ms):
+        return -70.0
+    rel = -0.691 + 10 * np.log10(ms.mean()) - 10
+    lk = -0.691 + 10 * np.log10(ms + 1e-12)
+    return float(-0.691 + 10 * np.log10(ms[lk > rel].mean()))
+
+
+def limiter(x, ceiling=CEILING, lookahead=0.005, release=0.08):
+    """Look-ahead brickwall limiter: smooth gain so |x| never exceeds the ceiling."""
+    from scipy.ndimage import maximum_filter1d
+    from scipy.signal import lfilter
+    la = max(1, int(lookahead * SR))
+    peak = np.abs(x).max(axis=1)
+    need = np.minimum(1.0, ceiling / np.maximum(peak, 1e-9))
+    # look ahead: the gain must already be down when the peak arrives
+    need = -maximum_filter1d(-need, size=2 * la + 1)
+    # release smoothing (instant attack thanks to the min-filter above)
+    r = np.exp(-1.0 / (release * SR))
+    smooth = lfilter([1 - r], [1, -r], need - 1.0) + 1.0
+    gain = np.minimum(need, smooth)
+    return (x * gain[:, None]).astype(np.float32)
 
 
 def main():
