@@ -6,35 +6,111 @@ shaped (n, 2), deterministic for a given (name, seed).
 
 Public API (DESIGN.md section 7)
 --------------------------------
-    render_sfx(name, seed=0)                         -> np.ndarray (n, 2) float32, natural length
+    render_sfx(name, seed=0)                         -> np.ndarray (n, 2) float32, natural length, peak <= 0.9
     render_ambience(name, duration, seed=0, loop=False) -> np.ndarray (round(duration*SR), 2) float32
     NAMES      list of sfx names            AMBIENCES  list of ambience names
-    ANCHORS    {name: {event: seconds | [seconds]}}  -- sync points inside each sfx
-               (seed-independent; e.g. ANCHORS["hammer"]["knocks"] == [0.0, 0.42, 0.84])
-    describe(name) -> one-line description
+    ANCHORS    {name: {event: seconds | [seconds]}}  -- sync points inside each sfx (seed-independent)
+    ONSETS     {name: [seconds]}  -- the anchors that are verified audible hits (see Timing)
+    LEVELS / LEVELS_SMALL / AMB_LEVELS / AMB_GAIN_DB   -- level tables (see Levels)
+    ALIASES    {alias: name};  describe(name) -> one-line description
+
+    Beyond DESIGN.md: knock (one mallet hit), flaps_takeoff, flaps_land, eruption_bed
+    (~24 s one-shot lava roar to drop on the explosion cue), rumble_distant (far-off grumble that
+    reads at low gain under music), sting_bad_perc (key-neutral 'dun dun DUUUN' for when the music
+    cannot be cut), whoosh_left / whoosh_right (directional swishes; plain whoosh is near-centred).
+
+Placement cheat-sheet (what the effects expect from the script)
+---------------------------------------------------------------
+* whoosh_left / whoosh_right when something crosses or exits frame (left = travels right -> left);
+  plain whoosh is near-centred.  All three peak at ANCHORS[..]['pass'] = 0.27 s: offset the event
+  by -0.27 s to land the pass on a picture beat.
+* hammer: knocks at 0 / 0.469 / 0.9375 s (one beat at 128 bpm), the third the loudest ('accent').
+  A second hammer chained HAMMER_CHAIN = 1.40625 s (3 beats) after the first keeps every knock on
+  the beat; ~0.95 s puts its first knock 13 ms after the first one's accent (a flam).  On the
+  montage, put each hammer on the cue's beat grid (music.music_anchors('montage', ...)).
+* explosion + eruption_bed on the same cue; the explosion's roar holds ~3-5 dB under the hit to
+  2.8 s, so a music cue entering on it should fade in over >= 1.5-2 s (or start >= 1.6 s later).
+* sting_bad / sting_good are in fixed keys: cut the music at the sting.  Where the music must keep
+  playing, use sting_bad_perc (every pitched note is a D; rips into it and falls off it).
+* rumble_big is front-loaded (booms in the first 1.3 s, settles ~10 dB down from 1.8 s): play it
+  at gain ~0.9 even with a line right after the beat.  rumble_distant for far-away rumbles under
+  music (gain 0.8-1.0); rumble_small is sub-heavy and mostly vanishes on small speakers below 0.5.
+* build/audio_lab/sfx_lab.py --script-check lays the screenplay out and flags flams (onsets of
+  different events < 40 ms apart), hammers off the montage grid, stings over uncut music and a
+  cue entering at full level on the explosion.
 
 CLI
 ---
     python src/sfx.py <name> out.wav [--seed N] [--duration SEC] [--loop]
     python src/sfx.py --list
 
+Seeds
+-----
+The seed changes the *perceptual* parameters, not just the noise: pitch (+-5-6 %), decay
+(+-20 %), mallet / feather brightness, debris and droplet counts, chuckle melody, flap
+pacing accents, stereo side...  Seed 0 is the canonical version; consecutive seeds (which is
+what build_audio passes: the event index) are spread apart by a low-discrepancy sequence, so
+repeated effects never sound cloned (cross-seed waveform correlation < 0.9 for every effect).
+Anchor times never move with the seed.  bonk / knock / pop / thud also vary in level by
+up to 1.5-2 dB (always downwards, so the peak guarantee holds).
+
 Levels
 ------
-* sfx are mastered to a per-effect loudness (max 300 ms K-weighted loudness,
-  table LEVELS, -9.5 LUFS for the explosion down to -27 for the crickets) under a
-  0.9 peak ceiling (look-ahead limiter for the big ones).  Calibrated so that at
-  mixer gain 1.0 (build_audio's sfx bus x0.8) the comic hits (record_scratch,
-  bonk, stings) land about level with Kokoro dialogue (~-13 LUFS momentary), the
-  explosion ~2 dB above it and foley (flaps, scribble, zip, crickets) well under.
-  Use the event `gain` option to taste.
-* ambiences are mastered to a fixed integrated loudness per bed (AMB_LEVELS,
-  -22..-28 LUFS, peaks <= 0.6), so every scene's bed has the same level whatever
-  its length; with build_audio's 0.5 x 0.35 ambience gain they sit ~20 dB under
-  the dialogue.  They start/end in steady state (no fades -- the mixer fades).
+* sfx are mastered to a per-effect loudness (LEVELS: max 300 ms K-weighted loudness,
+  -7 LUFS for the explosion down to -27 for the crickets) under a 0.9 peak ceiling.  At
+  mixer gain 1.0 (build_audio's sfx bus x0.8) the comic hits (record_scratch, bonk, stings)
+  land about level with Kokoro dialogue, foley (flaps, scribble, zip, crickets) well under.
+* the low-end effects (explosion, rumble_small, rumble_big, thud, land, eruption_bed) are
+  levelled on a *small-speaker* measure instead (LEVELS_SMALL: loudness_small = 400 ms
+  K-weighted loudness after a 4th-order 150 Hz high-pass, i.e. a laptop / phone), with LEVELS
+  as a full-range cap.  Their loudness is earned in the audible band -- grinding / rolling
+  rock (100-800 Hz), harmonics of the sub, a 110-900 Hz punch per boom -- not with more sub.
+  Re dialogue at gain 1 (small speaker / full range): explosion ~+0.6 / +1.3 dB, rumble_big
+  ~-4 / -2.5, rumble_small ~-8 / -6, thud ~-7 / -4, eruption_bed median ~-15 / -14.
+* the explosion has a designed loudness CONTOUR (400 ms windows re the hit window; medians over
+  seeds 0-23, full range = small speaker within 0.3 dB): -3.4..-5.0 dB through the lava booms and
+  the held roar to 2.8 s (every seed within -1.9..-7.0), -5.8 at 2.8-3.2 s, -10 at 3.2-3.6 s, then
+  a darker debris-rain tail -14..-19 dB to 5.6 s.  The bed is gain-ridden onto that contour, so it
+  holds for every seed.  rumble_big: ~-9..-12 dB after 1.8 s.
+* ambiences use a FIXED calibrated gain per bed (AMB_GAIN_DB), set once so that a long
+  reference render lands on AMB_LEVELS (integrated, -21..-28 LUFS); individual renders are
+  not normalised, so every scene's bed floor is the same whatever its seed and length
+  (10th-percentile momentary loudness within 3 dB over seeds x 4/9/25 s).  With
+  build_audio's 0.5 x 0.35 ambience gain they sit ~20 dB under the dialogue.  Peaks <= 0.6.
+  They start/end in steady state (no fades -- the mixer fades).
 
-Timing: every effect starts on its sync point at t=0 (attack within a few ms)
-unless ANCHORS says otherwise (e.g. rock_whistle's silent "impact" at 2.0 s,
-glass_ping's peak at 1.42 s).  Natural lengths include a short reverb tail.
+Timing
+------
+Every effect starts on its sync point at t=0 (attack within a few ms) unless ANCHORS says
+otherwise (e.g. rock_whistle's silent "impact" at 1.4 s, glass_ping's peak at 1.42 s).
+ONSETS lists the anchors that are real hits: build/audio_lab/sfx_lab.py checks that the
+50 ms K-weighted level rises >= 8 dB over the preceding 160 ms at each, full range and on the
+small-speaker model.  That includes the explosion's t=0 (the loudest moment of the clip) and
+its lava-fountain booms (0.55, 1.30 s), rumble_big's three booms (0.12, 0.62, 1.2 s),
+rumble_distant's muffled boom (0.8 s), the stings' hits and hammer's knocks.  Other anchors
+(stroke peaks, note / bubble / bird-call times, region marks) are timing landmarks.
+hammer's knocks are one beat apart at 128 bpm (the montage tempo); use `knock` for single
+hits placed on beats.
+
+Music
+-----
+sting_bad (D open fifths, then G#dim7) and sting_good (G -> C) are in fixed keys: they
+expect the music to be cut when they fire -- ('music', None, {'fade': 0.05}) at the sting,
+as is done for record_scratch.  sting_bad is ~2.3 s including its tail.  sting_bad_perc has
+the same hit times and length but no harmony: low brass octaves on D only (D2/D3/D4; the long
+note rips up a fourth into D and falls ~a minor third off it), damped timpani on D, bass drum
+and a tam-tam -- safe over the lounge (D major) or any D-centred cue that keeps playing.
+
+Changes in round 4 (API is backward compatible: every name, signature and alias still works)
+--------------------------------------------------------------------------------------------
+* explosion: roar holds ~3-5 dB under the hit to 2.8 s (was -9..-14), ~-10 dB at 3.4 s, darker
+  debris tail -14..-19 dB to 5.5 s (was -19..-33); 6.3 s long (was 5.6); anchors: + hold=2.8,
+  debris=[0.8, 5.5], end=6.3.
+* eruption_bed: swell moved to 3.0 -> 6.5 s (was 1.4 -> 4.0) to take over from the explosion tail.
+* rumble_big: front-loaded; booms 0.12 / 0.62 / 1.2 s (were 0.35 / 1.45 / 2.45), + settle=1.8.
+* whoosh: near-centred (was a hard left-to-right pass); whoosh_left / whoosh_right added.
+* new: rumble_distant, sting_bad_perc.  hammer: + accent / chain anchors (timing unchanged).
+* jungle ambience: bird calls quieter, duller and wetter (6-8 dB over the bed, was 13-16).
 """
 from __future__ import annotations
 
@@ -66,6 +142,28 @@ def _time(n):
 
 def _rng_for(name, seed, salt=0):
     return np.random.default_rng([zlib.crc32(name.encode()), int(seed) & 0x7FFFFFFF, int(salt)])
+
+
+_VAR_STEPS = tuple(float(np.sqrt(p) % 1.0) for p in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37))
+
+
+class _Variation:
+    """Per-seed values of the *perceptual* parameters of an effect (pitch, decay, brightness...).
+
+    v(i) is in [-1, 1]: a low-discrepancy (Weyl) sequence over the seed, one irrational step per
+    parameter, so consecutive seeds -- build_audio passes the event index -- land far apart
+    instead of drawing near-identical values by chance.  Seed 0 gives v(i) == 0 for every i,
+    i.e. the canonical version of the effect."""
+
+    def __init__(self, seed):
+        self.seed = int(seed)
+
+    def __call__(self, i):
+        return 2.0 * ((0.5 + self.seed * _VAR_STEPS[i % len(_VAR_STEPS)]) % 1.0) - 1.0
+
+    def pick(self, i, options):
+        """Choose one of `options`, cycling so neighbouring seeds pick different ones."""
+        return options[(self.seed * (1 + i % 3) + i) % len(options)]
 
 
 def midi_hz(m):
@@ -225,23 +323,6 @@ def _rbj(kind, f, q):
     return np.array(b) / a[0], np.array(a) / a[0]
 
 
-def shelf(x, f0, gain_db, kind="low", s=1.0):
-    """RBJ shelving filter (low or high shelf), gain_db at the shelf, slope s."""
-    A = 10.0 ** (gain_db / 40.0)
-    w = TAU * f0 / SR
-    cw, sw = np.cos(w), np.sin(w)
-    al = sw / 2.0 * np.sqrt((A + 1.0 / A) * (1.0 / s - 1.0) + 2.0)
-    sa = 2.0 * np.sqrt(A) * al
-    if kind == "low":
-        b = [A * ((A + 1) - (A - 1) * cw + sa), 2 * A * ((A - 1) - (A + 1) * cw), A * ((A + 1) - (A - 1) * cw - sa)]
-        a = [(A + 1) + (A - 1) * cw + sa, -2 * ((A - 1) + (A + 1) * cw), (A + 1) + (A - 1) * cw - sa]
-    else:
-        b = [A * ((A + 1) + (A - 1) * cw + sa), -2 * A * ((A - 1) + (A + 1) * cw), A * ((A + 1) + (A - 1) * cw - sa)]
-        a = [(A + 1) - (A - 1) * cw + sa, 2 * ((A - 1) - (A + 1) * cw), (A + 1) - (A - 1) * cw - sa]
-    b, a = np.array(b) / a[0], np.array(a) / a[0]
-    return lfilter(b, a, x, axis=0)
-
-
 def _tvf(x, kind, fc, q=0.707, block=32):
     """Time-varying RBJ biquad (coefficients updated every `block` samples)."""
     x = np.asarray(x, dtype=np.float64)
@@ -364,6 +445,7 @@ _IR_SPECS = {
     "room": (0.7, 0.42, 0.22, 0.004, 6, 7000.0),
     "wood": (0.6, 0.35, 0.16, 0.003, 7, 5500.0),
     "outdoor": (1.6, 1.10, 0.45, 0.018, 4, 6500.0),
+    "stage": (1.3, 1.05, 0.60, 0.012, 8, 8500.0),
     "hall": (2.6, 2.10, 0.90, 0.022, 8, 8000.0),
     "big": (3.6, 3.00, 1.10, 0.030, 5, 5000.0),
 }
@@ -582,8 +664,14 @@ def _harmonic_tone(n, f, amps, rng=None):
     return y
 
 
-def _brass(midi, dur, rng, vel=1.0, rel=0.09, amp_pts=None, vib=0.0, bright=1.0, detune=0.0):
-    """Brass-like note: band-limited saw with an envelope-driven low-pass (computed additively)."""
+def _brass(midi, dur, rng, vel=1.0, rel=0.09, amp_pts=None, vib=0.0, bright=1.0, detune=0.0, blat=0.0,
+           bend_pts=None):
+    """Brass-like note: band-limited saw through an envelope-driven low-pass (computed additively).
+
+    The cutoff has an *absolute* ceiling -- about 3 kHz at full level whatever the note, plus a
+    little key tracking -- so low notes are as brassy as high ones instead of tuba-dull.
+    blat: soft-clipped, raspy 'blat' on the attack (0 = clean).
+    bend_pts: optional pitch contour [(t, cents)] (<= 0: rips up into the note, falls off it)."""
     f0 = float(midi_hz(midi)) * 2 ** (detune / 1200)
     n = _n(dur + rel)
     t = _time(n)
@@ -593,26 +681,46 @@ def _brass(midi, dur, rng, vel=1.0, rel=0.09, amp_pts=None, vib=0.0, bright=1.0,
     vib_env = np.clip((t - 0.25) / 0.3, 0, 1) * vib
     cents = -45 * np.exp(-t / 0.022) + vib_env * 14 * np.sin(TAU * 5.4 * t + rng.uniform(0, TAU))
     cents += 3 * _smooth_noise(n, rng, 3.0)
+    if bend_pts is not None:
+        cents = cents + np.minimum(_cos_env(bend_pts, n), 0.0)
     f = f0 * 2 ** (cents / 1200)
     ph = _phase(f)
-    fc = f0 * (1.2 + 7.5 * bright * env ** 1.4) + 250.0
-    kmax = int(min(NYQ * 0.85 / f0, 5.0 * fc.max() / f0 + 2))
+    fc = 450.0 + 2600.0 * bright * np.clip(env, 0.0, 1.3) ** 1.4 + 1.5 * f0
+    kmax = max(2, int(min(NYQ * 0.85, 2.4 * float(fc.max())) / f0))
+    # sin(k*ph) by the Chebyshev recurrence (cheap, exact enough for ~100 partials)
+    c2 = 2.0 * np.cos(ph)
+    s_prev = np.zeros(n)
+    s_cur = np.sin(ph)
+    inv_fc4 = 1.0 / fc ** 4
     y = np.zeros(n)
-    for k in range(1, max(2, kmax) + 1):
-        hk = 1.0 / k / np.sqrt(1 + (k * f0 / fc) ** 4)
-        y += hk * np.sin(k * ph)
+    for k in range(1, kmax + 1):
+        xb = k * f0 / 650.0                   # bell radiation: low partials radiate weakly, so the
+        bell = 0.18 + 0.82 * xb / np.sqrt(1.0 + xb * xb)    # first ~6 harmonics come out about equal
+        y += s_cur * (bell / (k * np.sqrt(1.0 + (k * f0) ** 4 * inv_fc4)))
+        s_prev, s_cur = s_cur, c2 * s_cur - s_prev
+    br_amt = 0.08
+    if blat:
+        pk = np.abs(y).max() + 1e-12
+        yn = y / pk
+        w = blat * np.exp(-t / 0.06)
+        y = (yn + w * (np.tanh(3.0 * yn) / np.tanh(3.0) - yn)) * pk
+        br_amt += 0.12 * blat
     # breath / rasp on the attack
-    br = bp(rng.standard_normal(n), f0 * 2, min(f0 * 12, 9000)) * np.exp(-t / 0.03) * 0.08
+    br = bp(rng.standard_normal(n), f0 * 2, min(f0 * 14, 9000)) * np.exp(-t / 0.03) * br_amt
     return (y + br) * env
 
 
 def _organ(midi, dur, rng, vel=1.0, rel=0.12, trem=0.0, amp_pts=None):
+    """Drawbar-ish organ; the 16' (sub-octave) stop only from C3 up, so it never muddies the bass."""
     f0 = float(midi_hz(midi))
     n = _n(dur + rel)
     t = _time(n)
     env = _cos_env(amp_pts or [(0, 0), (0.012, 1.0), (dur, 1.0), (dur + rel, 0.0)], n) * vel
     y = np.zeros(n)
-    for ratio, a in ((0.5, 0.45), (1.0, 1.0), (2.0, 0.55), (3.0, 0.3), (4.0, 0.22), (6.0, 0.08)):
+    stops = ((0.5, 0.3), (1.0, 1.0), (2.0, 0.6), (3.0, 0.35), (4.0, 0.25), (6.0, 0.1))
+    for ratio, a in stops:
+        if ratio < 1.0 and midi < 48:
+            continue
         if f0 * ratio < NYQ * 0.8:
             y += a * np.sin(TAU * f0 * ratio * t + rng.uniform(0, TAU))
     if trem:
@@ -760,8 +868,8 @@ BIRD_KINDS = ("wheeto", "trill", "chirps", "warble", "coo", "kiskadee", "peep")
 
 
 # flaps ---------------------------------------------------------------------
-def _flap(rng, size=1.0, amp=1.0):
-    """One wing down-stroke whoosh (mono)."""
+def _flap(rng, size=1.0, amp=1.0, bright=1.0):
+    """One wing down-stroke whoosh (mono).  bright scales the feathery air band."""
     dur = 0.36 * size
     n = _n(dur)
     tp = 0.075 * size                      # moment of max air push
@@ -772,16 +880,33 @@ def _flap(rng, size=1.0, amp=1.0):
         e = _interp_at(tc, n, env)
         c = _interp_at(tc, n, centre)
         body = m_peak(f, c, 1.1) + 0.55 * m_band(f, 70, 260, 12, 18)
-        air = 0.18 * m_band(f, 1500, 7000, 12, 12)
+        air = 0.18 * bright * m_band(f, 1500, 7000, 12, 12)
         return e * (body + air)
 
     y = _spec_noise(n, rng, mask, nfft=512, nch=1)
     # feather rustle: high grains during the stroke
-    gr = _crackle(n, rng, 900 * env + 50, lo=2500, hi=8000, tau=0.0008, alpha=2.5) * 0.25
+    gr = _crackle(n, rng, 900 * env + 50, lo=2500, hi=8000, tau=0.0008, alpha=2.5) * 0.25 * bright
     return _fade_edges((y + gr * env) * amp, 0.0, 0.03)
 
 
 # big low-end events --------------------------------------------------------
+def _ride(x, target, win=0.4, max_db=4.0, smooth=0.12):
+    """Gain-ride stereo x so its power, averaged over `win`, follows target**2 (target: a per-sample
+    amplitude contour) up to an overall scale: slow, seed-dependent swells are evened out (so a
+    designed loudness contour holds for every seed) while anything faster than `win` -- crackle,
+    debris, turbulence -- is left alone.  Gain limited to +-max_db."""
+    x = _to_stereo(x)
+    w = _n(win)
+    p = uniform_filter1d((x * x).sum(axis=1), size=w, mode="nearest")
+    want = uniform_filter1d(np.asarray(target, dtype=np.float64) ** 2, size=w, mode="nearest")
+    act = want > 0.05 * want.max()
+    ratio = want / (p + 1e-20)
+    ratio /= np.median(ratio[act]) if np.any(act) else 1.0
+    g = np.sqrt(np.clip(ratio, _db(-2 * max_db), _db(2 * max_db)))
+    g = uniform_filter1d(g, size=_n(smooth), mode="nearest")
+    return x * g[:, None]
+
+
 def _duck_env(n, times, depth_db=-4.0, pre=0.15, ramp=0.06, recover=0.1):
     """1 everywhere, dipping to depth_db for `pre` seconds before each time (then back up).
 
@@ -801,28 +926,31 @@ def _duck_env(n, times, depth_db=-4.0, pre=0.15, ramp=0.06, recover=0.1):
     return env
 
 
-def _boom_hit(rng, size=1.0, sub=1.0, mid=1.0, crack=1.0, debris=1.0, width=0.45):
-    """One 'boom' you can hear on any speaker (stereo, ~1.2 s, attack at t=0).
+def _boom_hit(rng, size=1.0, sub=1.0, mid=1.0, crack=1.0, debris=1.0, width=0.45, pitch=1.0):
+    """One full-band 'boom' that reads as an onset on any speaker (stereo, ~1.3 s, attack at t=0).
 
-    sub   : 70 -> 38 Hz sine drop (the cinema part)
-    mid   : saturated 120-900 Hz noise thump (what a laptop / phone actually plays)
-    crack : short 300-3500 Hz burst on the attack
+    sub   : 70 -> 36 Hz sine drop, gently saturated so its harmonics reach small speakers
+    mid   : saturated 110-900 Hz noise punch + a falling 150 Hz knock (what a laptop / phone plays)
+    crack : very short broadband 0.4-8 kHz burst -- the edge that marks the onset
     debris: a burst of stone ticks / rattles in the 1-4 kHz range just after the hit
     """
     dur = 1.0 + 0.3 * size
     n = _n(dur)
     t = _time(n)
-    f = (36.0 + 34.0 * np.exp(-t / 0.08)) / size ** 0.15
-    y_sub = np.sin(_phase(f)) * _decay(n, 0.32 * size, 0.004)
+    f = (36.0 + 34.0 * np.exp(-t / 0.08)) * pitch / size ** 0.15
+    ph = _phase(f)
+    # sub + its 2nd/3rd harmonics (what saturation would add, without the DC drift)
+    y_sub = (np.sin(ph) + 0.3 * np.sin(2 * ph) + 0.14 * np.sin(3 * ph)) * _decay(n, 0.32 * size, 0.004)
     z = bp(rng.standard_normal(n), 110.0, 900.0, order=2)
     z /= np.std(z) + 1e-12
-    e_mid = _decay(n, 0.075 * size, 0.0015) * 0.8 + _decay(n, 0.3 * size, 0.004) * 0.2
-    body = np.tanh(1.8 * z * e_mid)
-    body = lp(body, 2600.0, order=2)
-    knock = np.sin(_phase(150.0 * (1 + 0.6 * np.exp(-t / 0.012)))) * _decay(n, 0.06, 0.001)
-    cr = bp(rng.standard_normal(n), 300.0, 3500.0) * _decay(n, 0.014, 0.0006)
-    mono = y_sub * sub + (body * 0.9 + knock * 0.35) * mid + cr * 0.75 * crack
-    out = _widen(mono, rng, width)
+    e_mid = _decay(n, 0.07 * size, 0.0015) * 0.85 + _decay(n, 0.28 * size, 0.004) * 0.15
+    # saturate first, envelope after: a drive inside the envelope would flatten the decay
+    body = lp(np.tanh(1.6 * z), 2600.0, order=2) * e_mid
+    knock = np.sin(_phase(150.0 * pitch * (1 + 0.6 * np.exp(-t / 0.012)))) * _decay(n, 0.06 * size ** 0.5, 0.001)
+    zc = rng.standard_normal(n)
+    cr = bp(zc, 400.0, 8000.0) * _decay(n, 0.010, 0.0004) + 0.6 * bp(zc, 1500.0, 7000.0) * _decay(n, 0.003, 0.0002)
+    mono = y_sub * 0.9 * sub + (body * 0.9 + knock * 0.4) * mid + cr * 0.8 * crack
+    out = _widen(mono - mono.mean(), rng, width)
     if debris > 0:
         burst = _crackle(n, rng, 900.0 * np.exp(-t / 0.05), lo=900, hi=4000, tau=0.0018, alpha=1.8)
         out += _widen(burst * 0.22 * debris, rng, 0.9)
@@ -833,7 +961,8 @@ def _boom_hit(rng, size=1.0, sub=1.0, mid=1.0, crack=1.0, debris=1.0, width=0.45
 
 
 def _rock_grind(n, rng, env, rate=26.0, lo=150.0, hi=800.0):
-    """Lumpy low-mid 'rocks grinding' noise (stereo): band noise with a grainy amplitude."""
+    """Lumpy low-mid 'rocks grinding' noise (stereo, ~unit RMS at env=1): band noise with a
+    grainy amplitude (rate = lumps per second)."""
     g = bp(rng.standard_normal((n, 2)), lo, hi, order=2)
     g /= np.std(g) + 1e-12
     grain = np.stack([np.abs(_smooth_noise(n, rng, rate)) ** 1.6 for _ in range(2)], axis=1)
@@ -841,18 +970,31 @@ def _rock_grind(n, rng, env, rate=26.0, lo=150.0, hi=800.0):
     return g * grain * np.asarray(env)[:, None]
 
 
-def _knock(rng, scale=1.0, amp=1.0):
-    """Mallet-on-stake knock (mono)."""
+def _rattle(n, rng, env, rate=60.0, amp=1.0):
+    """Things rattling on shaking ground: dense small stone/wood knocks (400-2500 Hz), stereo."""
+    out = np.zeros((n, 2))
+    for ch in range(2):
+        c = _crackle(n, rng, rate * env, lo=380, hi=2600, tau=0.004, alpha=2.2)
+        out[:, ch] = c
+    return out * amp
+
+
+def _knock(rng, scale=1.0, amp=1.0, bright=1.0, decay=1.0, thump=1.0, thump_amp=0.8):
+    """Mallet-on-stake knock (mono).  scale: pitch factor; bright: mallet hardness (upper modes
+    and click); decay: ring-time factor; thump: pitch factor of the low stake-in-ground thump.
+    The upper modes are also detuned by up to +-3 % (every stake is a different piece of wood)."""
     n = _n(0.45)
     t = _time(n)
     y = np.zeros(n)
-    modes = ((205, 1.0, 0.055), (530, 0.6, 0.032), (1140, 0.4, 0.02), (2180, 0.22, 0.012), (3450, 0.1, 0.008))
-    for f, a, tau in modes:
-        y += a * np.sin(TAU * f * scale * rng.uniform(0.985, 1.015) * t) * np.exp(-t / tau)
+    modes = ((205, 1.0, 0.055), (530, 0.6, 0.032), (1140, 0.4 * bright, 0.02), (2180, 0.22 * bright ** 1.5, 0.012),
+             (3450, 0.1 * bright ** 2, 0.008))
+    for i, (f, a, tau) in enumerate(modes):
+        jit = rng.uniform(0.99, 1.01) if i == 0 else rng.uniform(0.97, 1.03)
+        y += a * np.sin(TAU * f * scale * jit * t) * np.exp(-t / (tau * decay))
     y *= _ramp(n, 0.0004)
-    y += bp(rng.standard_normal(n), 300 * scale, 2500 * scale) * _decay(n, 0.012, 0.0003) * 0.9
-    thud = np.sin(_phase(85 + 45 * np.exp(-t / 0.01))) * _decay(n, 0.045, 0.001) * 0.8
-    click = bp(rng.standard_normal(n) * np.exp(-t / 0.0011), 1500, 7500) * 0.9
+    y += bp(rng.standard_normal(n), 300 * scale, 2500 * scale * bright ** 0.5) * _decay(n, 0.012, 0.0003) * 0.9
+    thud = np.sin(_phase((85 + 45 * np.exp(-t / 0.01)) * scale * thump)) * _decay(n, 0.045 * decay, 0.001) * thump_amp
+    click = bp(rng.standard_normal(n) * np.exp(-t / 0.0011), 1500, 7500) * 0.9 * bright
     return (y + thud + click) * amp * _taper(n, 0.3)
 
 
@@ -872,15 +1014,41 @@ LEVELS_SMALL = {}
 #: seed-independent sync points inside each effect (seconds from the start of the clip)
 ANCHORS = {}
 
+#: the subset of ANCHORS that are audible *onsets* (hits you can cut a picture to), flattened and
+#: sorted per effect.  Every one is verified by build/audio_lab/sfx_lab.py: the 50 ms K-weighted
+#: level must rise >= 8 dB over the preceding 160 ms, full range AND on the small-speaker model.
+ONSETS = {}
 
-def _register(name, lufs, desc, anchors=None, ceiling=0.9, limit_db=4.0, small=None, max_len=None):
+_ONSET_KEYS = ("hit", "hits", "boom", "booms", "secondary", "knocks", "grab", "pop", "ping", "touch", "chirps")
+
+
+def _register(name, lufs, desc, anchors=None, ceiling=0.9, limit_db=4.0, small=None, max_len=None,
+              onsets=None, jitter_db=0.0):
+    """Register an effect.
+
+    lufs     : loudness target (max 300 ms K-weighted, full range); a cap when `small` is given
+    small    : small-speaker loudness target (loudness_small), for effects with lots of low end
+    max_len  : hard cap on the natural length (s), faded out over 80 ms
+    onsets   : audible-onset anchor times (default: the anchors whose key is in _ONSET_KEYS)
+    jitter_db: per-seed level variation -- the render is attenuated by 0..jitter_db dB
+    """
+    anchors = anchors or {}
+
     def deco(fn):
         _SFX[name] = dict(fn=fn, lufs=lufs, desc=desc, ceiling=ceiling, limit_db=limit_db, small=small,
-                          max_len=max_len)
+                          max_len=max_len, jitter_db=jitter_db)
         LEVELS[name] = lufs
         if small is not None:
             LEVELS_SMALL[name] = small
-        ANCHORS[name] = anchors or {}
+        ANCHORS[name] = anchors
+        if onsets is not None:
+            ONSETS[name] = sorted(float(x) for x in onsets)
+        else:
+            ts = []
+            for k, v in anchors.items():
+                if k in _ONSET_KEYS:
+                    ts += list(v) if isinstance(v, (list, tuple)) else [v]
+            ONSETS[name] = sorted(float(x) for x in ts)
         return fn
     return deco
 
@@ -929,32 +1097,40 @@ def _sfx_record_scratch(rng):
 
 
 # ---------------------------------------------------------------- rumbles & explosion
-def _rumble(rng, dur, heavy):
+def _rumble(rng, v, dur, heavy, booms=(), env_pts=None, distant=False):
+    """Ground rumble.  Sub (the cinema part) + an audible-band body a laptop can play:
+    saturation harmonics of the sub, rolling 'thunder' lumps (100-350 Hz), grinding rocks
+    (150-800 Hz) and things rattling (0.4-2.6 kHz).  booms: [(time, amp)] full-band hits,
+    each preceded by a dip of the bed so it reads as a real onset.  env_pts overrides the
+    loudness contour.  distant: far-away grumble -- little sub, the energy in the 150-800 Hz
+    roll / grind band plus nearby rattle, so it still reads at low gain under music."""
     n = _n(dur)
     t = _time(n)
-    if heavy:
+    p = 1.0 + 0.05 * v(0)                                      # seed: pitch of the low end
+    if env_pts is not None:
+        env = _cos_env(env_pts, n)
+    elif heavy:
         env = _cos_env([(0, 0), (0.25, 0.55), (0.9, 1.0), (2.6, 0.9), (3.3, 0.55), (dur, 0.0)], n)
     else:
         env = _cos_env([(0, 0), (0.22, 0.7), (0.65, 1.0), (1.5, 0.75), (dur, 0.0)], n)
-    shud = 1 + 0.38 * _smooth_noise(n, rng, 8.0) + 0.22 * _smooth_noise(n, rng, 19.0)
+    sd = 0.45 if distant else 1.0                              # (a distant grumble shudders less)
+    shud = 1 + sd * (0.38 * _smooth_noise(n, rng, 8.0 * (1 + 0.15 * v(1))) + 0.22 * _smooth_noise(n, rng, 19.0))
     shud = np.clip(shud, 0.15, None)
-    # sub noise (fairly mono) + a wandering sub tone
-    sub = bp(rng.standard_normal((n, 2)), 30, 110 if heavy else 95, order=3)
+    # sub noise (fairly mono) + a wandering sub tone, saturated -> 2nd/3rd harmonics
+    sub = bp(rng.standard_normal((n, 2)), 30 * p, (110 if heavy else 95) * p, order=3)
     sub = 0.75 * sub + 0.25 * sub[:, ::-1]
     sub /= np.std(sub) + 1e-12
-    fs = (39.0 if heavy else 45.0) + 4 * _smooth_noise(n, rng, 0.8)
+    fs = (39.0 if heavy else 45.0) * p + 4 * _smooth_noise(n, rng, 0.8)
     tone = np.sin(_phase(fs)) * 1.1
     low = (sub + tone[:, None]) * (env * shud)[:, None]
-    # growl: asymmetric saturation adds 2nd/3rd harmonics so small speakers hear it
-    drive = 2.6 if heavy else 1.8
     low = low / (np.abs(low).max() + 1e-9)
-    growl = np.tanh(drive * (low + 0.35 * low ** 2))
-    growl = growl - growl.mean(axis=0)
-    # grinding rocks: lumpy low-mid noise
-    lump = np.clip(0.4 + 0.6 * np.abs(_smooth_noise(n, rng, 13.0)) ** 1.5, 0, 2)
-    grind = bp(rng.standard_normal((n, 2)), 90, 520 if heavy else 380, order=2)
-    grind = grind / (np.std(grind) + 1e-12) * (env * lump * shud)[:, None]
-    # crackle and debris
+    drive = 2.8 if heavy else 2.2
+    growl = hp(np.tanh(drive * (low + 0.4 * low ** 2)), 25.0)      # (hp: drop the envelope-shaped DC)
+    # audible-band body
+    roll = _rock_grind(n, rng, env * shud, rate=9.0 * (1 + 0.2 * v(2)), lo=100 * p, hi=350 * p)
+    grind = _rock_grind(n, rng, env * np.sqrt(shud), rate=(30.0 if heavy else 24.0) * (1 + 0.2 * v(3)),
+                        lo=150.0, hi=800.0)
+    rat = _rattle(n, rng, env ** 1.5, rate=(110.0 if heavy else 55.0) * (1 + 0.25 * v(4)))
     crack = _crackle(n, rng, (70 if heavy else 28) * env ** 1.5, lo=600, hi=4200, tau=0.0025) * np.sqrt(env)
     crack = _widen(crack, rng, 0.9)
     deb = np.zeros((n, 2))
@@ -964,123 +1140,283 @@ def _rumble(rng, dur, heavy):
         e = float(np.interp(td, t, env))
         _bounce_seq(deb, rng, td, 0.5 * e * rng.uniform(0.3, 1.0), rng.uniform(-0.9, 0.9),
                     size=rng.uniform(0.8, 1.6))
-    out = growl * 1.0 + grind * 0.11 + crack[:, :] * 0.10 + deb * 0.35
-    if heavy:
-        # deep boom accents
-        for tb, a in ((0.35, 0.7), (1.45, 1.0), (2.45, 0.8)):
-            m = _n(1.0)
-            tt = _time(m)
-            boom = np.sin(_phase(40 + 35 * np.exp(-tt / 0.08))) * _decay(m, 0.35, 0.004)
-            boom += lp(rng.standard_normal(m), 220) * _decay(m, 0.12, 0.003) * 0.6
-            _add(out, tb, boom * a * 0.9)
-    return _reverb(out, "outdoor", 0.14, send_hp=80)
+    if distant:
+        # far away: the sub and the crackle are mostly gone (air + ground absorb them); what is left
+        # is a rolling, thunder-like grumble in the low mids and the nearby things that tremble
+        roll2 = _rock_grind(n, rng, env * shud, rate=5.5 * (1 + 0.2 * v(5)), lo=140 * p, hi=520 * p)
+        bed = (growl * 0.3 + roll * 0.36 + roll2 * 0.3 + grind * 0.2 + rat * 0.1 + crack * 0.03 + deb * 0.22)
+        bed = lp(bed, 1600.0, order=2)
+    elif heavy:
+        bed = growl * 0.9 + roll * 0.20 + grind * 0.15 + rat * 0.08 + crack * 0.10 + deb * 0.35
+    else:
+        bed = growl * 0.9 + roll * 0.20 + grind * 0.13 + rat * 0.07 + crack * 0.10 + deb * 0.35
+    for tb, a in sorted(booms):
+        # duck everything so far (bed AND the earlier booms' tails) just before each boom
+        bed = bed * _duck_env(n, [tb], depth_db=-8.0 if distant else -9.0, pre=0.16, ramp=0.07)[:, None]
+        hit = _boom_hit(rng, size=1.1, sub=0.35 if distant else 1.0, mid=1.4, crack=0.25 if distant else 1.3,
+                        debris=0.0 if distant else 0.7, width=0.5, pitch=p * rng.uniform(0.95, 1.05))
+        if distant:
+            hit = lp(hit, 1300.0, order=2)
+        _add(bed, tb, hit * a)
+    return _reverb(bed, "outdoor", 0.22 if distant else 0.14, send_hp=80)
 
 
-@_register("rumble_small", -15.5, "deep sub rumble with crackle and pebble rattle (~2.5 s)",
-           anchors=dict(peak=0.65, end=2.5))
-def _sfx_rumble_small(rng):
-    return _rumble(rng, 2.5, heavy=False)
+@_register("rumble_small", -13.0, "deep rumble: sub + rolling/grinding rock body, crackle, pebble rattle (~2.5 s)",
+           anchors=dict(peak=0.65, end=2.5), small=-20.0)
+def _sfx_rumble_small(rng, v):
+    return _rumble(rng, v, 2.5, heavy=False)
 
 
-@_register("rumble_big", -13.0, "violent ground rumble, booms, grinding, lots of debris (~4 s)",
-           anchors=dict(booms=[0.35, 1.45, 2.45], peak=1.45, end=4.0))
-def _sfx_rumble_big(rng):
-    return _rumble(rng, 4.0, heavy=True)
+#: rumble_distant follows the s04 / s09 'sneeze' choreography: little grumbles with the two small
+#: puffs (0.0, 0.35 s), then the muffled boom of the big one (0.8 s)
+RUMBLE_DISTANT_PUFFS = [0.0, 0.35]
+RUMBLE_DISTANT_BOOM = 0.8
 
 
-@_register("explosion", -9.5, "volcanic eruption boom: crack, sub drop, crackling roar tail (~6 s)",
-           anchors=dict(boom=0.0, secondary=[0.55, 1.3], debris=[0.8, 4.5], end=5.5), limit_db=6.0)
-def _sfx_explosion(rng):
-    dur = 5.6
+@_register("rumble_distant", -16.0, "far-off mountain grumble (~2.4 s): little sub, energy in the 150-800 Hz "
+                                    "roll/grind band + nearby rattle, so it reads at low gain under music and on "
+                                    "small speakers.  Two small grumbles (0.0, 0.35 s), a muffled boom at 0.8 s",
+           anchors=dict(puffs=RUMBLE_DISTANT_PUFFS, boom=RUMBLE_DISTANT_BOOM, end=2.4), small=-19.0)
+def _sfx_rumble_distant(rng, v):
+    env = [(0, 0), (0.07, 0.6), (0.22, 0.18), (0.42, 0.65), (0.6, 0.22), (0.8, 0.85), (1.1, 1.0), (1.6, 0.6),
+           (2.4, 0.0)]
+    return _rumble(rng, v, 2.4, heavy=False, env_pts=env, distant=True,
+                   booms=[(RUMBLE_DISTANT_BOOM, 0.95 * (1 + 0.1 * v(6)))])
+
+
+#: rumble_big is front-loaded: the violence (three booms) is inside the first ~1.5 s -- the length
+#: of a typical 'big rumble' beat -- then it settles to a low rolling rumble ~10 dB down, so dialogue
+#: that follows the beat sits on top of it without the script pre-attenuating the whole effect.
+RUMBLE_BIG_BOOMS = [0.12, 0.62, 1.2]
+RUMBLE_BIG_SETTLE = 1.8
+
+
+@_register("rumble_big", -10.0, "violent ground rumble, front-loaded: three full-band booms in the first 1.3 s "
+                                "(0.12, 0.62, 1.2), grinding rocks, debris; settles from 1.8 s into a low rolling "
+                                "rumble ~10 dB down that sits under dialogue (~4 s)",
+           anchors=dict(booms=RUMBLE_BIG_BOOMS, peak=RUMBLE_BIG_BOOMS[1], settle=RUMBLE_BIG_SETTLE, end=4.0),
+           small=-16.0)
+def _sfx_rumble_big(rng, v):
+    S = RUMBLE_BIG_SETTLE
+    env = [(0, 0), (0.1, 0.75), (0.45, 1.0), (1.35, 1.0), (S, 0.38), (3.2, 0.33), (4.0, 0.0)]
+    return _rumble(rng, v, 4.0, heavy=True, env_pts=env, booms=list(zip(RUMBLE_BIG_BOOMS, (0.85, 1.0, 1.15))))
+
+
+EXPLOSION_SECONDARY = [0.55, 1.30]
+#: the roar holds within ~3-5 dB of the hit (400 ms windows) until here, eases to ~-10 dB by 3.4 s
+EXPLOSION_HOLD = 2.8
+#: the darker debris-rain tail (~-14..-19 dB re the hit, leaving the speech band to the next line)
+#: runs until here, then fades out
+EXPLOSION_TAIL = 5.5
+EXPLOSION_LEN = 6.3
+
+
+@_register("explosion", -7.0, "volcanic eruption: KA-BOOM (crack, punch, sub drop), two lava-fountain booms "
+                              "(0.55, 1.30 s) inside a roar that holds within ~3-5 dB of the hit to 2.8 s, ~-10 dB "
+                              "at 3.4 s, then a darker debris-rain tail (~-14..-19 dB) to 5.5 s that leaves room for "
+                              "the next line (~6.3 s).  Pair it with 'eruption_bed' on the same cue",
+           anchors=dict(boom=0.0, secondary=EXPLOSION_SECONDARY, hold=EXPLOSION_HOLD, debris=[0.8, EXPLOSION_TAIL],
+                        end=EXPLOSION_LEN), limit_db=6.0, small=-11.5, max_len=EXPLOSION_LEN + 0.1)
+def _sfx_explosion(rng, v):
+    dur = EXPLOSION_LEN
     n = _n(dur)
     t = _time(n)
-    out = np.zeros((n, 2))
-    # 1. transient crack
-    crack = bp(rng.standard_normal(n) * np.exp(-t / 0.005), 700, 9000) * 1.4
-    crack += lp(rng.standard_normal(n) * np.exp(-t / 0.002), 3000) * 1.0
-    out += _widen(crack, rng, 0.3)
-    # 2. punch: low-passed noise body
-    body = lp(rng.standard_normal((n, 2)), 1400) * _decay(n, 0.07, 0.002)[:, None] * 1.6
-    body += lp(rng.standard_normal((n, 2)), 380, order=3) * _decay(n, 0.45, 0.004)[:, None] * 2.4
-    body += bp(rng.standard_normal((n, 2)), 70, 260, order=2) * _decay(n, 0.9, 0.006)[:, None] * 1.6
-    out += body
-    # 3. sub drop
-    fsub = 34 + 60 * np.exp(-t / 0.33)
-    sub = np.sin(_phase(fsub)) * _decay(n, 1.0, 0.003) * 1.4
-    sub += 0.5 * np.sin(_phase(fsub * 2.01)) * _decay(n, 0.35, 0.003)
-    out += sub[:, None]
-    # 4. billowing roar tail
-    turb = np.clip(1 + 0.45 * _smooth_noise(n, rng, 2.5) + 0.25 * _smooth_noise(n, rng, 7.0), 0.2, None)
-    renv = _cos_env([(0, 0), (0.06, 1.0), (dur, 0.0)], n) * (0.45 * np.exp(-t / 0.5) + 0.55 * np.exp(-t / 2.6)) * turb
-    fcut = 260 + 3400 * np.exp(-t / 0.7)
+    p = 1.0 + 0.05 * v(0)
+    H, T = EXPLOSION_HOLD, EXPLOSION_TAIL
+    # ---- the bed: billowing roar + grinding rock body + crackle + debris.  It surges up right after
+    #      the hit and HOLDS (within ~3-5 dB of the hit in 400 ms windows) to 2.8 s, so the climax
+    #      keeps reading over the action cue, eases to ~-10 dB by 3.4 s (the end of a typical eruption
+    #      beat) and settles into a darker debris-rain tail (~-14..-19 dB) until 5.5 s: build_audio does
+    #      not duck sfx under dialogue, and a -10 dB tail there buried the line that follows the beat
+    #      (+0.4 dB dialogue margin in the replica mix).  The lava booms stay clean onsets by side-chain
+    #      dips of the bed.
+    turb = np.clip(1 + 0.25 * _smooth_noise(n, rng, 2.5) + 0.15 * _smooth_noise(n, rng, 7.0), 0.4, None)
+    renv0 = _cos_env([(0, 0), (0.06, 0.3), (0.3, 0.8), (0.6, 1.0), (1.8, 1.0), (H, 0.92), (H + 0.5, 0.48),
+                      (H + 1.1, 0.25), (T, 0.18), (dur, 0.0)], n)
+    renv = renv0 * turb
+    # the tail darkens (a far, settling roar), leaving the 1-4 kHz speech band to the lines that follow
+    fcut = 450 + 2400 * _cos_env([(0, 0.35), (0.8, 1.0), (H, 0.75), (H + 0.6, 0.28), (T, 0.1), (dur, 0.05)], n)
 
     def mask(tc, f):
         e = _interp_at(tc, n, renv)
         fc = _interp_at(tc, n, fcut)
-        return e * m_tilt(f, -3.0, 200) / np.sqrt(1 + (f / fc) ** 4) * m_band(f, 28, 0, 18, 0)
+        # broadband roar (-3 dB/oct) + a 200-800 Hz 'grind' hump that small speakers reproduce
+        return e * (m_tilt(f, -3.0, 200) / np.sqrt(1 + (f / fc) ** 4) * m_band(f, 28, 0, 18, 0)
+                    + 0.55 * m_peak(f, 420.0 * p, 0.9))
 
     roar = _spec_noise(n, rng, mask, nfft=2048, nch=2, corr=0.2)
-    out += roar * 1.6
-    # 5. crackling (dense at first)
-    crate = 260 * np.exp(-t / 0.6) + 25 * np.exp(-t / 2.5)
-    cr = _crackle(n, rng, crate, lo=700, hi=5000, tau=0.002, alpha=1.4)
-    cr2 = _crackle(n, rng, crate * 0.8, lo=700, hi=5000, tau=0.002, alpha=1.4)
-    out += np.stack([cr, cr2], axis=1) * 0.5
-    # 6. secondary booms (lava fountains)
-    for tb, a in ((0.55, 0.55), (1.3, 0.4)):
-        m = _n(1.2)
-        tt = _time(m)
-        b = np.sin(_phase(38 + 34 * np.exp(-tt / 0.1))) * _decay(m, 0.4, 0.004)
-        b += lp(rng.standard_normal(m), 300) * _decay(m, 0.15, 0.004) * 0.8
-        _add(out, tb, b * a * 1.6)
-    # 7. debris rain: rock thuds + pebbles
-    for _ in range(28):
-        td = 0.8 + 3.7 * rng.random() ** 1.3
-        a = 0.45 * (1 - (td - 0.8) / 4.2) * rng.uniform(0.3, 1.0)
-        _bounce_seq(out, rng, td, a, rng.uniform(-0.9, 0.9), size=rng.uniform(0.9, 1.8))
-    for _ in range(7):
-        td = rng.uniform(0.9, 3.5)
+    roar /= np.sqrt(np.mean(roar ** 2)) / np.sqrt(np.mean(renv ** 2)) + 1e-12
+    body = _rock_grind(n, rng, renv, rate=14.0 * (1 + 0.2 * v(1)), lo=180.0 * p, hi=800.0 * p)
+    rumb = _rock_grind(n, rng, renv, rate=7.0, lo=90.0 * p, hi=260.0 * p)
+    crate = 150 * renv + 40 * _cos_env([(0, 0), (0.6, 0.4), (1.6, 1.0), (H, 0.9), (H + 0.6, 0.35), (T, 0.2),
+                                        (dur, 0.1)], n)
+    cr = np.stack([_crackle(n, rng, crate, lo=700, hi=5000, tau=0.002, alpha=1.4),
+                   _crackle(n, rng, crate * 0.8, lo=700, hi=5000, tau=0.002, alpha=1.4)], axis=1)
+    deb = np.zeros((n, 2))
+    for _ in range(int(round(40 + 6 * v(2)))):
+        td = 0.7 + (T - 0.7) * rng.random() ** 1.15
+        a = 0.5 * (1 - 0.75 * (td - 0.7) / (T - 0.7)) * rng.uniform(0.3, 1.0)
+        _bounce_seq(deb, rng, td, a, rng.uniform(-0.9, 0.9), size=rng.uniform(0.9, 1.8))
+    for _ in range(int(round(12 + 2 * v(3)))):                 # rocks thumping down all through the tail
+        td = 0.9 + (T - 0.9) * rng.random() ** 1.2
         m = _n(0.3)
         tt = _time(m)
         th = np.sin(_phase(rng.uniform(90, 170) * (1 + 0.4 * np.exp(-tt / 0.01)))) * _decay(m, 0.05, 0.001)
-        th += lp(rng.standard_normal(m), 900) * _decay(m, 0.02, 0.0005) * 0.5
-        _add(out, td, _pan(th * rng.uniform(0.3, 0.7), rng.uniform(-0.7, 0.7)))
-    out = np.tanh(out * 0.9)
-    return _reverb(out, "big", 0.28, send_hp=90)
+        th += bp(rng.standard_normal(m), 150, 900) * _decay(m, 0.03, 0.0005) * 0.8
+        _add(deb, td, _pan(th * rng.uniform(0.35, 0.75) * (1 - 0.4 * (td - 0.9) / (T - 0.9)), rng.uniform(-0.7, 0.7)))
+    out = roar * 0.66 + body * 0.38 + rumb * 0.2 + cr * 0.34 + deb * 0.9
+    # hold the designed contour for every seed (the billowing stays, inside each ~400 ms)
+    rode = _ride(out, renv0, win=0.4, max_db=4.0)
+    out = rode * (np.sqrt(np.mean(out ** 2)) / (np.sqrt(np.mean(rode ** 2)) + 1e-12))
+    # ---- the main hit: broadband crack + 150-900 Hz punch, soft-clipped so its crest factor is
+    #      low (the mastering limiter then leaves the attack alone), then the sub swells in under it
+    hit = _boom_hit(rng, size=1.6, sub=0.5, mid=1.7, crack=2.6, debris=0.35, width=0.35, pitch=p)
+    m = len(hit)
+    zk = rng.standard_normal(m)
+    ka = bp(zk, 900, 9000) * _decay(m, 0.008, 0.0003) * 1.3 + bp(zk, 2500, 8000) * _decay(m, 0.0025, 0.0002) * 0.8
+    hit = hit + _widen(ka, rng, 0.3)
+    hk = np.abs(hit).max() + 1e-12
+    hit = np.tanh(2.6 * hit / hk) / np.tanh(2.6) * hk
+    fsub = (34 + 60 * np.exp(-t / 0.33)) * p
+    ph = _phase(fsub)
+    s = (np.sin(ph) + 0.28 * np.sin(2 * ph) + 0.12 * np.sin(3 * ph)) * np.exp(-t / 0.75) * _ramp(n, 0.012) * _taper(n)
+    # the bed gets the full mountain reverb, the hit a lighter send (its tail would fill in the gap
+    # right after the attack)
+    out = _reverb(out, "big", 0.2, send_hp=90)
+    dry = np.zeros((n, 2))
+    _add(dry, 0.0, hit)
+    dry += (s * 0.8)[:, None]
+    dry = _reverb(dry, "big", 0.08, send_hp=90)
+    out[:len(dry)] += dry
+    # ---- the secondary booms (lava fountains): everything so far, reverb included, dips ~5.5 dB
+    #      just before each (side-chain style), so each boom is a clean onset
+    out = out * _duck_env(len(out), EXPLOSION_SECONDARY, depth_db=-9.0, pre=0.19, ramp=0.07)[:, None]
+    sec = np.zeros((n, 2))
+    for tb, a in zip(EXPLOSION_SECONDARY, (1.0, 1.08)):
+        _add(sec, tb, _boom_hit(rng, size=1.3, sub=0.8, mid=1.5, crack=1.5, debris=0.8, width=0.5,
+                                pitch=p * rng.uniform(0.92, 1.04)) * a)
+    sec = _reverb(sec, "big", 0.16, send_hp=90)
+    m = min(len(out), len(sec))
+    out[:m] += sec[:m]
+    return out
+
+
+# ---------------------------------------------------------------- eruption bed
+ERUPTION_BED_LEN = 24.0
+
+
+ERUPTION_BED_SWELL = (3.0, 6.5)
+
+
+@_register("eruption_bed", -22.0, "~24 s one-shot eruption bed: lava roar, gloops, steam hiss, fire crackle, "
+                                  "distant booms and falling debris.  Drop it on the explosion cue (same time): it "
+                                  "stays out of the blast and the explosion's held roar, swells in from 3.0 s as the "
+                                  "explosion settles into its tail (full at 6.5 s), sits ~11-14 dB under dialogue "
+                                  "and fades out from 15 s (gone at 24 s)",
+           anchors=dict(swell=ERUPTION_BED_SWELL[0], full=ERUPTION_BED_SWELL[1], fade=15.0, end=ERUPTION_BED_LEN),
+           small=-24.5,
+           max_len=ERUPTION_BED_LEN + 0.6)
+def _sfx_eruption_bed(rng, v):
+    return _eruption_layers(_n(ERUPTION_BED_LEN), rng, v, one_shot=True)
+
+
+def _eruption_layers(n, rng, v, one_shot=False):
+    dur = n / SR
+    t = _time(n)
+    if one_shot:
+        # silent under the explosion's own blast and lava booms, then takes over from its roar
+        env = _cos_env([(0, 0), (ERUPTION_BED_SWELL[0], 0.0), (ERUPTION_BED_SWELL[1], 1.0), (15.0, 0.85),
+                        (dur, 0.0)], n)
+    else:
+        env = np.ones(n)
+    und = 1 + 0.16 * np.tanh(_smooth_noise(n, rng, 0.35)) + 0.10 * np.tanh(_smooth_noise(n, rng, 1.7))
+
+    def roar(tc, f):
+        u = _interp_at(tc, n, und * env)
+        return u * (m_tilt(f, -4.5, 150) * m_band(f, 30, 900, 12, 12) + 0.3 * m_peak(f, 480, 1.0))
+
+    out = np.zeros((n + _n(4.0), 2))
+    out[:n] += _spec_noise(n, rng, roar, nfft=2048, nch=2, corr=0.3) * 0.5
+    out[:n] += _rock_grind(n, rng, env * und, rate=11.0, lo=110.0, hi=450.0) * 0.06
+    # steam / lava hiss, slow swells
+    hs = np.clip(0.55 + 0.45 * np.tanh(_smooth_noise(n, rng, 0.25)), 0.15, 1.0)
+
+    def hiss(tc, f):
+        return _interp_at(tc, n, hs * env) * m_peak(f, 3800, 1.0) * m_band(f, 1200, 9000, 12, 18)
+
+    out[:n] += _spec_noise(n, rng, hiss, nfft=1024, nch=2, corr=0.2) * 0.035
+    # fire crackle in bursts
+    burst = np.clip(0.45 + 0.7 * np.maximum(_smooth_noise(n, rng, 1.1), 0) ** 2, 0, None) * env
+    # (amplitude follows the swell too, not just the rate: a full-size crackle in the quiet start of
+    #  the swell reads as a click)
+    out[:n] += np.stack([_crackle(n, rng, 40 * burst, 700, 4200, 0.0016, 2.0) for _ in range(2)], axis=1) \
+        * (0.22 * np.sqrt(env))[:, None]
+    # lava gloops: big slow bubbles bursting (60-200 Hz bloop + a little splatter)
+    for tg in _events(rng, dur, 1.3):
+        e = float(np.interp(tg, t, env))
+        y = _bubble(rng.uniform(60, 150), rng.uniform(0.06, 0.12), rng.uniform(0.4, 0.9), 0.5)
+        y2 = _bubble(rng.uniform(300, 700), rng.uniform(0.01, 0.025), 1.0, 0.25)
+        y[:len(y2)] += 0.4 * y2[:len(y)]
+        _add(out, tg, _pan(y * e * rng.uniform(0.4, 1.0), rng.uniform(-0.7, 0.7)))
+    # distant booms (lava fountains) and debris thumping down
+    tb = (ERUPTION_BED_SWELL[1] if one_shot else 0.5) + rng.uniform(0, 1.0)
+    while tb < dur - (5.0 if one_shot else 1.0):
+        e = float(np.interp(tb, t, env))
+        b = _boom_hit(rng, size=1.4, sub=0.7, mid=0.7, crack=0.25, debris=0.4, width=0.8,
+                      pitch=rng.uniform(0.9, 1.1))
+        b = lp(b, rng.uniform(1400, 2400))
+        _add(out, tb, b * 0.32 * e * rng.uniform(0.6, 1.0))
+        tb += rng.uniform(2.2, 4.5)
+    for td in _events(rng, dur - 1.0, 1.1):
+        e = float(np.interp(td, t, env))
+        m = _n(0.3)
+        tt = _time(m)
+        th = np.sin(_phase(rng.uniform(80, 160) * (1 + 0.4 * np.exp(-tt / 0.01)))) * _decay(m, 0.06, 0.001)
+        th += lp(rng.standard_normal(m), 700) * _decay(m, 0.025, 0.0006) * 0.5
+        pan = rng.uniform(-0.9, 0.9)
+        _add(out, td, _pan(th * rng.uniform(0.08, 0.2) * e, pan))
+        if rng.random() < 0.6:
+            _bounce_seq(out, rng, td + 0.02, 0.09 * e, pan, size=rng.uniform(0.9, 1.5))
+    out = _reverb(out[:n + _n(1.0)], "big", 0.25, send_hp=90)
+    return out
 
 
 # ---------------------------------------------------------------- impacts
 @_register("bonk", -15.0, "cartoon bonk: hollow coconut/woodblock knock with quick pitch drop",
-           anchors=dict(hit=0.0))
-def _sfx_bonk(rng):
+           anchors=dict(hit=0.0), jitter_db=1.5)
+def _sfx_bonk(rng, v):
     n = _n(0.55)
     t = _time(n)
-    f = 385 + 285 * np.exp(-t / 0.032)
-    body = np.sin(_phase(f)) * _decay(n, 0.12, 0.0005)
-    body += 0.33 * np.sin(_phase(f * 2.37)) * _decay(n, 0.04, 0.0005)
-    body += 0.12 * np.sin(_phase(f * 3.91)) * _decay(n, 0.022, 0.0005)
+    p = 1 + 0.05 * v(0)
+    dk = 1 + 0.2 * v(1)
+    br = 1 + 0.45 * v(3)
+    f = (385 + 285 * (1 + 0.25 * v(2)) * np.exp(-t / (0.032 * (1 + 0.15 * v(4))))) * p
+    body = np.sin(_phase(f)) * _decay(n, 0.12 * dk, 0.0005)
+    body += 0.33 * np.sin(_phase(f * (2.37 + 0.07 * v(5)))) * _decay(n, 0.04 * dk, 0.0005)
+    body += 0.12 * np.sin(_phase(f * (3.91 + 0.12 * v(6)))) * _decay(n, 0.022 * dk, 0.0005)
     # plastic helmet shell 'tick'
-    shell = sum(np.sin(TAU * fr * t) * np.exp(-t / 0.018) for fr in (1830, 2470, 3320)) * 0.08
-    thump = np.sin(_phase(110 + 70 * np.exp(-t / 0.015))) * _decay(n, 0.05, 0.001) * 0.55
-    click = bp(rng.standard_normal(n) * np.exp(-t / 0.0012), 1800, 7000) * 0.5
+    shell = sum(np.sin(TAU * fr * (1 + 0.04 * v(7)) * t) * np.exp(-t / 0.018) for fr in (1830, 2470, 3320)) * 0.08 * br
+    thump = np.sin(_phase((110 + 70 * np.exp(-t / 0.015)) * p)) * _decay(n, 0.05, 0.001) * 0.55
+    click = bp(rng.standard_normal(n) * np.exp(-t / 0.0012), 1800, 7000) * 0.5 * br
     y = body + shell + thump + click
-    return _reverb(_pan(y, 0.0), "room", 0.12)
+    return _reverb(_pan(y, 0.06 * v(8)), "room", 0.12)
 
 
 @_register("splat", -16.0, "wet juicy orange splat with squelch and droplets",
            anchors=dict(hit=0.0))
-def _sfx_splat(rng):
+def _sfx_splat(rng, v):
     n = _n(0.75)
     t = _time(n)
     out = np.zeros((n, 2))
-    thump = np.sin(_phase(150 * (0.5 + 0.5 * np.exp(-t / 0.03)))) * _decay(n, 0.06, 0.001)
+    p = 1 + 0.06 * v(0)
+    thump = np.sin(_phase(150 * p * (0.5 + 0.5 * np.exp(-t / 0.03)))) * _decay(n, 0.06, 0.001)
     thump += lp(rng.standard_normal(n), 700) * _decay(n, 0.04, 0.001) * 0.8
-    sq = _tvf(rng.standard_normal(n), "bp", 520 + 3200 * np.exp(-t / 0.045), 1.6, block=32)
+    sq = _tvf(rng.standard_normal(n), "bp", (520 + 3200 * np.exp(-t / (0.045 * (1 + 0.2 * v(1))))) * p, 1.6, block=32)
     wet_grain = 0.6 + 0.4 * np.abs(_smooth_noise(n, rng, 90))
-    sq *= _decay(n, 0.075, 0.0015) * wet_grain * 1.6
+    sq *= _decay(n, 0.075 * (1 + 0.2 * v(2)), 0.0015) * wet_grain * 1.6
     spray = bp(rng.standard_normal((n, 2)), 2500, 9000) * _decay(n, 0.09, 0.003)[:, None] * 0.35
     out += _pan(thump * 1.1 + sq, 0.0) + spray
-    for _ in range(14):
+    for _ in range(int(round(15 + 5 * v(3)))):
         td = 0.02 + 0.45 * rng.random() ** 1.6
         a = 0.35 * (1 - td / 0.5) * rng.uniform(0.4, 1.0)
         _add(out, td, _pan(_bubble(rng.uniform(1100, 2600), rng.uniform(0.006, 0.014), rise=1.0, amp=a),
@@ -1088,101 +1424,208 @@ def _sfx_splat(rng):
     return _reverb(out, "room", 0.1)
 
 
-@_register("thud", -16.0, "dull heavy thud", anchors=dict(hit=0.0))
-def _sfx_thud(rng):
+@_register("thud", -12.5, "dull heavy thud: earthy body you can hear on small speakers, a little debris",
+           anchors=dict(hit=0.0), small=-19.0, jitter_db=1.5)
+def _sfx_thud(rng, v):
     n = _n(0.6)
     t = _time(n)
-    f = 55 + 65 * np.exp(-t / 0.035)
-    y = np.sin(_phase(f)) * _decay(n, 0.12, 0.002) * 1.2
-    y += 0.35 * np.sin(_phase(2.02 * f)) * _decay(n, 0.06, 0.002)
-    y += lp(rng.standard_normal(n), 650, order=3) * _decay(n, 0.05, 0.001) * 1.1
-    y += bp(rng.standard_normal(n), 120, 420) * _decay(n, 0.08, 0.002) * 1.0
-    y += bp(rng.standard_normal(n) * np.exp(-t / 0.001), 1000, 4000) * 0.25
-    y = np.tanh(1.6 * y / np.abs(y).max())
+    p = 1 + 0.06 * v(0)
+    dk = 1 + 0.2 * v(1)
+    f = (55 + 65 * np.exp(-t / 0.035)) * p
+    y = np.sin(_phase(f)) * _decay(n, 0.12 * dk, 0.002) * 0.8
+    y += 0.3 * np.sin(_phase(2.02 * f)) * _decay(n, 0.06 * dk, 0.002)
+    # the audible body: a damped earthy 'tok' mode + low-mid noise thump
+    fm = (205 + 30 * v(2)) * p
+    y += 0.9 * np.sin(_phase(fm * (1 + 0.3 * np.exp(-t / 0.008)))) * _decay(n, 0.045 * dk, 0.001)
+    y += bp(rng.standard_normal(n), 150, 650) * _decay(n, 0.055 * dk, 0.0015) * 2.0
+    y += lp(rng.standard_normal(n), 650, order=3) * _decay(n, 0.05, 0.001) * 0.8
+    y += bp(rng.standard_normal(n) * np.exp(-t / 0.001), 1000, 4000) * 0.3 * (1 + 0.4 * v(3))
+    y = np.tanh(1.8 * y / np.abs(y).max())
     out = _pan(y, 0.0)
-    for _ in range(4):
-        _bounce_seq(out, rng, rng.uniform(0.04, 0.2), 0.08, rng.uniform(-0.6, 0.6), size=1.2, nb=2)
+    for _ in range(int(3 + round(1.5 + 1.5 * v(4)))):
+        _bounce_seq(out, rng, rng.uniform(0.04, 0.2), 0.09, rng.uniform(-0.6, 0.6), size=1.2, nb=2)
     return _reverb(out, "outdoor", 0.08, send_hp=100)
 
 
-@_register("hammer", -15.5, "wooden mallet on a stake, three knocks",
-           anchors=dict(knocks=[0.0, 0.42, 0.84]))
-def _sfx_hammer(rng):
-    out = np.zeros((_n(1.4), 2))
-    for i, (tk, sc, a) in enumerate(((0.0, 1.0, 0.85), (0.42, 0.965, 0.92), (0.84, 0.93, 1.0))):
-        _add(out, tk, _pan(_knock(rng, sc, a), -0.05 + 0.03 * i))
+@_register("knock", -16.0, "one mallet-on-wood knock (single hit; place on the beat)",
+           anchors=dict(hit=0.0), jitter_db=2.0)
+def _sfx_knock(rng, v):
+    y = _knock(rng, scale=1 + 0.06 * v(0), amp=1.0, bright=1 + 0.35 * v(1), decay=1 + 0.2 * v(2),
+               thump=1 + 0.15 * v(4), thump_amp=0.8 + 0.25 * v(5))
+    return _reverb(_pan(y, 0.08 * v(3)), "outdoor", 0.12)
+
+
+#: hammer: three knocks one beat apart at 128 bpm (the montage tempo); the third is the loudest
+#: (the 'accent': cut the sign popping up to it).  Two hammers in a row keep the chain on the beat
+#: when the second starts HAMMER_CHAIN (3 beats = 1.40625 s) after the first; an offset of about
+#: one beat less (0.94-0.95 s) puts its first knock on the first hammer's accent (a 13 ms flam).
+#: On the montage, place each hammer on the cue's beat grid (music.music_anchors('montage', ...)).
+HAMMER_BEAT = 60.0 / 128.0
+HAMMER_KNOCKS = [0.0, round(HAMMER_BEAT, 4), round(2 * HAMMER_BEAT, 4)]
+HAMMER_ACCENT = HAMMER_KNOCKS[2]
+HAMMER_CHAIN = round(3 * HAMMER_BEAT, 5)
+
+
+@_register("hammer", -15.5, "wooden mallet on a stake: three knocks one beat apart at 128 bpm (0, 0.469, 0.9375 s), "
+                            "the third (accent, 0.9375 s) the loudest.  Chain a second hammer 1.40625 s (3 beats) "
+                            "after the first",
+           anchors=dict(knocks=HAMMER_KNOCKS, accent=HAMMER_ACCENT, beat=round(HAMMER_BEAT, 4), chain=HAMMER_CHAIN))
+def _sfx_hammer(rng, v):
+    out = np.zeros((_n(2 * HAMMER_BEAT + 0.6), 2))
+    base = 1 + 0.06 * v(0)
+    br = 1 + 0.35 * v(1)
+    dk = 1 + 0.2 * v(2)
+    climb = 0.015 * (1 + v(3))                     # stake going in: pitch creeps up (0..3 %/knock)
+    for i, tk in enumerate(HAMMER_KNOCKS):
+        sc = base * (1 + climb * i) * rng.uniform(0.985, 1.015)
+        a = (0.78, 0.86, 1.0)[i] * rng.uniform(0.92, 1.0)
+        y = _knock(rng, sc, a, bright=br * rng.uniform(0.9, 1.1), decay=dk, thump=(1 + 0.15 * v(5)) * (1 + climb * i),
+                   thump_amp=0.8 + 0.25 * v(6))
+        _add(out, tk, _pan(y, -0.05 + 0.03 * i + 0.1 * v(4)))
     return _reverb(out, "outdoor", 0.12)
 
 
-@_register("pop", -18.0, "cartoon mouth-pop / cork 'pwop'", anchors=dict(hit=0.0))
-def _sfx_pop(rng):
+@_register("pop", -18.0, "cartoon mouth-pop / cork 'pwop'", anchors=dict(hit=0.0), jitter_db=1.5)
+def _sfx_pop(rng, v):
     n = _n(0.22)
     t = _time(n)
-    f = 260 + 900 * (1 - np.exp(-t / 0.012))
-    y = np.sin(_phase(f)) * _decay(n, 0.03, 0.0015)
+    p = 1 + 0.06 * v(0)
+    f = (260 + 900 * (1 + 0.15 * v(2)) * (1 - np.exp(-t / (0.012 * (1 + 0.25 * v(1)))))) * p
+    y = np.sin(_phase(f)) * _decay(n, 0.03 * (1 + 0.2 * v(3)), 0.0015)
     y += 0.25 * np.sin(2 * _phase(f)) * _decay(n, 0.015, 0.0015)
     y += bp(rng.standard_normal(n) * np.exp(-t / 0.0008), 1500, 6000) * 0.25
-    return _reverb(_pan(y, 0.0), "room", 0.08)
+    return _reverb(_pan(y, 0.1 * v(4)), "room", 0.08)
 
 
 # ---------------------------------------------------------------- wings
 _FLAP_TIMES = [0.0, 0.28, 0.55, 0.82, 1.1]
+#: take-off: two heavy push-off strokes, then quicker, lighter ones as the bird climbs away
+_TAKEOFF_TIMES = [0.0, 0.36, 0.66, 0.92, 1.14, 1.33, 1.5]
+#: landing: coming in from afar, strokes slowing down, a big braking flare at the end
+_LANDING_TIMES = [0.0, 0.2, 0.42, 0.67, 0.96, 1.3]
+_STROKE = 0.08          # a flap's moment of maximum air push, after its start (0.075 * wing size)
 
 
-@_register("flap", -18.5, "one big wing flap whoosh", anchors=dict(stroke=0.075))
-def _sfx_flap(rng):
-    y = _flap(rng, 1.0)
+def _takeoff_size(i):
+    u = i / (len(_TAKEOFF_TIMES) - 1)
+    return 1.18 - 0.3 * u                       # strokes get quicker as he climbs away
+
+
+def _landing_size(i):
+    u = i / (len(_LANDING_TIMES) - 1)
+    return 0.88 + 0.3 * u + (0.12 if i == len(_LANDING_TIMES) - 1 else 0.0)   # bigger, then the flare
+
+
+def _stroke_peaks(times, size_fn):
+    return [round(tf + 0.075 * size_fn(i), 3) for i, tf in enumerate(times)]
+
+
+@_register("flap", -18.5, "one big wing flap whoosh", anchors=dict(stroke=_STROKE))
+def _sfx_flap(rng, v):
+    y = _flap(rng, 1.0 + 0.08 * v(0), bright=1 + 0.3 * v(1))
     return _reverb(_widen(y, rng, 0.4), "outdoor", 0.1)
 
 
-@_register("flaps", -16.0, "five big vulture wing flaps (take-off / landing), ~1.5 s",
-           anchors=dict(strokes=[round(x + 0.08, 3) for x in _FLAP_TIMES], end=1.5))
-def _sfx_flaps(rng):
+@_register("flaps", -16.0, "five big vulture wing flaps (generic take-off / landing), ~1.5 s",
+           anchors=dict(strokes=[round(x + _STROKE, 3) for x in _FLAP_TIMES], end=1.5))
+def _sfx_flaps(rng, v):
     out = np.zeros((_n(1.9), 2))
-    amps = (0.8, 1.0, 0.95, 0.85, 0.7)
+    size = 1.0 + 0.08 * v(0)
+    amps = v.pick(1, [(0.8, 1.0, 0.95, 0.85, 0.7), (1.0, 0.88, 0.95, 0.8, 0.72), (0.72, 0.9, 1.0, 0.92, 0.8)])
+    side = 1.0 if v(2) >= 0 else -1.0
     for i, (tf, a) in enumerate(zip(_FLAP_TIMES, amps)):
-        y = _flap(rng, rng.uniform(1.0, 1.15), a)
-        _add(out, tf, _pan(y, -0.35 + 0.15 * i))
+        y = _flap(rng, size * rng.uniform(1.0, 1.1), a, bright=1 + 0.3 * v(3))
+        _add(out, tf, _pan(y, side * (-0.35 + 0.15 * i)))
     # feathers settling
     n = _n(0.35)
     rust = _crackle(n, rng, 600 * np.exp(-_time(n) / 0.1), lo=2500, hi=8000, tau=0.0008, alpha=2.5) * np.exp(-_time(n) / 0.12)
-    _add(out, 1.3, _pan(rust * 0.12, 0.25))
+    _add(out, 1.3, _pan(rust * 0.12 * (1 + 0.4 * v(4)), 0.25 * side))
     return _reverb(out, "outdoor", 0.1)
 
 
-@_register("land", -18.5, "soft feathery landing thump + settle", anchors=dict(touch=0.0))
-def _sfx_land(rng):
+@_register("flaps_takeoff", -16.0, "vulture take-off: two heavy push-off strokes, then quicker, lighter strokes "
+                                   "receding as he climbs away (~1.8 s)",
+           anchors=dict(strokes=_stroke_peaks(_TAKEOFF_TIMES, _takeoff_size), airborne=0.66, end=1.8))
+def _sfx_flaps_takeoff(rng, v):
+    out = np.zeros((_n(2.3), 2))
+    size = 1.0 + 0.08 * v(0)
+    side = 1.0 if v(2) >= 0 else -1.0
+    k = len(_TAKEOFF_TIMES)
+    for i, tf in enumerate(_TAKEOFF_TIMES):
+        u = i / (k - 1)
+        a = (1.0 if i < 2 else 0.95) * (1 - 0.68 * u ** 1.2)            # receding
+        sz = size * _takeoff_size(i) * rng.uniform(0.98, 1.02)
+        y = _flap(rng, sz, a, bright=(1.0 - 0.45 * u) * (1 + 0.25 * v(1)))   # and darker with distance
+        _add(out, tf, _pan(y, side * 0.65 * u))
+    # push-off: claws scrabble + a soft body thump
+    m = _n(0.25)
+    tt = _time(m)
+    push = np.sin(_phase(110 * (1 + 0.3 * np.exp(-tt / 0.02)))) * _decay(m, 0.05, 0.003) * 0.35
+    push += _crackle(m, rng, 900 * np.exp(-tt / 0.05), lo=1500, hi=6000, tau=0.0007, alpha=2.5) * 0.12
+    _add(out, 0.0, _pan(push, 0.0))
+    return _reverb(out, "outdoor", 0.12)
+
+
+@_register("flaps_land", -16.0, "vulture coming in to land: strokes slowing as he approaches, a big braking "
+                                "flare at the end (~1.7 s); follow it with 'land'",
+           anchors=dict(strokes=_stroke_peaks(_LANDING_TIMES, _landing_size),
+                        flare=_stroke_peaks(_LANDING_TIMES, _landing_size)[-1], end=1.75))
+def _sfx_flaps_land(rng, v):
+    out = np.zeros((_n(2.2), 2))
+    size = 1.0 + 0.08 * v(0)
+    side = 1.0 if v(2) >= 0 else -1.0
+    k = len(_LANDING_TIMES)
+    for i, tf in enumerate(_LANDING_TIMES):
+        u = i / (k - 1)
+        last = i == k - 1
+        a = 0.42 + 0.5 * u ** 0.8 + (0.2 if last else 0.0)                # approaching, then the flare
+        sz = size * _landing_size(i) * rng.uniform(0.98, 1.02)
+        y = _flap(rng, sz, a, bright=(0.65 + 0.4 * u) * (1 + 0.25 * v(1)))
+        _add(out, tf, _pan(y, side * 0.6 * (1 - u)))
+    n = _n(0.35)
+    rust = _crackle(n, rng, 700 * np.exp(-_time(n) / 0.1), lo=2500, hi=8000, tau=0.0008, alpha=2.5) * np.exp(-_time(n) / 0.12)
+    _add(out, _LANDING_TIMES[-1] + 0.2, _pan(rust * 0.12, 0.1 * side))
+    return _reverb(out, "outdoor", 0.1)
+
+
+@_register("land", -18.5, "soft feathery landing thump + settle", anchors=dict(touch=0.0), small=-23.0)
+def _sfx_land(rng, v):
     n = _n(0.7)
     t = _time(n)
-    y = np.sin(_phase(88 + 45 * np.exp(-t / 0.02))) * _decay(n, 0.06, 0.004) * 0.8
-    y += lp(rng.standard_normal(n), 1300) * _decay(n, 0.045, 0.003) * 0.9
-    rust = _crackle(n, rng, 1500 * np.exp(-t / 0.12), lo=2200, hi=8000, tau=0.0009, alpha=2.5) * 0.35 * np.exp(-t / 0.15)
-    rust += bp(rng.standard_normal(n), 1800, 6000) * _decay(n, 0.12, 0.01) * 0.12
+    p = 1 + 0.06 * v(0)
+    dk = 1 + 0.2 * v(1)
+    y = np.sin(_phase((88 + 45 * np.exp(-t / 0.02)) * p)) * _decay(n, 0.06 * dk, 0.004) * 0.7
+    y += bp(rng.standard_normal(n), 160, 520) * _decay(n, 0.05 * dk, 0.003) * 0.9      # body on the perch
+    y += lp(rng.standard_normal(n), 1300) * _decay(n, 0.045, 0.003) * 0.8
+    fe = 1 + 0.35 * v(2)
+    rust = _crackle(n, rng, 1500 * fe * np.exp(-t / 0.12), lo=2200, hi=8000, tau=0.0009, alpha=2.5) * 0.35 * np.exp(-t / 0.15)
+    rust += bp(rng.standard_normal(n), 1800, 6000) * _decay(n, 0.12, 0.01) * 0.12 * fe
     out = _pan(y + rust, 0.0)
-    # tiny settling flutter
-    for tf, a in ((0.16, 0.22), (0.27, 0.15)):
-        _add(out, tf, _pan(_flap(rng, 0.6, a), 0.15))
+    # tiny settling flutter (one to three little shakes)
+    for tf, a in v.pick(3, [((0.16, 0.22), (0.27, 0.15)), ((0.18, 0.2),), ((0.14, 0.2), (0.24, 0.16), (0.34, 0.1))]):
+        _add(out, tf, _pan(_flap(rng, 0.6 * rng.uniform(0.9, 1.1), a), 0.15))
     return _reverb(out, "outdoor", 0.08)
 
 
 # ---------------------------------------------------------------- glass / thermometer
 @_register("glass_ping", -20.0, "tense rising glass whine as the thermometer climbs (~1.45 s)",
            anchors=dict(ping=0.0, peak=1.42))
-def _sfx_glass_ping(rng):
+def _sfx_glass_ping(rng, v):
     T = 1.45
     n = _n(T)
     t = _time(n)
     out = np.zeros(n)
-    f0 = 1568.0
-    for r, a, tau in ((1.0, 1.0, 0.5), (2.32, 0.35, 0.2), (4.25, 0.12, 0.08)):
-        out += a * np.sin(TAU * f0 * r * t) * np.exp(-t / tau)
+    f0 = 1568.0 * (1 + 0.04 * v(0))
+    for r, a, tau in ((1.0, 1.0, 0.5), (2.32 + 0.06 * v(1), 0.35, 0.2), (4.25 + 0.1 * v(2), 0.12, 0.08)):
+        out += a * np.sin(TAU * f0 * r * t) * np.exp(-t / (tau * (1 + 0.2 * v(3))))
     out *= _ramp(n, 0.001) * 0.45
     u = np.clip((t - 0.12) / (T - 0.12), 0, 1)
-    f = 880 * (2500 / 880) ** (u ** 1.5)
+    fa, fb = 880 * (1 + 0.05 * v(4)), 2500 * (1 + 0.04 * v(5))
+    f = fa * (fb / fa) ** (u ** (1.5 + 0.2 * v(6)))
     amp = (u ** 1.6) * _ramp(n, 0.2)
     ph = _phase(f)
-    whine = np.sin(ph) + 0.8 * np.sin(_phase(f * 1.0045)) + 0.12 * np.sin(2 * ph)
-    whine *= amp * (1 + 0.15 * np.sin(TAU * (6 + 10 * u) * t))
+    whine = np.sin(ph) + 0.8 * np.sin(_phase(f * (1.0045 + 0.0015 * v(7)))) + 0.12 * np.sin(2 * ph)
+    whine *= amp * (1 + 0.15 * np.sin(TAU * (6 + 10 * u) * (1 + 0.2 * v(8)) * t))
     stress = _crackle(n, rng, 30 * u ** 3, lo=2000, hi=7000, tau=0.0006, alpha=3.0) * 0.05 * u
     y = out + whine * 0.55 + stress
     y = _fade_edges(y, 0.0, 0.03)
@@ -1327,13 +1770,18 @@ def _boil_bed(n, rng, intensity=1.0):
 
 
 # ---------------------------------------------------------------- air
-@_register("whoosh", -17.0, "fast swish passing left to right (~0.6 s)", anchors={"pass": 0.27})
-def _sfx_whoosh(rng):
+WHOOSH_PASS = 0.27
+
+
+def _whoosh(rng, v, pan_from, pan_to):
+    """Fast swish: band-noise whose centre rises on the approach and falls after the pass (a little
+    Doppler), panned from pan_from to pan_to through the pass point."""
     dur = 0.62
     n = _n(dur)
-    tc0 = 0.27
+    tc0 = WHOOSH_PASS
     env = _cos_env([(0, 0), (tc0, 1.0), (tc0 + 0.06, 0.8), (dur, 0.0)], n) ** 1.3
-    cen = _cos_env([(0, 450), (tc0, 1500), (dur, 650)], n)
+    c0 = 1 + 0.06 * v(0)
+    cen = _cos_env([(0, 450 * c0), (tc0, 1500 * c0), (dur, 650 * c0)], n)
 
     def mask(tc, f):
         e = _interp_at(tc, n, env)
@@ -1341,8 +1789,28 @@ def _sfx_whoosh(rng):
         return e * (m_peak(f, c, 0.85) + 0.25 * m_peak(f, 2 * c, 0.12) + 0.12 * m_band(f, 200, 8000, 6, 12))
 
     y = _spec_noise(n, rng, mask, nfft=512, nch=1)
-    pan = np.clip((_time(n) - tc0) / 0.25, -1, 1) * 0.75
+    u = np.clip((_time(n) - tc0) / 0.25, -1, 1)              # -1 .. 1 across the pass
+    pan = 0.5 * (pan_from + pan_to) + 0.5 * (pan_to - pan_from) * u
     return _reverb(_pan(y, pan), "outdoor", 0.1)
+
+
+@_register("whoosh", -17.0, "fast swish past camera, near-centred with a mild left-to-right drift (~0.6 s); "
+                            "use whoosh_left / whoosh_right when something exits or crosses frame",
+           anchors={"pass": WHOOSH_PASS})
+def _sfx_whoosh(rng, v):
+    return _whoosh(rng, v, -0.15, 0.15)
+
+
+@_register("whoosh_left", -17.0, "fast swish travelling right -> LEFT (something zips out of frame left), ~0.6 s",
+           anchors={"pass": WHOOSH_PASS})
+def _sfx_whoosh_left(rng, v):
+    return _whoosh(rng, v, 0.75, -0.8)
+
+
+@_register("whoosh_right", -17.0, "fast swish travelling left -> RIGHT (something zips out of frame right), ~0.6 s",
+           anchors={"pass": WHOOSH_PASS})
+def _sfx_whoosh_right(rng, v):
+    return _whoosh(rng, v, -0.75, 0.8)
 
 
 ROCK_WHISTLE_LEN = 1.4
@@ -1350,20 +1818,21 @@ ROCK_WHISTLE_LEN = 1.4
 
 @_register("rock_whistle", -17.0, "falling bomb whistle, descending 1.4 s, ends abruptly (then nothing)",
            anchors=dict(impact=ROCK_WHISTLE_LEN))
-def _sfx_rock_whistle(rng):
+def _sfx_rock_whistle(rng, v):
     T = ROCK_WHISTLE_LEN
     n = _n(T)
     t = _time(n)
     u = t / T
-    f = 620 + (1900 - 620) * (1 - u ** 1.25)
-    f *= 1 + 0.004 * np.sin(TAU * 5.5 * t)
+    fa, fb = 1900 * (1 + 0.05 * v(0)), 620 * (1 + 0.05 * v(1))
+    f = fb + (fa - fb) * (1 - u ** (1.25 + 0.2 * v(2)))
+    f *= 1 + (0.004 + 0.002 * v(3)) * np.sin(TAU * 5.5 * (1 + 0.2 * v(4)) * t)
     ph = _phase(f)
     y = np.sin(ph) + 0.08 * np.sin(2 * ph)
     breath = _tvf(_tvf(rng.standard_normal(n), "bp", f, 5.0, block=64), "bp", f, 5.0, block=64) * 0.9
     amp = _db(-15 + 15 * u ** 0.9) * (1 + 0.05 * _smooth_noise(n, rng, 12))
     y = (y + breath) * amp * _ramp(n, 0.06)
     y = _fade_edges(y, 0.0, 0.012)
-    pan = 0.25 - 0.4 * u
+    pan = (0.25 - 0.4 * u) * (1.0 if v(5) >= -0.5 else -1.0)
     return _pan(y, pan)  # no reverb: it must stop dead
 
 
@@ -1443,11 +1912,13 @@ def _sfx_paper_scribble(rng):
 
 
 @_register("zip", -21.0, "backpack zipper 'zzzip' (~0.5 s)", anchors=dict(end=0.47))
-def _sfx_zip(rng):
+def _sfx_zip(rng, v):
     dur = 0.55
     n = _n(dur)
     t = _time(n)
-    rate = _cos_env([(0, 40), (0.06, 140), (0.33, 430), (0.44, 260), (0.47, 0.0), (dur, 0.0)], n)
+    sp = 1 + 0.15 * v(0)
+    rate = _cos_env([(0, 40), (0.06 + 0.02 * v(1), 140 * sp), (0.33, 430 * sp), (0.44, 260 * sp), (0.47, 0.0),
+                     (dur, 0.0)], n)
     ph = np.cumsum(rate) / SR
     teeth = np.floor(ph)
     hits = np.nonzero(np.diff(teeth) > 0)[0] + 1
@@ -1459,8 +1930,9 @@ def _sfx_zip(rng):
     grp = rng.integers(0, 4, len(hits))
     for g in range(4):
         ker = np.zeros(kl)
-        for f, tau, a in ((rng.uniform(2100, 2600), 0.0009, 1.0), (rng.uniform(3400, 4000), 0.0006, 0.7),
-                          (rng.uniform(5200, 6200), 0.0004, 0.4)):
+        tp = 1 + 0.06 * v(2)
+        for f, tau, a in ((rng.uniform(2100, 2600) * tp, 0.0009, 1.0), (rng.uniform(3400, 4000) * tp, 0.0006, 0.7),
+                          (rng.uniform(5200, 6200) * tp, 0.0004, 0.4)):
             ker += a * np.sin(TAU * f * tk) * np.exp(-tk / tau)
         ker += 0.4 * rng.standard_normal(kl) * np.exp(-tk / 0.0003)
         imp = np.zeros(n)
@@ -1476,10 +1948,12 @@ def _sfx_zip(rng):
 
 
 # ---------------------------------------------------------------- musical stings
-def _chord_hit(out, t0, notes, dur, rng, vel=1.0, amp_pts=None, vib=0.0, bright=1.0, organ=0.35, trem=0.0):
+def _chord_hit(out, t0, notes, dur, rng, vel=1.0, amp_pts=None, vib=0.0, bright=1.0, organ=0.35, trem=0.0,
+               blat=0.0):
     for m in notes:
         for det in (-7.0, 6.0):
-            y = _brass(m, dur, rng, vel=vel, amp_pts=amp_pts, vib=vib, bright=bright, detune=det + rng.uniform(-2, 2))
+            y = _brass(m, dur, rng, vel=vel, amp_pts=amp_pts, vib=vib, bright=bright,
+                       detune=det + rng.uniform(-2, 2), blat=blat)
             pan = np.clip((m - 55) / 30.0, -0.6, 0.6) + (0.12 if det > 0 else -0.12)
             _add(out, t0, _pan(y * 0.5, pan))
         if organ:
@@ -1487,64 +1961,160 @@ def _chord_hit(out, t0, notes, dur, rng, vel=1.0, amp_pts=None, vib=0.0, bright=
 
 
 STING_BAD_HITS = [0.0, 0.3, 0.6]
-#: (time, chord name, midi notes) -- Dm, Dm, G#dim7 (A drops to G#, bass falls a tritone)
-STING_BAD_SCORE = [(0.0, "Dm", [38, 45, 50, 53, 57, 62]),
-                   (0.3, "Dm", [38, 45, 50, 53, 57, 62]),
-                   (0.6, "G#dim7", [32, 44, 50, 53, 56, 59, 62])]
+#: (time, chord name, midi notes).  The two 'dun's are open fifths/octaves on D (no third), so
+#: they sit over D-major and D-minor cues alike; then the DUUUN: G#dim7 -- bass falls a tritone
+#: (D3 -> G#2), A drops to G#, top line falls D5 -> B4.  G#2 is the lowest brass note.
+#: Notes above E4 are the trumpet layer (softer, brighter); the rest are trombones + organ.
+STING_BAD_SCORE = [(0.0, "D5", [50, 57, 62, 69, 74]),
+                   (0.3, "D5", [50, 57, 62, 69, 74]),
+                   (0.6, "G#dim7", [44, 50, 53, 56, 59, 62, 65, 68, 71])]
+STING_BAD_END = 2.05
 
 
-@_register("sting_bad", -12.0, "comedic 'dun dun DUUUN' brass + organ + timpani (~2.6 s + hall tail)",
-           anchors=dict(hits=STING_BAD_HITS, end=2.6))
+@_register("sting_bad", -12.0, "comedic 'dun dun DUUUN': brass + organ + timpani (D fifths -> G#dim7), ~2.3 s "
+                               "with its tail.  Fixed key: cut the music at the sting (('music', None, "
+                               "{'fade': 0.05})); if the music must keep playing use sting_bad_perc",
+           anchors=dict(hits=STING_BAD_HITS, end=STING_BAD_END), max_len=2.35)
 def _sfx_sting_bad(rng):
-    out = np.zeros((_n(3.8), 2))
-    stab = [(0, 0), (0.015, 1.0), (0.08, 0.6), (0.17, 0.5), (0.24, 0.0)]
-    for (t0, _, notes), vel in zip(STING_BAD_SCORE[:2], (0.85, 0.95)):
-        _chord_hit(out, t0, notes, 0.17, rng, vel=vel, amp_pts=stab, bright=1.0, organ=0.25)
-    long_pts = [(0, 0), (0.02, 1.1), (0.25, 0.62), (0.85, 0.85), (1.25, 0.62), (2.0, 0.0)]
-    _chord_hit(out, STING_BAD_SCORE[2][0], STING_BAD_SCORE[2][2], 1.92, rng, vel=1.0, amp_pts=long_pts,
-               vib=1.0, bright=0.9, organ=0.4, trem=0.12)
-    for t0, m, v in ((0.0, 38, 0.8), (0.3, 38, 0.9), (0.6, 44, 1.1)):
-        _add(out, t0, _pan(_timpani(m, v, rng=rng), 0.1))
-    # timpani roll under the last chord
-    for k in range(14):
+    out = np.zeros((_n(3.0), 2))
+    stab = [(0, 0), (0.012, 1.0), (0.07, 0.62), (0.17, 0.5), (0.24, 0.0)]
+    long_pts = [(0, 0), (0.016, 1.12), (0.22, 0.66), (0.75, 0.8), (1.15, 0.5), (1.45, 0.0)]
+    for k, (t0, _, notes) in enumerate(STING_BAD_SCORE):
+        low = [m for m in notes if m <= 64]
+        high = [m for m in notes if m > 64]
+        if k < 2:
+            vel = (0.9, 1.0)[k]
+            _chord_hit(out, t0, low, 0.17, rng, vel=vel, amp_pts=stab, bright=1.1, organ=0.22, blat=0.9)
+            _chord_hit(out, t0, high, 0.17, rng, vel=vel * 0.62, amp_pts=stab, bright=1.25, organ=0.0, blat=0.7)
+        else:
+            _chord_hit(out, t0, low, 1.36, rng, vel=1.0, amp_pts=long_pts, vib=1.0, bright=1.0, organ=0.3,
+                       trem=0.12, blat=0.7)
+            _chord_hit(out, t0, high, 1.36, rng, vel=0.55, amp_pts=long_pts, vib=1.0, bright=1.2, organ=0.0,
+                       blat=0.5)
+    for t0, m, v in ((0.0, 38, 0.45), (0.3, 38, 0.52), (0.6, 44, 0.62)):
+        _add(out, t0, _pan(_timpani(m, v, dur=1.6, rng=rng), 0.1))
+    # timpani roll under the last chord, dying away with it
+    for k in range(12):
         tk = 0.72 + k * 0.065
-        _add(out, tk, _pan(_timpani(44, 0.18 + 0.03 * np.sin(k), dur=0.4, rng=rng), 0.1))
-    return _reverb(out, "hall", 0.22)
+        _add(out, tk, _pan(_timpani(44, (0.11 + 0.02 * np.sin(k)) * (1 - k / 14), dur=0.4, rng=rng), 0.1))
+    return _reverb(out, "stage", 0.2)
+
+
+def _tamtam(dur, rng, vel=1.0, tau=1.2):
+    """Low tam-tam / gong swell: dense inharmonic partials (no stable pitch), a soft mallet
+    thump and a slow 'bloom' of the upper partials -- dramatic weight that fits any key."""
+    n = _n(dur)
+    t = _time(n)
+    y = np.zeros(n)
+    for _ in range(36):
+        f = 90.0 * np.exp(rng.uniform(0, np.log(3200.0 / 90.0)))
+        bloom = np.clip(t / (0.04 + 0.25 * (f / 3200.0)), 0, 1) ** 1.5
+        y += (110.0 / f) ** 0.5 * np.sin(TAU * f * (1 + 0.002 * np.sin(TAU * 0.7 * t)) * t + rng.uniform(0, TAU)) \
+            * bloom * np.exp(-t / (tau * rng.uniform(0.5, 1.2)))
+    y = y / (np.abs(y).max() + 1e-12)
+    th = lp(rng.standard_normal(n), 300) * _decay(n, 0.05, 0.002) * 0.6
+    return _widen((y * 0.5 + th) * _ramp(n, 0.002) * _taper(n, 0.3) * vel, rng, 0.8)
+
+
+#: sting_bad_perc: the same 'dun dun DUUUN' rhythm with no harmony at all -- every pitched note is a D
+#: (octaves D2/D3, timpani D2), the long note rips up into D and falls off it, and the weight comes
+#: from timpani, a bass-drum thump and a tam-tam.  Over the lounge (D major) or any D-centred cue
+#: it never forms a wrong chord, so it can play where the music cannot be cut.
+STING_BAD_PERC_NOTES = [38, 50, 62]
+_STING_PERC_VEL = {38: 1.0, 50: 0.85, 62: 0.42}
+
+
+@_register("sting_bad_perc", -12.0, "key-neutral 'dun dun DUUUN' for when the music keeps playing: timpani + "
+                                    "low brass octaves on D only (a rip into the last D and a fall off it), bass "
+                                    "drum, tam-tam; no chord tones (~2.2 s).  Same hit times as sting_bad",
+           anchors=dict(hits=STING_BAD_HITS, end=STING_BAD_END), max_len=2.35)
+def _sfx_sting_bad_perc(rng, v):
+    out = np.zeros((_n(3.0), 2))
+    br = 1 + 0.12 * v(0)                                  # seed: brass brightness and section spread
+    spread = 1 + 0.35 * v(1)
+    tp = 0.12 * v(5)                                      # timpani head tension (+-12 cents)
+    stab = [(0, 0), (0.01, 1.0), (0.06, 0.6), (0.13, 0.4), (0.19, 0.0)]
+    for k, t0 in enumerate(STING_BAD_HITS[:2]):
+        vel = (0.85, 1.0)[k]
+        for m in STING_BAD_PERC_NOTES:
+            for det in (-6.0, 5.0):
+                y = _brass(m, 0.12, rng, vel=vel * _STING_PERC_VEL[m], amp_pts=stab, bright=1.3 * br,
+                           detune=det * spread + rng.uniform(-2, 2), blat=1.0)
+                _add(out, t0, _pan(y * 0.55, -0.15 if det < 0 else 0.15))
+        _add(out, t0, _pan(_timpani(38 + tp, (0.5, 0.58)[k], dur=0.36, rng=rng), 0.08))     # damped 'dun'
+    # DUUUN: rip up a fourth into D, hold with a growl, then fall off (~ a minor third) as it dies
+    t0 = STING_BAD_HITS[2]
+    long_pts = [(0, 0), (0.025, 0.9), (0.08, 1.15), (0.4, 0.85), (0.75, 0.75), (1.25, 0.3), (1.45, 0.0)]
+    fall = 1 + 0.2 * v(2)                                 # seed: how far it falls off the D
+    bend = [(0.0, -500.0), (0.09, 0.0), (0.62 + 0.06 * v(3), 0.0), (1.25, -320.0 * fall), (1.45, -380.0 * fall)]
+    for m in STING_BAD_PERC_NOTES:
+        for det in (-7.0, 6.0):
+            y = _brass(m, 1.36, rng, vel=_STING_PERC_VEL[m], amp_pts=long_pts, vib=0.5, bright=1.2 * br,
+                       detune=det * spread + rng.uniform(-2, 2), blat=0.8, bend_pts=bend)
+            _add(out, t0, _pan(y * 0.55, -0.2 if det < 0 else 0.2))
+    _add(out, t0, _pan(_timpani(38 + tp, 0.7, dur=1.8, rng=rng), 0.08))
+    for k in range(12):                                   # roll on D, dying away with the brass
+        tk = t0 + 0.11 + k * 0.065 * (1 + 0.1 * v(4))
+        _add(out, tk, _pan(_timpani(38 + tp, (0.13 + 0.02 * np.sin(k)) * (1 - k / 14), dur=0.4, rng=rng), 0.08))
+    for tb, a in zip(STING_BAD_HITS, (0.3, 0.36, 0.5)):  # bass drum under each hit
+        m = _n(0.45)
+        tt = _time(m)
+        bd = np.sin(_phase((48.0 + 40.0 * np.exp(-tt / 0.03)) * (1 + 0.06 * v(6)))) * _decay(m, 0.16, 0.002)
+        bd += bp(rng.standard_normal(m), 200, 2500) * _decay(m, 0.006, 0.0003) * 0.4
+        _add(out, tb, _pan(bd * a, 0.0))
+    _add(out, t0, _tamtam(2.0, rng, 0.35, tau=0.9))
+    return _reverb(out, "stage", 0.2)
 
 
 STING_GOOD_HITS = [0.0, 0.16]
-STING_GOOD_SCORE = [(0.0, "G", [43, 55, 59, 62, 67]), (0.16, "C", [36, 48, 60, 64, 67, 72, 76])]
+#: 'ta' = G (pickup, trumpet register), 'DA' = C, wide and high; timpani carry the low end
+STING_GOOD_SCORE = [(0.0, "G", [55, 59, 62, 67, 71]), (0.16, "C", [48, 55, 60, 64, 67, 72, 76])]
 
 
-@_register("sting_good", -13.0, "bright brass 'ta-DA!' with glockenspiel sparkle and cymbal (~1.8 s)",
+@_register("sting_good", -13.0, "bright brass 'ta-DA!' (G -> C) with glockenspiel sparkle and a cymbal (~1.8 s). "
+                                "Expects the music to be cut when it fires",
            anchors=dict(hits=STING_GOOD_HITS))
 def _sfx_sting_good(rng):
-    out = np.zeros((_n(5.0), 2))
-    ta = [(0, 0), (0.012, 1.0), (0.06, 0.7), (0.1, 0.6), (0.15, 0.0)]
-    da = [(0, 0), (0.014, 1.15), (0.12, 0.85), (0.7, 0.75), (1.5, 0.0)]
-    _chord_hit(out, 0.0, STING_GOOD_SCORE[0][2], 0.1, rng, vel=0.8, amp_pts=ta, bright=1.3, organ=0.0)
-    _chord_hit(out, 0.16, STING_GOOD_SCORE[1][2], 1.42, rng, vel=1.0, amp_pts=da, vib=0.6, bright=1.4, organ=0.15)
+    out = np.zeros((_n(3.5), 2))
+    ta = [(0, 0), (0.01, 1.0), (0.05, 0.6), (0.085, 0.35), (0.11, 0.0)]
+    da = [(0, 0), (0.012, 1.15), (0.12, 0.85), (0.7, 0.75), (1.5, 0.0)]
+    _chord_hit(out, 0.0, STING_GOOD_SCORE[0][2], 0.08, rng, vel=0.72, amp_pts=ta, bright=1.7, organ=0.0, blat=0.9)
+    _chord_hit(out, 0.16, STING_GOOD_SCORE[1][2], 1.42, rng, vel=1.0, amp_pts=da, vib=0.6, bright=1.4, organ=0.12,
+               blat=0.6)
     for k, m in enumerate((84, 88, 91, 96)):
-        _add(out, 0.16 + 0.045 * k, _pan(_bar(m, rng, 0.22, "glock"), -0.3 + 0.2 * k))
-    _add(out, 0.16, _cymbal(1.8, rng, 0.8, 0.22))
-    _add(out, 0.0, _pan(_timpani(43, 0.5, 0.6, rng), 0.0))
-    _add(out, 0.16, _pan(_timpani(36, 0.9, 2.4, rng), 0.0))
-    return _reverb(out, "hall", 0.2)
+        _add(out, 0.16 + 0.045 * k, _pan(_bar(m, rng, 0.5, "glock"), -0.3 + 0.2 * k))
+    _add(out, 0.16, _cymbal(1.8, rng, 0.8, 0.6))
+    _add(out, 0.16, _pan(_timpani(36, 0.55, 2.0, rng), 0.0))
+    return _reverb(out, "hall", 0.18)
+
+
+#: chuckle melodies (C major, all landing on a C chord); the seed picks one
+LAUGH_PATTERNS = [
+    [(76, 72), (74, 71), (72, 69), (71, 67), (67, 64, 60)],      # heh-heh-heh-heh, down to C
+    [(79, 76), (77, 74), (76, 72), (74, 71), (72, 67, 64)],      # the same, a third higher
+    [(74, 71), (76, 72), (74, 71), (72, 69), (67, 64, 60)],      # heh-HEH-heh-heh
+    [(72, 69), (74, 71), (76, 72), (74, 71), (72, 67, 64)],      # up and back: ho-ho-HO-ho
+    [(79, 76), (76, 72), (77, 74), (74, 71), (72, 67, 60)],      # tumbling down
+]
+LAUGH_TIMES = [0.0, 0.1, 0.2, 0.3, 0.48]
 
 
 @_register("laugh_chuckle", -18.0, "warm marimba 'heh-heh-heh' chuckle (tasteful laugh substitute)",
-           anchors=dict(notes=[0.0, 0.1, 0.2, 0.3, 0.48]))
-def _sfx_laugh_chuckle(rng):
+           anchors=dict(notes=LAUGH_TIMES))
+def _sfx_laugh_chuckle(rng, v):
     out = np.zeros((_n(3.6), 2))
-    score = [(0.0, (76, 72)), (0.1, (74, 71)), (0.2, (72, 69)), (0.3, (71, 67)), (0.48, (67, 64, 60))]
-    for i, (t0, notes) in enumerate(score):
-        vel = 0.85 if i < 4 else 0.75
+    score = LAUGH_PATTERNS[v.seed % len(LAUGH_PATTERNS)]
+    hard = 1 + 0.3 * v(1)
+    tune = 0.06 * v(2)                         # +-6 cents: a slightly different instrument each time
+    for i, (t0, notes) in enumerate(zip(LAUGH_TIMES, score)):
+        vel = (0.85 if i < 4 else 0.75) * rng.uniform(0.9, 1.05) * hard
         for j, m in enumerate(notes):
-            _add(out, t0 + 0.006 * j, _pan(_bar(m, rng, vel * (1.0 if j == 0 else 0.7)), -0.25 + 0.25 * j))
-    # soft roll on the last dyad
+            _add(out, t0 + 0.006 * j, _pan(_bar(m + tune, rng, vel * (1.0 if j == 0 else 0.7)), -0.25 + 0.25 * j))
+    # soft roll on the top of the last chord
+    top = sorted(score[-1])[-2:]
     for k in range(4):
-        _add(out, 0.56 + 0.07 * k, _pan(_bar(67, rng, 0.22 - 0.04 * k), 0.1))
-        _add(out, 0.56 + 0.07 * k, _pan(_bar(64, rng, 0.18 - 0.03 * k), -0.1))
+        _add(out, 0.56 + 0.07 * k, _pan(_bar(top[1] + tune, rng, 0.22 - 0.04 * k), 0.1))
+        _add(out, 0.56 + 0.07 * k, _pan(_bar(top[0] + tune, rng, 0.18 - 0.03 * k), -0.1))
     return _reverb(out, "wood", 0.2)
 
 
@@ -1631,7 +2201,20 @@ def _sfx_birds(rng):
 #  ambiences
 # =============================================================================
 _AMB = {}
+#: nominal integrated loudness of each bed (LUFS), measured on long reference renders
 AMB_LEVELS = {}
+
+#: fixed make-up gain (dB) per bed, calibrated ONCE so a long reference render (90 s, seeds 0-2)
+#: lands on AMB_LEVELS (build/audio_lab/sfx_r3/amb3.py --calibrate).  Renders are NOT normalised
+#: individually: a short render that happens to contain three bird calls must not push the bed
+#: down, so every scene's bed sits at the same level whatever its seed and length.
+AMB_GAIN_DB = {
+    "jungle": 14.04,   # raw reference -40.04 LUFS (seeds 0-2: -40.10, -39.77, -40.26); r4 distant birds
+    "water": 13.96,    # raw reference -39.96 LUFS (seeds 0-2: -39.93, -39.98, -39.96)
+    "fire": -0.48,     # raw reference -20.52 LUFS (seeds 0-2: -20.44, -20.60, -20.52)
+    "river": -0.24,    # raw reference -21.76 LUFS (seeds 0-2: -21.74, -21.83, -21.71)
+    "room": 8.60,      # raw reference -36.60 LUFS (seeds 0-2: -36.58, -36.68, -36.55)
+}
 
 
 def _amb(name, lufs, desc):
@@ -1648,30 +2231,31 @@ def _events(rng, dur, rate, margin=0.0):
     return np.sort(rng.uniform(-margin, dur, k))
 
 
-@_amb("jungle", -24.0, "distant tropical birds, insects, leaf rustle in gentle gusts")
+@_amb("jungle", -26.0, "distant tropical birds, insects, leaf rustle in gentle gusts")
 def _amb_jungle(n, rng):
     dur = n / SR
     t = _time(n)
     out = np.zeros((n, 2))
-    gust = np.clip(0.5 + 0.35 * _smooth_noise(n, rng, 0.1) + 0.15 * _smooth_noise(n, rng, 0.4), 0.1, None)
+    # gentle gusts -- bounded (tanh) and not too slow, so any 4-s stretch has about the same bed level
+    gust = 1.0 + 0.1 * np.tanh(_smooth_noise(n, rng, 0.15)) + 0.08 * np.tanh(_smooth_noise(n, rng, 0.45))
 
     def air(tc, f):
         g = _interp_at(tc, n, gust)
-        return (0.35 + 0.65 * g) * m_tilt(f, -4.5, 300) * m_band(f, 120, 5000, 12, 18)
+        return (0.38 + 0.25 * g) * m_tilt(f, -4.5, 300) * m_band(f, 120, 5000, 12, 18)
 
     out += _spec_noise(n, rng, air, nfft=1024, nch=2, corr=0.2) * 0.022
 
     def leaf(tc, f):
         g = _interp_at(tc, n, gust)
-        return g ** 2 * m_peak(f, 4200, 0.9)
+        return g * 0.38 * m_peak(f, 4200, 0.9)
 
     gran = np.clip(0.2 + 0.8 * np.abs(_smooth_noise(n, rng, 22.0)) ** 2, 0, 2.5)
     out += _spec_noise(n, rng, leaf, nfft=512, nch=2, corr=0.1) * (gran * 0.022)[:, None]
-    rust = np.stack([_crackle(n, rng, 90 * gust ** 3, 2200, 8000, 0.0008, 3.0) for _ in range(2)], axis=1)
+    rust = np.stack([_crackle(n, rng, 22 * gust ** 2, 2200, 8000, 0.0008, 3.0) for _ in range(2)], axis=1)
     out += rust * 0.02
-    # insects: buzzing choirs (narrow bands, pulsed) with slow swells
-    for fc, rate_am, sharp, lvl in ((4600, 92.0, 3.0, 0.03), (6300, 27.0, 2.0, 0.016)):
-        swell = np.clip(0.5 + 0.5 * _smooth_noise(n, rng, 0.06), 0.05, 1.0) ** 1.5
+    # insects: buzzing choirs (narrow bands, pulsed) with gentle (+-1 dB) swells
+    for fc, rate_am, sharp, lvl in ((4600, 92.0, 3.0, 0.03 * 0.56), (6300, 27.0, 2.0, 0.016 * 0.56)):
+        swell = _db(1.0 * np.tanh(_smooth_noise(n, rng, 0.12)))
 
         def ins(tc, f, fc=fc, swell=swell):
             return _interp_at(tc, n, swell) * m_peak(f, fc, 0.04)
@@ -1690,18 +2274,19 @@ def _amb_jungle(n, rng):
             y = np.sin(TAU * fk * tt) * np.sin(np.pi * tt / 0.014) ** 2
             _add(kat, tp + k * 0.16, _pan(y * 0.012, pan))
     out += kat[:n]
-    # distant birds (+ the odd tree frog)
+    # distant birds (+ the odd tree frog): a narrow level range, dulled (air absorbs the highs over
+    # distance) and mostly reverb, so calls sit a few dB over the bed instead of popping out of it
     birds = np.zeros((n + _n(2.0), 2))
-    for tb in _events(rng, dur, 0.45, margin=1.0):
+    for tb in _events(rng, dur, 0.34, margin=1.0):
         kind = BIRD_KINDS[int(rng.integers(0, len(BIRD_KINDS)))]
         y = _bird_call(kind, rng, rng.uniform(0.85, 1.15))
-        y = lp(y, rng.uniform(3000, 6500)) * _db(rng.uniform(-21, -9))
+        y = lp(y, rng.uniform(2500, 4500)) * _db(rng.uniform(-27, -18))
         _add(birds, tb, _pan(y, rng.uniform(-0.95, 0.95)))
     for tb in _events(rng, dur, 0.06, margin=1.0):
         s = [(0.0, 0.06, 1050, 1250, 0.7, 1.0), (0.09, 0.11, 1900, 2350, 1.0, 0.6)]
-        _add(birds, tb, _pan(_syllables(s, (0.15, 0.04)) * _db(rng.uniform(-22, -14)), rng.uniform(-0.8, 0.8)))
-    birds = _reverb(birds, "outdoor", 0.7)
-    out += birds[:n] * 0.09
+        _add(birds, tb, _pan(_syllables(s, (0.15, 0.04)) * _db(rng.uniform(-28, -21)), rng.uniform(-0.8, 0.8)))
+    birds = _reverb(birds * 0.45, "outdoor", 1.9)            # dry 0.45 : wet 0.85 (was 1 : 0.5)
+    out += birds[:n] * 0.1
     return out
 
 
@@ -1710,15 +2295,16 @@ def _amb_water(n, rng):
     dur = n / SR
     out = np.zeros((n + _n(2.0), 2))
     # soft fizz / trickle bed
-    fizz = np.clip(0.7 + 0.3 * _smooth_noise(n, rng, 0.3), 0.2, None)
+    fizz = 0.75 + 0.06 * np.tanh(_smooth_noise(n, rng, 0.3))
 
     def bed(tc, f):
         return _interp_at(tc, n, fizz) * m_peak(f, 1600, 0.9) * m_band(f, 500, 5000, 12, 18)
 
-    gran = np.clip(0.15 + 0.85 * np.abs(_smooth_noise(n, rng, 35.0)) ** 2, 0, 3)
-    out[:n] += _spec_noise(n, rng, bed, nfft=1024, nch=2, corr=0.2) * (gran * 0.02)[:, None]
+    gran = 0.4 + 0.6 * np.clip(np.abs(_smooth_noise(n, rng, 35.0)) ** 2, 0, 3)
+    out[:n] += _spec_noise(n, rng, bed, nfft=1024, nch=2, corr=0.2) * (gran * 0.019)[:, None]
     # gentle laps against the rocks: a cluster of gurgles + a soft wash on each little wave
-    for tl in _events(rng, dur, 0.6, margin=1.0):
+    laps = np.cumsum(rng.uniform(1.1, 2.2, int(dur / 1.1) + 3)) - 1.0 - rng.uniform(0, 1.1)
+    for tl in laps[laps < dur]:                 # quasi-regular little waves (no Poisson clumping)
         d = rng.uniform(0.35, 0.7)
         m = _n(d)
         pan = rng.uniform(-0.8, 0.8)
@@ -1732,11 +2318,11 @@ def _amb_water(n, rng):
                                         rng.uniform(0.01, 0.04)), pan + rng.uniform(-0.2, 0.2)))
         _add(out, tl, clip * lvl)
     # bubbles rising from the spring
-    for tb in _events(rng, dur, 3.0, margin=0.2):
-        big = rng.random() < 0.25
+    for tb in _events(rng, dur, 7.0, margin=0.2):            # a dense, gentle stream (steady floor)
+        big = rng.random() < 0.2
         y = _bubble(rng.uniform(180, 420) if big else rng.uniform(450, 1100),
                     rng.uniform(0.03, 0.06) if big else rng.uniform(0.01, 0.025), rng.uniform(0.4, 0.9),
-                    rng.uniform(0.012, 0.04))
+                    rng.uniform(0.008, 0.026))
         _add(out, tb, _pan(y, rng.uniform(-0.7, 0.7)))
     return _reverb(out, "outdoor", 0.15)[:n]
 
@@ -1745,7 +2331,7 @@ def _amb_water(n, rng):
 def _amb_fire(n, rng):
     dur = n / SR
     t = _time(n)
-    und = np.clip(0.75 + 0.25 * _smooth_noise(n, rng, 0.4) + 0.15 * _smooth_noise(n, rng, 2.5), 0.2, None)
+    und = 0.8 + 0.07 * np.tanh(_smooth_noise(n, rng, 0.4)) + 0.05 * np.tanh(_smooth_noise(n, rng, 2.5))
     flick = np.clip(1 + 0.4 * _smooth_noise(n, rng, 6.0), 0.2, None)
 
     def roar(tc, f):
@@ -1771,7 +2357,7 @@ def _amb_fire(n, rng):
 @_amb("river", -22.0, "wide, steadily flowing river with babble and gurgles")
 def _amb_river(n, rng):
     dur = n / SR
-    mods = [np.clip(1 + 0.25 * _smooth_noise(n, rng, r), 0.3, None) for r in (0.07, 0.25)]
+    mods = [1 + 0.15 * np.tanh(_smooth_noise(n, rng, r)) for r in (0.15, 0.4)]
 
     def flow(tc, f):
         a = _interp_at(tc, n, mods[0])
@@ -1838,7 +2424,11 @@ ALIASES = {
     "flutter": "flaps", "crickets": "cricket", "bird": "birds", "gasp": "crowd_gasp", "ooh": "crowd_gasp",
     "laugh": "laugh_chuckle", "chuckle": "laugh_chuckle", "ping": "glass_ping", "thermometer_pop": "glass_pop",
     "steam": "lava_hiss", "scribble": "paper_scribble", "zipper": "zip", "dun_dun": "sting_bad",
-    "tada": "sting_good", "ta_da": "sting_good", "knock": "hammer", "swoosh": "whoosh", "bubble": "bubbles",
+    "tada": "sting_good", "ta_da": "sting_good", "swoosh": "whoosh", "bubble": "bubbles",
+    "whoosh_l": "whoosh_left", "whoosh_r": "whoosh_right", "whoosh_exit_left": "whoosh_left",
+    "whoosh_exit_right": "whoosh_right", "dun_dun_perc": "sting_bad_perc", "rumble_far": "rumble_distant",
+    "mallet": "knock", "hammering": "hammer", "lava_roar": "eruption_bed", "volcano_bed": "eruption_bed",
+    "takeoff": "flaps_takeoff", "take_off": "flaps_takeoff", "flaps_landing": "flaps_land",
 }
 
 
@@ -1863,8 +2453,12 @@ def render_sfx(name: str, seed: int = 0) -> np.ndarray:
         raise KeyError(f"unknown sfx {name!r}; known: {', '.join(NAMES)}")
     spec = _SFX[key]
     rng = _rng_for(key, seed)
-    x = spec["fn"](rng)
-    x = _master(x, spec["lufs"], ceiling=spec["ceiling"], max_limit_db=spec["limit_db"])
+    fn = spec["fn"]
+    x = fn(rng, _Variation(seed)) if fn.__code__.co_argcount >= 2 else fn(rng)
+    x = _master(x, spec["lufs"], ceiling=spec["ceiling"], max_limit_db=spec["limit_db"],
+                small=spec["small"], max_len=spec["max_len"])
+    if spec["jitter_db"] and seed:
+        x = x * _db(-spec["jitter_db"] * (0.5 + 0.5 * _Variation(seed)(11)))
     return np.ascontiguousarray(x, dtype=np.float32)
 
 
@@ -1872,7 +2466,10 @@ def render_ambience(name: str, duration: float, seed: int = 0, loop: bool = Fals
     """Render an ambience bed of exactly round(duration*SR) samples -> float32 (n, 2).
 
     The bed starts and ends in steady state (no fade); pass loop=True to make the
-    end flow seamlessly into the start (tail cross-faded into the head).
+    end flow seamlessly into the start (tail cross-faded into the head).  The level is a
+    fixed calibrated gain (AMB_GAIN_DB), not a per-render normalisation, so the bed floor is
+    the same for every seed and length (verified: 10th-percentile momentary loudness within
+    3 dB over seeds 0-5 x 4/9/25 s).
     """
     key = _resolve(name)
     if key not in _AMB:
@@ -1893,12 +2490,11 @@ def render_ambience(name: str, duration: float, seed: int = 0, loop: bool = Fals
     # pre-roll for the DC-blocker: the wrapped tail when looping (seamless), else a mirror
     head = y[-pad:] if loop else y[:pad][::-1]
     y = hp(np.concatenate([head, y]), 25.0)[pad:]
-    L = loudness_integrated(y) if n >= _n(0.4) else loudness_max(y)
-    y = y * _db(spec["lufs"] - L)
+    y = y * _db(AMB_GAIN_DB[key])
     pk = np.abs(y).max()
     if pk > 0.6:
-        if pk > 0.6 * _db(6.0):
-            y *= 0.6 * _db(6.0) / pk
+        # local look-ahead limiting only: a global rescale would let one loud crackle pull the
+        # whole bed down
         if loop:   # limit cyclically so the gain is continuous across the seam
             k = min(_n(0.1), n)
             y = _limit(np.concatenate([y[-k:], y, y[:k]]), 0.59, attack=0.002, release=0.02)[k:k + n]

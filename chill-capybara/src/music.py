@@ -8,18 +8,57 @@ nine composed cues.
 Public API
 ----------
     STYLES                                   list of style names
-    render_music(style, duration, seed=0, hit_at=None) -> float32 (n, 2) @ 48 kHz
-    music_anchors(style, duration, seed=0, hit_at=None) -> dict of musical anchors
-          (bpm, bar length, bar/downbeat times, and for jazz_end the final hit time)
+    render_music(style, duration, seed=0, hit_at=None, fade_out=None, tail=None)
+          -> float32 (n, 2) @ 48 kHz, peak <= 0.9
+    music_anchors(style, duration, seed=0, hit_at=None, tail=None) -> dict of musical anchors
+          (bpm, bar length, downbeat times, melody entry and, for cues that compose their own
+          ending, the time of the final hit and of the picture cut)
+
+Endings
+-------
+* Looping cues (lounge, tension, therapy, montage, serene, action, sunset and long jazz_title
+  beds) play at full level to the very end of the render and finish with a short de-click
+  fade of `fade_out` seconds (default DEFAULT_FADE_OUT = 0.04 s).  build_audio.py does the
+  musical crossfades and hard music-outs itself, so the module must not pre-fade.  Pass
+  e.g. fade_out=1.5 for a musical fade when auditioning stand-alone.
+* jazz_end always, and jazz_title when it is short (<= JAZZ_TITLE_TAG_MAX = 12 s) or when
+  `hit_at` is given, compose an ending: tune -> stop-time tag -> "ba-DUM" button whose
+  downbeat lands exactly at `hit_at` seconds.  The default hit is
+  duration - tail - lead, where `tail` is the part of the render that lies past the picture
+  (build_audio renders the last segment 1.5 s long and every other one by the next cue's
+  crossfade, 0.8 s by default) and lead is how far before the cut the button lands:
+      jazz_end   : tail 1.5, lead 0.50  (button on the end card's cut to black, 0.5 s before
+                                         the film ends)
+      jazz_title : tail 0.8, lead 0.25  (light button just before the cut to scene 3)
+  The picture cut is duration - tail (anchor `picture_cut`).  jazz_end's button rings out
+  *to the picture cut* (a natural, choked decay reaching -45 dB there) and the overhang past
+  it is digital silence -- the film's last sample is 0.  jazz_title's button rings on through
+  the crossfade overhang into the next cue.  A longer ring for jazz_end needs a longer tail
+  in the script (s10_end) *and* ENDING_LEAD['jazz_end'] raised to match, so the button stays
+  on the cut to black.  Pass tail=0 for a stand-alone render that ends `lead` s after the hit.
+* Composed endings are loudness-calibrated at their real length (in-picture part), so a 5 s
+  title card or 8 s end card meets TARGET_LUFS like a 60 s bed does.
+
+Mix conventions
+---------------
+* Reverb sends are high-passed per style (WET_HP, 4th order, 160-300 Hz) and the IR's low band
+  decays faster than its mids, so the room never muddies the bass; piano / upright-bass notes
+  below G3 are centred and kept nearly dry (play(), LOW_CENTRED).
+* Accompaniment voicings are melody-aware: voice(..., avoid=sounding(tune, t0, t1)) drops the
+  chord tones a semitone under a sounding melody note and bans m2/m9 against it; sustained
+  parts in tension are kept out of m2/m9 rubs with each other (rubs(), safe_pitch()).
 
 CLI (auditioning)
 -----------------
-    python src/music.py <style> <seconds> out.wav [--seed N] [--schedule]
+    python src/music.py <style> <seconds> out.wav [--seed N] [--hit-at S] [--tail S]
+                                                  [--fade-out S] [--schedule]
     python src/music.py all <seconds> <out_dir>   # every style
+    python src/music.py calibrate [seconds]       # re-measure the loudness calibration
 
 Styles: jazz_title, lounge, tension, therapy, montage, serene, action, sunset, jazz_end.
 Shared motifs: the "chill theme" (lounge vibes melody) is quoted by serene and
 sunset; the title tune (jazz_title clarinet) is reprised by jazz_end.
+Loudness is calibrated per style on BS.1770 integrated loudness (TARGET_LUFS).
 """
 import math
 import os
@@ -38,10 +77,16 @@ TWO_PI = 2.0 * np.pi
 STYLES = ["jazz_title", "lounge", "tension", "therapy", "montage",
           "serene", "action", "sunset", "jazz_end"]
 
-# target long-term RMS (dBFS) per style
-TARGET_DB = {"jazz_title": -17.0, "jazz_end": -17.0, "montage": -17.0, "action": -15.0,
-             "lounge": -20.0, "therapy": -20.0, "serene": -20.0, "sunset": -20.0,
-             "tension": -20.0}
+# target integrated loudness (BS.1770 LUFS, 60 s render) per style.  Calm cues sit under
+# dialogue; therapy is the most dialogue-dense scene; montage carries the punchline
+# dialogue; action is the loudest (~2 LU over the jazz).
+TARGET_LUFS = {"jazz_title": -14.0, "jazz_end": -14.0, "montage": -16.9, "action": -12.5,
+               "lounge": -17.6, "therapy": -18.2, "serene": -17.8, "sunset": -17.6,
+               "tension": -17.6}
+DEFAULT_FADE_OUT = 0.04       # s, de-click only (build_audio does the musical fades)
+JAZZ_TITLE_TAG_MAX = 12.0     # s, jazz_title renders up to this long compose a tag ending
+ENDING_TAIL = {"jazz_end": 1.5, "jazz_title": 0.8}   # default render overhang past the picture
+ENDING_LEAD = {"jazz_end": 0.5, "jazz_title": 0.25}  # button lands this long before the cut
 
 
 # =============================================================================
@@ -185,20 +230,31 @@ def harmonic_sum(ph, amps, hop_amps=None, n=None):
     return out
 
 
-def partial_bank(freqs, amps, t60s, n, phases=None, t0=0.0):
-    """Sum of exponentially decaying sinusoids (inharmonic allowed)."""
+def partial_bank(freqs, amps, t60s, n, phases=None, t0=0.0, floor_db=None):
+    """Sum of exponentially decaying sinusoids (inharmonic allowed).
+
+    floor_db: if given, each partial is only computed until it has decayed `floor_db` dB
+    below the loudest partial's initial amplitude (an inaudible -90 dB step), which makes
+    long, slowly decaying notes (piano aftersound) cheap: the upper partials die early."""
     t = np.arange(n, dtype=np.float64) / SR + t0
     t32 = t.astype(F32)
     out = np.zeros(n, dtype=F32)
+    amax = max((abs(a) for a in amps), default=0.0) if floor_db else 0.0
     for i, (f, a, T) in enumerate(zip(freqs, amps, t60s)):
         if f >= SR * 0.47 or a == 0:
             continue
-        x = f * t
+        m = n
+        if floor_db:
+            life = T * (floor_db + 20.0 * math.log10(abs(a) / amax)) / 60.0
+            if life <= 0:
+                continue
+            m = min(n, int(life * SR) + 1)
+        x = f * t[:m]
         if phases is not None:
             x = x + phases[i]
         x -= np.floor(x)
         s = np.sin(x.astype(F32) * F32(TWO_PI))
-        out += F32(a) * s * np.exp(t32 * F32(-6.9078 / T))
+        out[:m] += F32(a) * s * np.exp(t32[:m] * F32(-6.9078 / T))
     return out
 
 
@@ -352,7 +408,9 @@ def ks_string(freq, length, t60=2.0, damp=0.18, pick=0.2, exc_fc=3000.0, seed=0,
 # melodic instruments (each returns mono float32, cached where it pays)
 # =============================================================================
 def piano_note(midi, vel, length, tone=0.6, variant=0):
-    """Additive piano: inharmonic partials, two-stage decay, detuned unisons, hammer."""
+    """Additive piano: inharmonic partials, two-stage (prompt + aftersound) decay, detuned
+    unisons, hammer.  Sustain is voiced like a real grand: the aftersound carries ~half of
+    each partial's amplitude; fundamental T60 ~11 s at C4, ~5 s at A5 (prompt decay 0.3x)."""
     layer, res = _vlayer(vel)
     Lq = math.ceil(length * 2) / 2.0
 
@@ -363,7 +421,7 @@ def piano_note(midi, vel, length, tone=0.6, variant=0):
         B = 4e-4 * 2 ** ((midi - 60) / 14.0)
         bright = 0.25 + 0.75 * layer * (0.5 + tone)
         fc = 500 + 5200 * bright ** 2
-        T = min(22.0, 20.0 * 2 ** (-(midi - 36) / 15.0))
+        T = min(26.0, 25.0 * 2 ** (-(midi - 36) / 24.0))
         freqs, amps, t60s = [], [], []
         k = 1
         while True:
@@ -371,20 +429,20 @@ def piano_note(midi, vel, length, tone=0.6, variant=0):
             if fk > 15000 or k > 42:
                 break
             a = (1.0 / k) / (1 + (fk / fc) ** 2) * (0.25 + 0.75 * abs(math.sin(math.pi * k / 7.3)))
-            Tk = T / (1 + fk / 1100.0)
+            Tk = T / (1 + fk / 3000.0)
             if k <= 7:  # three-string unison -> two slightly detuned components
                 det = 2 ** ((0.4 + 0.5 * rng.random()) / 1200.0)
                 for ff, aa in ((fk, 0.55 * a), (fk * det, 0.45 * a)):
                     freqs += [ff, ff]
-                    amps += [aa * 0.7, aa * 0.3]
-                    t60s += [Tk * 0.2, Tk]
+                    amps += [aa * 0.52, aa * 0.48]
+                    t60s += [Tk * 0.3, Tk]
             else:
                 freqs += [fk, fk]
-                amps += [a * 0.78, a * 0.22]
-                t60s += [Tk * 0.2, Tk]
+                amps += [a * 0.6, a * 0.4]
+                t60s += [Tk * 0.3, Tk * 0.8]
             k += 1
         ph = np.repeat(rng.random(len(freqs) // 2 + 1), 2)[:len(freqs)] * 0.05  # pairs share phase
-        y = partial_bank(freqs, amps, t60s, n, phases=ph)
+        y = partial_bank(freqs, amps, t60s, n, phases=ph, floor_db=90.0)
         # hammer knock + soundboard thump
         nk = int(0.012 * SR)
         knock = noise(rng, nk) * exp_env(nk, 0.012)
@@ -536,7 +594,7 @@ def pizz_note(midi, vel, variant=0):
             y = filt(y, ("hp", 50), ("peak", 230, 1.0, 4.0), ("peak", 1200, 1.2, 2.0),
                      ("hs", 4000, 0.7, -6.0))
         else:
-            y = filt(y, ("hp", 150), ("peak", 450, 1.2, 3.0), ("peak", 2900, 1.4, 4.0),
+            y = filt(y, ("hp", 150), ("peak", 450, 1.2, 3.0), ("peak", 2900, 1.4, 4.0), ("lp", 9000, 0.6),
                      ("hs", 6000, 0.7, -6.0))
         return ramp_out(ramp_in(y, 0.7), 40) * F32(0.6)
 
@@ -656,6 +714,9 @@ def _amp_curve(notes, t0, n, attack=0.03, release=0.09, tongue_dip=0.6, hop=32):
         sw = nt.get("swell", 0.0)
         if sw:
             body = body * (1 + sw * np.sin(np.pi * np.clip(x / max(nt["d"], 1e-3), 0, 1)))
+        tp = nt.get("taper", 0.0)
+        if tp:  # phrase-final note dies away instead of stopping flat
+            body = body * (1 - tp * np.clip(x / max(nt["d"], 1e-3), 0, 1) ** 1.5)
         tail = np.where(tc > e, np.exp(-(tc - e) / rel), 1.0)
         a = np.maximum(a, v * body * tail * (tc >= s - 1e-9))
         if i > 0 and not legato_in:
@@ -909,8 +970,8 @@ def brass_note(midi, length, vel=0.8, kind="trumpet", voices=2, seed=0, scoop=0.
             fd, fb, att = f0 * 3.0 + 400, min(11000, f0 * 9 + 2500 * vel), 0.022
         elif kind == "trombone":
             fd, fb, att = f0 * 3.0 + 250, min(8000, f0 * 9 + 1500 * vel), 0.03
-        else:  # horn
-            fd, fb, att = f0 * 2.0 + 200, min(3500, f0 * 5 + 800 * vel), 0.05
+        else:  # horn (only the action cue uses it: needs to cut through a full orchestra)
+            fd, fb, att = f0 * 2.2 + 250, min(5500, f0 * 6.5 + 1600 * vel), 0.045
         sc = -100 * scoop * np.exp(-t / 0.035)
         fl = np.zeros(n)
         if fall:
@@ -936,7 +997,7 @@ def brass_note(midi, length, vel=0.8, kind="trumpet", voices=2, seed=0, scoop=0.
         elif kind == "trombone":
             y = filt(y, ("hp", 70), ("peak", 600, 1.0, 2.0), ("hs", 6000, 0.7, -6))
         else:
-            y = filt(y, ("hp", 60), ("peak", 350, 1.0, 2.0), ("hs", 3000, 0.7, -8))
+            y = filt(y, ("hp", 70), ("peak", 350, 1.0, 1.0), ("peak", 1500, 0.9, 2.5), ("hs", 4500, 0.7, -5))
         return ramp_out(ramp_in(y * F32(0.4), 2), 8)
 
     return cached(key, make)
@@ -1071,7 +1132,7 @@ def hat(vel=0.5, kind="chick", variant=0):
         y = (y * F32(0.5) + nz * F32(0.6)) * exp_env(n, T)
         if kind == "chick":
             y = filt(y, ("peak", 7000, 1.0, -3))
-        return ramp_out(ramp_in(y, 0.5), 10) * F32(0.35)
+        return ramp_out(ramp_in(y, 1.0), 10) * F32(0.35)
 
     return cached(("hat", layer, kind, variant), make), res
 
@@ -1139,8 +1200,8 @@ def woodblock(vel=0.5, high=True, variant=0):
         f = 1850 if high else 1380
         y = partial_bank([f, f * 2.73, f * 0.53], [1.0, 0.25, 0.3], [0.05, 0.02, 0.03], n, phases=[0.25, 0, 0])
         nk = int(0.0025 * SR)
-        y[:nk] += filt(noise(rng, nk), ("lp", 5000), ("hp", 800)) * exp_env(nk, 0.002) * F32(0.6)
-        return ramp_out(ramp_in(y, 0.3), 10) * F32(0.35)
+        y[:nk] += filt(noise(rng, nk), ("lp", 4500), ("lp", 6000), ("hp", 800)) * exp_env(nk, 0.002) * F32(0.6)
+        return ramp_out(ramp_in(y, 0.7), 10) * F32(0.35)
 
     return cached(("wb", layer, high, variant), make), res
 
@@ -1187,7 +1248,8 @@ def make_ir(t60=1.6, predelay=0.018, damp=0.5, seed=1, er_gain=0.5, length=None)
             low = filt(nz, ("lp", 450))
             high = filt(nz, ("hp", 3800))
             mid = nz - low - high
-            ir = (low * np.exp(t * F32(-6.9 / (t60 * 1.2))) +
+            # low band decays a little *faster* than the mids (no LF boom/mud in the tail)
+            ir = (low * np.exp(t * F32(-6.9 / (t60 * 0.9))) +
                   mid * np.exp(t * F32(-6.9 / t60)) +
                   high * np.exp(t * F32(-6.9 / (t60 * (0.35 + 0.4 * (1 - damp)))))) * F32(1.0)
             ir *= smoothstep(t / 0.012)
@@ -1207,24 +1269,65 @@ def make_ir(t60=1.6, predelay=0.018, damp=0.5, seed=1, er_gain=0.5, length=None)
 
 
 def limiter(x, ceiling=0.89, look=0.004, release=0.12):
-    peak = np.max(np.abs(x), axis=1)
-    need = np.minimum(1.0, ceiling / np.maximum(peak, 1e-9))
+    """Look-ahead peak limiter.  `ceiling` is a scalar or a per-sample array.
+
+    Gain reduction ramps in over the `look` seconds before an over-ceiling peak (short
+    centred min-filter + moving average, which never under-reduces at the peak), holds
+    through it and then releases exponentially (time constant `release`) *after* it --
+    a backward-looking peak-hold computed at control rate in the log domain."""
+    x = np.asarray(x, dtype=F32)
+    peak = np.max(np.abs(x), axis=1).astype(np.float64)
+    need = np.minimum(1.0, np.asarray(ceiling, dtype=np.float64) / np.maximum(peak, 1e-9))
+    if need.min() >= 1.0:
+        return x
     La = max(3, int(look * SR))
     g = minimum_filter1d(need, size=2 * La + 1)
+    g = uniform_filter1d(g, size=La)          # attack ramp; still <= need at every peak
     red = 1.0 - g
-    Lr = max(3, int(release * SR))
-    red = maximum_filter1d(red, size=Lr, origin=-(Lr // 2) + 0)
-    red = uniform_filter1d(red, size=Lr)
-    red = maximum_filter1d(red, size=La)  # never less reduction than needed
-    g2 = np.minimum(1.0 - red, uniform_filter1d(g, size=La))
-    return (x * g2[:, None].astype(F32)).astype(F32)
+    hop = 32
+    nb = (len(red) + hop - 1) // hop
+    blk = np.pad(red, (0, nb * hop - len(red))).reshape(nb, hop).max(axis=1)
+    # r[i] = max_{j<=i} blk[j] * a^(i-j): exponential release that only looks backwards
+    la = -hop / (release * SR)
+    idx = np.arange(nb, dtype=np.float64)
+    lr = np.maximum.accumulate(np.log(np.maximum(blk, 1e-12)) - idx * la) + idx * la
+    r = np.where(lr > math.log(1e-9), np.exp(lr), 0.0)
+    rel = np.interp(np.arange(len(red), dtype=np.float64), idx * hop + (hop - 1), r)
+    red = np.maximum(red, rel)                # never less reduction than needed
+    return (x * (1.0 - red)[:, None].astype(F32)).astype(F32)
+
+
+def lufs(x):
+    """Integrated loudness (ITU-R BS.1770-4, gated) of a stereo float array."""
+    x = np.asarray(x, dtype=np.float64)
+    if x.ndim == 1:
+        x = np.stack([x, x], axis=1)
+    b1, a1 = [1.53512485958697, -2.69169618940638, 1.19839281085285], [1.0, -1.69065929318241, 0.73248077421585]
+    b2, a2 = [1.0, -2.0, 1.0], [1.0, -1.99004745483398, 0.99007225036621]
+    y = lfilter(b2, a2, lfilter(b1, a1, x, axis=0), axis=0)
+    p = np.sum(y * y, axis=1)
+    blk, hop = int(0.4 * SR), int(0.1 * SR)
+    if len(p) < blk:
+        return float(-0.691 + 10 * np.log10(np.mean(p) + 1e-15))
+    cs = np.concatenate([[0.0], np.cumsum(p)])
+    st = np.arange(0, len(p) - blk + 1, hop)
+    z = (cs[st + blk] - cs[st]) / blk
+    L = -0.691 + 10 * np.log10(z + 1e-15)
+    g = z[L > -70]
+    if len(g) == 0:
+        return -99.0
+    thr = -0.691 + 10 * np.log10(np.mean(g)) - 10
+    g = z[(L > -70) & (L > thr)]
+    return float(-0.691 + 10 * np.log10(np.mean(g)))
 
 
 # =============================================================================
 # mixer / render context
 # =============================================================================
 class Ctx:
-    """Render context for one cue: stereo dry + reverb-send buses, event log."""
+    """Render context for one cue: stereo dry + reverb-send buses, event log.
+    Parts listed in PART_EQ[style] are mixed on their own sub-bus and equalised at
+    mastering time (cheaper than EQ'ing every note, and the reverb send is EQ'd too)."""
 
     def __init__(self, style, duration, seed):
         self.style = style
@@ -1243,6 +1346,14 @@ class Ctx:
         self.parts = {} if os.environ.get("MUSIC_DEBUG_PARTS") else None
         self.onsets = []
         self.pgain = {k: db2lin(v) for k, v in PART_DB.get(style, {}).items()}
+        self.peq = PART_EQ.get(style, {})
+        self.pbus = {}     # part -> [dry, wet] sub-buses for EQ'd parts
+        self.ceiling = None
+        self.hit_at = None
+        self.tail = None
+        self.hit = None
+        self.cut = None
+        self.post_gain = None
 
     def hum(self, sd=0.006, lim=0.015):
         return float(np.clip(self.rng.normal(0, sd), -lim, lim))
@@ -1271,7 +1382,14 @@ class Ctx:
             st[:, 1] = seg * F32(gain * gr)
         else:
             st = seg * np.array([gain * gl, gain * gr], F32)
-        self.dry[i0:i0 + m] += st
+        if part in self.peq:
+            bus = self.pbus.get(part)
+            if bus is None:
+                bus = self.pbus[part] = [np.zeros((self.n, 2), F32), np.zeros((self.n, 2), F32)]
+            dry, wet = bus
+        else:
+            dry, wet = self.dry, self.wet
+        dry[i0:i0 + m] += st
         if self.parts is not None:
             buf = self.parts.setdefault(part or "?", np.zeros((self.n, 2), F32))
             buf[i0:i0 + m] += st
@@ -1279,50 +1397,121 @@ class Ctx:
         if part is not None:
             self.energy[part] = self.energy.get(part, 0.0) + float(np.sum(np.square(st, dtype=np.float64)))
         if send:
-            self.wet[i0:i0 + m] += st * F32(send)
+            wet[i0:i0 + m] += st * F32(send)
+
+    def flush_parts(self):
+        """EQ the part sub-buses and fold them into the main dry/wet buses."""
+        for part, (dry, wet) in self.pbus.items():
+            spec = self.peq[part]
+            self.dry += filt(dry, *spec)
+            self.wet += filt(wet, *spec)
+            if self.parts is not None and part in self.parts:
+                self.parts[part] = filt(self.parts[part], *spec)
+        self.pbus = {}
+
+    def automate(self, points):
+        """Gain automation (dB) of everything mixed so far: points = [(t, dB), ...],
+        linear in dB between points, held flat outside them."""
+        self.flush_parts()
+        ts = np.array([p[0] for p in points], dtype=np.float64)
+        ds = np.array([p[1] for p in points], dtype=np.float64)
+        t = np.arange(self.n, dtype=np.float64) / SR
+        gcurve = (10.0 ** (np.interp(t, ts, ds) / 20.0)).astype(F32)[:, None]
+        self.dry *= gcurve
+        self.wet *= gcurve
+        if self.parts is not None:
+            for k in self.parts:
+                self.parts[k] *= gcurve
 
     def note(self, part, t, text):
         self.log.append((t, part, text))
 
 
+# reverb send high-pass (Hz, 4th-order Butterworth) per style: the low end stays dry and
+# centred; the room only blooms above the bass register
+WET_HP = {"jazz_title": 170, "jazz_end": 170, "lounge": 180, "tension": 200, "therapy": 200,
+          "montage": 170, "serene": 300, "action": 180, "sunset": 260}
+
+
 def _master(ctx, ir, style, tone=None):
+    ctx.flush_parts()
     y = ctx.dry
     if ir is not None:
+        sos_w = butter(4, WET_HP.get(style, 180), "hp", fs=SR, output="sos")
+        wet_in = sosfilt(sos_w, ctx.wet, axis=0).astype(F32)
         wet = np.empty_like(ctx.wet)
         for c in range(2):
-            wet[:, c] = oaconvolve(ctx.wet[:, c], ir[:, c])[:ctx.n]
+            wet[:, c] = oaconvolve(wet_in[:, c], ir[:, c])[:ctx.n]
+        if ctx.parts is not None:   # analysis aid (MUSIC_DEBUG_PARTS): the reverb return
+            ctx.wet_ret = wet
         y = y + wet
     sos = butter(2, 28, "hp", fs=SR, output="sos")
     y = sosfilt(sos, y, axis=0).astype(F32)
+    if ctx.post_gain is not None:      # composed ending: ring-out damping (see _ring_out)
+        y = y * ctx.post_gain[:, None]
     if tone:
         y = filt(y, *tone)
-    ctx.pre_rms = float(np.sqrt(np.mean(np.square(y, dtype=np.float64))))
+    ctx.pre = y
     gain = _cal_gain(style)
+    if ctx.anchors.get("own_ending"):
+        # composed endings are calibrated at their real length: a short title / end-card cue
+        # is mostly tag + button, so the 60 s calibration would leave it ~1 LU short.  Measure
+        # the in-picture part and aim it at TARGET_LUFS (within +-4 dB of the 60 s calibration).
+        i1 = max(int(0.4 * SR), int((ctx.cut or ctx.D) * SR))
+        L = lufs(y[:i1])
+        if L > -70.0:
+            cal_db = 20.0 * math.log10(gain)
+            gain = db2lin(float(np.clip(TARGET_LUFS[style] - L, cal_db - 4.0, cal_db + 4.0)))
+    ctx.master_gain = gain
     y = y * F32(gain)
-    y = limiter(y, ceiling=0.89)
+    y = limiter(y, ceiling=0.89 if ctx.ceiling is None else ctx.ceiling)
     return y
 
 
+# pad voices (lowest first): the bottom voice sits near the centre, upper voices spread out
+PAD_PANS = [-0.08, 0.42, -0.42, 0.2, -0.2]
+
 # per-style mix trims (dB) by part name
 PART_DB = {
-    "jazz_title": {"bass": -1.5, "piano": 2.0, "drums": 3.0},
-    "jazz_end": {"bass": -1.5, "piano": 1.0, "drums": 3.0, "banjo": 9.0, "trombone": 5.0},
+    # (piano trimmed 2.5 dB in r3: the re-voiced piano sustains more inside its short comps)
+    "jazz_title": {"bass": -1.5, "piano": -0.5, "drums": 3.0},
+    "jazz_end": {"bass": -1.5, "piano": -1.2, "drums": 3.0, "banjo": 9.0, "trombone": 5.0},
     "lounge": {"vibes": 1.5, "guitar": -1.7, "perc": 3.5},
     "tension": {"drone": -5.0, "pizz": 1.0, "clock": 11.0, "violins": 4.0, "glock": 10.0, "bassoon": 0.0},
-    "therapy": {"piano": 2.5},
-    "montage": {"whistle": 3.0, "uke": -2.0, "bass": -3.0, "drums": 4.5, "banjo": 7.5, "glock": 10.0},
+    "therapy": {"piano": -3.5},
+    "montage": {"whistle": -4.5, "uke": -2.5, "bass": -6.0, "drums": 5.0, "banjo": 6.0, "glock": 4.0},
     "serene": {"vibes": 4.3, "harp": 1.6, "bass": -5.5, "choir": -1.0},
-    "action": {"stabs": 6.6},
+    "action": {"stabs": 4.0, "horns": -1.0, "strings": 0.5, "drums": 2.0},
     "sunset": {"clarinet": 1.2, "pad": 1.0, "bass": 2.0},
 }
 
-# per-style calibration so long-term RMS lands near TARGET_DB (set by _calibrate())
-CAL = {'jazz_title': 0.32763, 'lounge': 0.26095, 'tension': 0.18547, 'therapy': 0.21728, 'montage': 0.23274,
-       'serene': 0.27304, 'action': 0.28045, 'sunset': 0.18322, 'jazz_end': 0.40}
+# per-style, per-part EQ (biquad chains, see filt()) applied on the part's sub-bus
+PART_EQ = {
+    # carve a dialogue pocket: the strummed/rolled strings own 1.6-6.4 kHz in the montage
+    # (the strings get their 300-700 Hz body back: the cue's mids were thin under bass + kick;
+    # bass and kick lose their sub-50 Hz)
+    "montage": {"uke": [("peak", 320, 1.0, 2.5), ("peak", 480, 0.9, 3.0), ("peak", 1100, 0.8, -6.0),
+                        ("peak", 2400, 0.9, -4.5), ("hs", 3500, 0.7, -6.5)],
+                "banjo": [("peak", 300, 1.0, 4.0), ("peak", 520, 1.0, 3.0), ("peak", 1250, 1.6, -4.0),
+                          ("peak", 2800, 1.0, -3.5), ("hs", 5000, 0.7, -2.0)],
+                "drums": [("hp", 45, 0.7), ("hs", 4000, 0.7, -2.5)],
+                "bass": [("hp", 50, 0.7), ("peak", 110, 1.0, -1.5)]},
+    # action: tame the 20-80 Hz pile-up of bass-section saws, timpani and kick
+    "action": {"strings": [("ls", 80, 0.7, -4.5), ("hp", 32, 0.7), ("peak", 140, 0.9, -2.0)],
+               "drums": [("hp", 40, 0.7), ("ls", 80, 0.7, -4.0), ("peak", 115, 1.0, -2.5),
+                         ("peak", 3500, 0.8, -3.5), ("hs", 9000, 0.7, 2.0)]},
+}
+
+# per-style calibration: pre-gain integrated loudness (LUFS) of a 60 s render (mean of seeds
+# 0 and 1), measured by `python src/music.py calibrate`; the master gain maps it to TARGET_LUFS.
+# (Cues with a composed ending -- jazz_end, short jazz_title -- are instead measured at their
+# real length, in-picture part only; CAL then only bounds that make-up gain to +-4 dB.)
+CAL = {'jazz_title': -6.59, 'lounge': -9.39, 'tension': -12.66, 'therapy': -12.9, 'montage': -15.17,
+       'serene': -9.66, 'action': -11.04, 'sunset': -12.45, 'jazz_end': -4.81}
 
 
 def _cal_gain(style):
-    return db2lin(TARGET_DB[style]) / max(CAL.get(style, 0.1), 1e-6)
+    return db2lin(TARGET_LUFS[style] - CAL.get(style, -10.0))
 
 
 # =============================================================================
@@ -1405,9 +1594,24 @@ def nearest(pc, ref, lo=0, hi=127):
     return min(cands, key=lambda c: abs(c - ref))
 
 
-def voice(pcs, lo, hi, prev=None, center=None, max_span=19, low_gap=52):
-    """Choose a voicing of the pitch classes in [lo, hi] with smooth voice leading."""
-    pcs = list(dict.fromkeys(pcs))
+def _melody_safe_pcs(pcs, avoid, keep_min=2):
+    """Drop the chord tones that sit a semitone below a sounding melody note (they would
+    make a m2 / m9 under it -- e.g. the resolution note under an appoggiatura, the maj7
+    under a root melody, the 9th under a minor-3rd melody), keeping at least keep_min."""
+    if not avoid:
+        return list(pcs)
+    apc = {int(a) % 12 for a in avoid}
+    keep = [p for p in pcs if not any((a - p) % 12 == 1 for a in apc)]
+    return keep if len(keep) >= keep_min else list(pcs)
+
+
+def voice(pcs, lo, hi, prev=None, center=None, max_span=19, low_gap=52, avoid=None):
+    """Choose a voicing of the pitch classes in [lo, hi] with smooth voice leading.
+    avoid: midi notes of the melody sounding over this chord -- no voice may sit a m2 or
+    m9 below one of them or a m2 above it (pitch classes that cannot avoid that are dropped
+    first, see _melody_safe_pcs)."""
+    pcs = list(dict.fromkeys(_melody_safe_pcs(pcs, avoid)))
+    av = sorted({int(a) for a in avoid}) if avoid else []
     opts = [[m for m in range(lo, hi + 1) if m % 12 == pc] for pc in pcs]
     best, bestc = None, 1e9
     import itertools
@@ -1430,6 +1634,13 @@ def voice(pcs, lo, hi, prev=None, center=None, max_span=19, low_gap=52):
         # avoid minor-2nd on top
         if len(v) > 1 and v[-1] - v[-2] == 1:
             cost += 3
+        if av:
+            for x in v:
+                for a in av:
+                    if a - x in (1, 13) or x - a == 1:
+                        cost += 60      # m2/m9 under (or m2 over) the melody: effectively banned
+                    elif x > a:
+                        cost += 2       # mild: keep the accompaniment under the tune
         if prev:
             p = sorted(prev)
             if len(p) == len(v):
@@ -1442,8 +1653,18 @@ def voice(pcs, lo, hi, prev=None, center=None, max_span=19, low_gap=52):
         if cost < bestc:
             best, bestc = v, cost
     if best is None:
-        return voice(pcs, lo - 6, hi + 6, prev, center, max_span + 5, low_gap)
+        return voice(pcs, lo - 6, hi + 6, prev, center, max_span + 5, low_gap, avoid)
     return best
+
+
+def sounding(notes, t0, t1, min_d=0.25, min_ov=0.1):
+    """Midi notes of a melody (list of (t, d, m)) that sound over [t0, t1] -- notes at least
+    min_d long overlapping the window by at least min_ov seconds."""
+    out = []
+    for (t, d, m) in notes:
+        if d >= min_d and min(t1, t + d) - max(t0, t) >= min_ov:
+            out.append(int(m))
+    return out
 
 
 # =============================================================================
@@ -1489,8 +1710,16 @@ class Grid:
 # =============================================================================
 # part helpers
 # =============================================================================
+LOW_CENTRED = ("piano_note", "upright_note")   # instruments whose low notes are kept centred & dry
+
+
 def play(ctx, fn, t, midi, vel, dur, rel=0.25, gain=1.0, pan=0.0, send=0.2, **kw):
-    """Render a (cached, full-ring) note, damp it after dur, and mix it."""
+    """Render a (cached, full-ring) note, damp it after dur, and mix it.
+    Mix rule: piano / upright-bass notes below G3 (55) slide to the centre (fully centred at
+    G2 and below) and get at most a 0.08 reverb send, so the low end is mono and dry."""
+    if midi < 55 and getattr(fn, "__name__", "") in LOW_CENTRED:
+        pan = pan * max(0.0, (midi - 43) / 12.0)
+        send = min(send, 0.08)
     x, res = fn(midi, vel, **kw) if kw else fn(midi, vel)
     y = release_tail(x, dur, rel) if dur is not None else x
     ctx.place(y, t, gain * res, pan, send)
@@ -1634,6 +1863,7 @@ def style_lounge(ctx):
             continue
         mel += _melody_to_phrases(ctx, g, bar, spec, vel=v)
     _log_melody(ctx, mel, "vibes")
+    mel_t = [(nt["t"], nt["d"], nt["m"]) for nt in mel]
     ctx.part = "vibes"
     for i, nt in enumerate(mel):
         v = nt["v"] * (1.08 if g.t(*nt["beat"]) == g.t(nt["beat"][0], 0) else 1.0) + ctx.hum(0.03, 0.06)
@@ -1660,9 +1890,9 @@ def style_lounge(ctx):
         t = g.t(0, st)
         if t > ctx.D:
             break
-        v = voice(c.comp, 52, 70, prev, center=61)
-        prev = v
         dur = g.t(0, en) - t - 0.05
+        v = voice(c.comp, 52, 70, prev, center=61, avoid=sounding(mel_t, t, t + dur))
+        prev = v
         for j, m in enumerate(v):
             vel = 0.36 + 0.05 * (j == len(v) - 1) + ctx.hum(0.03, 0.05)
             x, res = rhodes_note(m, vel, dur + 0.8)
@@ -1680,18 +1910,18 @@ def style_lounge(ctx):
             t = g.t(bar, h)
             if t > ctx.D:
                 break
-            v = voice(c.comp, 52, 71, gprev, center=63, max_span=14)
-            gprev = v
             nxt = [x for x in hits if x > h]
             dur = g.d(bar, h, min(1.2, (nxt[0] - h) if nxt else 1.0))
+            v = voice(c.comp, 52, 71, gprev, center=63, max_span=14, avoid=sounding(mel_t, t, t + dur))
+            gprev = v
             for j, m in enumerate(v[-3:]):
                 play(ctx, nylon_note, t + 0.004 * j + ctx.hum(0.003), m, 0.42 + ctx.hum(0.04, 0.08), dur,
                      rel=0.08, gain=0.8, pan=-0.35, send=0.18)
         for h in (0, 2):
             c = chord_at(cb, h)
             ref = 45
-            m = nearest(c.bass if h == 0 or len(cb) > 1 else c.fifth if c.bass == c.root else (c.bass + 7) % 12,
-                        ref, 40, 52)
+            # thumb: the bass note, then the chord's *own* fifth (B for E9/D -- never bass + 7)
+            m = nearest(c.bass if h == 0 or len(cb) > 1 else c.fifth, ref, 40, 52)
             play(ctx, nylon_note, g.t(bar, h) + ctx.hum(0.003), m, 0.38, g.d(bar, h, 1.8), rel=0.15,
                  gain=0.42, pan=-0.3, send=0.12)
 
@@ -1700,15 +1930,17 @@ def style_lounge(ctx):
     last = 38
     for bar in range(nb):
         cb = chart(bar)
+        # surdo pattern on the bass note and the chord's own fifth (slash chords: E9/D takes
+        # D and B -- an A would rub against the G#)
         if len(cb) == 1:
             c = cb[0][1]
             r = c.bass
-            f = (r + 7) % 12
+            f = c.fifth
             pat = [(0, r, 1.35, 0.85), (1.5, r, 0.42, 0.45), (2, f, 1.35, 0.75), (3.5, f, 0.42, 0.4)]
         else:
             c1, c2 = cb[0][1], cb[1][1]
-            pat = [(0, c1.bass, 1.35, 0.85), (1.5, (c1.bass + 7) % 12, 0.42, 0.45),
-                   (2, c2.bass, 1.35, 0.8), (3.5, (c2.bass + 7) % 12, 0.42, 0.4)]
+            pat = [(0, c1.bass, 1.35, 0.85), (1.5, c1.fifth, 0.42, 0.45),
+                   (2, c2.bass, 1.35, 0.8), (3.5, c2.fifth, 0.42, 0.4)]
         for (b, pc, d, v) in pat:
             m = nearest(pc, last if b in (1.5, 3.5) else 38, 33, 50)
             last = m
@@ -1885,6 +2117,7 @@ def _jazz_band(ctx, g, bars, full=False):
     notes = notes + extra
     notes.sort(key=lambda x: x["t"])
     _log_melody(ctx, notes, "clarinet")
+    mel_t = [(nt["t"], nt["d"], nt["m"]) for nt in notes]
     ctx.part = "clarinet"
     for ph in _split_phrases(notes, gap=0.3):
         t0, y = clarinet_phrase(ph, rng, vib_depth=24.0, bright=0.8 + 0.1 * full)
@@ -1898,13 +2131,16 @@ def _jazz_band(ctx, g, bars, full=False):
         t = g.t(bar, k) + ctx.hum(0.006)
         if t > ctx.D:
             break
+        if t < -0.02:   # pickup bar: nothing that would start before the cue does
+            continue
         if k in (0, 2):
             m = nearest(c.bass if k == 0 else (c.fifth if c.bass == c.root else c.bass), 40, 36, 50)
             for mm in (m, m + 12) if full else (m + 12,):
                 play(ctx, piano_note, t, mm, 0.42 + ctx.hum(0.03, 0.05), g.beat_s * 0.8, rel=0.12,
                      gain=0.5, pan=-0.3, send=0.15, length=1.5, tone=0.6)
         else:
-            v = voice(c.comp, 53, 70, prev, center=61)
+            v = voice(c.comp, 53, 70, prev, center=61,
+                      avoid=sounding(mel_t, t, t + g.beat_s * 0.42, min_d=0.2, min_ov=0.06))
             prev = v
             for j, mm in enumerate(v):
                 play(ctx, piano_note, t + 0.004 * j, mm, 0.48 + ctx.hum(0.04, 0.06), g.beat_s * 0.42,
@@ -1922,6 +2158,8 @@ def _jazz_band(ctx, g, bars, full=False):
         if fl.get("no_walk") or k >= fl.get("stop_at", 9):
             continue
         t = g.t(bar, k) + ctx.hum(0.004)
+        if t < -0.02:
+            continue
         v = (0.78 if k in (0, 2) else 0.68) + ctx.hum(0.03, 0.05)
         play(ctx, upright_note, t, m, v, g.beat_s * 0.92, rel=0.06, gain=0.62, pan=0.05, send=0.08,
              variant=int(rng.integers(2)))
@@ -1933,6 +2171,8 @@ def _jazz_band(ctx, g, bars, full=False):
         t = g.t(bar, k)
         if t > ctx.D:
             break
+        if t < -0.02:
+            continue
         # ride: 1, 2, 2a, 3, 4, 4a
         for (b, v) in ((0, 0.45), (0.5, 0.38)) if k in (1, 3) else ((0, 0.42),):
             x, res = ride(v + ctx.hum(0.03, 0.05), variant=int(rng.integers(3)))
@@ -1962,7 +2202,10 @@ def _jazz_band(ctx, g, bars, full=False):
             t = g.t(bar, k)
             if t > ctx.D:
                 break
-            v = voice(c.comp, 55, 71, bprev, center=63, max_span=15)
+            if t < -0.02:
+                continue
+            v = voice(c.comp, 55, 71, bprev, center=63, max_span=15,
+                      avoid=sounding(mel_t, t, t + g.beat_s * 0.6, min_d=0.2, min_ov=0.06))
             bprev = v
             for j, mm in enumerate(v):
                 play(ctx, banjo_note, t + 0.006 * j + ctx.hum(0.003), mm, (0.6 if k in (1, 3) else 0.5),
@@ -1981,6 +2224,8 @@ def _jazz_band(ctx, g, bars, full=False):
             t = g.t(bar, b)
             if t > ctx.D:
                 break
+            if t < -0.02:
+                continue
             guide = [c.third] + [x for x in c.tones if (x - c.root) % 12 in (10, 9, 11)]
             m = min((nearest(pc, tprev, 46, 60) for pc in guide), key=lambda x: abs(x - tprev))
             sc = 2.5 if (rng.random() < 0.35 and d >= 4) else 0.4
@@ -1990,6 +2235,8 @@ def _jazz_band(ctx, g, bars, full=False):
 
 
 def style_jazz_title(ctx):
+    if ctx.hit is not None:          # title-card length (or an explicit hit_at): tune + tag + button
+        return _jazz_with_ending(ctx, "jazz_title", full=False)
     g = _grid_for("jazz_title", ctx.D)
     nb = _bars_needed(ctx, g)
     bars = [(-1, "C7", JAZZ_PICKUP, None, dict(no_walk=True, tacet_comp=True, no_drums=True))]
@@ -2028,30 +2275,66 @@ def _jazz_end_plan(H):
     return best[1:]
 
 
-def _final_hit(duration, hit_at=None):
-    H = hit_at if hit_at is not None else duration - 0.5
+def _ending_hit(style, duration, hit_at=None, tail=None):
+    """Time (s) of the final button for cues that compose their own ending, else None."""
+    if style not in ENDING_TAIL:
+        return None
+    duration = float(max(0.05, duration))
+    if hit_at is not None:
+        return float(np.clip(hit_at, 0.05, duration))
+    if style == "jazz_title" and duration > JAZZ_TITLE_TAG_MAX:
+        return None                   # long title bed: loops like the other cues
+    lead = ENDING_LEAD[style]
+    tl = ENDING_TAIL[style] if tail is None else max(0.0, float(tail))
+    H = duration - tl - lead
+    if H < 0.5 * duration:            # too short for the overhang to make sense
+        H = max(0.5 * duration, duration - lead)
     return float(np.clip(H, 0.05, duration))
 
 
-def _grid_for(style, duration, hit_at=None):
+def _ending_cut(style, duration, hit_at=None, tail=None):
+    """Where the picture ends inside a composed-ending render (s): duration - tail, i.e. the
+    part of the render build_audio adds past the picture is excluded.  With an explicit
+    hit_at and no tail, or when the render is too short for the default overhang, the whole
+    render is 'picture'."""
+    duration = float(max(0.05, duration))
+    H = _ending_hit(style, duration, hit_at, tail)
+    if H is None:
+        return duration
+    if hit_at is not None:
+        tl = 0.0 if tail is None else max(0.0, float(tail))
+    else:
+        tl = ENDING_TAIL[style] if tail is None else max(0.0, float(tail))
+        if duration - tl - ENDING_LEAD[style] < 0.5 * duration:   # _ending_hit's short fallback
+            tl = 0.0
+    return float(min(duration, max(H + 0.12, duration - tl)))
+
+
+def _final_hit(duration, hit_at=None, tail=None):
+    """jazz_end's button time (kept for backward compatibility)."""
+    return _ending_hit("jazz_end", duration, hit_at, tail)
+
+
+def _grid_for(style, duration, hit_at=None, seed=0, tail=None):
     """The time grid each cue is composed on (shared by render and music_anchors)."""
     if style == "lounge":
         return Grid(124, swing=0.5)
-    if style == "jazz_title":
-        g = Grid(116, swing=0.64)
-        g.offset = g.beat_s  # one-beat pickup
-        return g
-    if style == "jazz_end":
-        H = _final_hit(duration, hit_at)
+    if style in ("jazz_title", "jazz_end"):
+        H = _ending_hit(style, duration, hit_at, tail)
+        if H is None:
+            g = Grid(116, swing=0.64)
+            g.offset = g.beat_s  # one-beat pickup
+            g.whole, g.hit = None, None
+            return g
         bpm, whole, frac = _jazz_end_plan(H)
         g = Grid(bpm, swing=0.64)
         g.offset = H - whole * g.bar_s  # bar `whole` downbeat == the button
-        g.whole = whole
+        g.whole, g.hit = whole, H
         return g
     if style == "tension":
         return Grid(92, swing=0.5)
     if style == "therapy":
-        return Grid(64, swing=0.5, rubato=_therapy_rubato, bars=int(duration / 3.0) + 8)
+        return Grid(64, swing=0.5, rubato=_therapy_rubato_fn(seed), bars=int(duration / 3.0) + 8)
     if style == "montage":
         return Grid(128, swing=0.54)
     if style == "serene":
@@ -2066,22 +2349,31 @@ def _grid_for(style, duration, hit_at=None):
 MELODY_IN_BAR = {"lounge": 2, "jazz_title": 0, "jazz_end": 0, "tension": 0, "therapy": 0, "montage": 1,
                  "serene": 1, "action": 0, "sunset": 2}
 
+JAZZ_BAND_CEILING = 0.76   # jazz_end: the band is limited lower so the button is the cue's true peak
 
-def style_jazz_end(ctx):
-    H = _final_hit(ctx.D, ctx.hit_at)
-    g = _grid_for("jazz_end", ctx.D, ctx.hit_at)
+
+def _jazz_tag_form(whole):
+    """How many tune bars (K) precede a 1- or 2-bar tag, given `whole` bars before the button."""
+    if whole <= 0:
+        return 0, 0
+    if whole == 1:
+        return 0, 1
+    K = whole - 1
+    last = JAZZ_CHART[(K - 1) % 16].split("|")[-1]
+    if last.startswith(("D7", "F6", "G7", "Bdim7", "Bbm6")):
+        return K, 1                     # ... -> G7|C7 (stop) -> F
+    return whole - 2, 2                 # after C7: Bb6|Bdim7 -> F/C|C7 (stop) -> F
+
+
+def _jazz_with_ending(ctx, style, full):
+    """Title tune for as many bars as fit, a stop-time tag and a 'ba-DUM' button landing at
+    ctx.hit.  full=True: the end-titles band (banjo, trombone, sticks) and a BIG button;
+    full=False: the title trio (clarinet, piano, bass, brushes) and a light button."""
+    H = ctx.hit
+    g = _grid_for(style, ctx.D, ctx.hit_at, ctx.seed, ctx.tail)
     bpm, whole = g.bpm, g.whole
+    K, ntag = _jazz_tag_form(whole)
     bars = []
-    if whole >= 2:
-        # how many tune bars and which tag?
-        K, ntag = whole - 1, 1
-        last = JAZZ_CHART[(K - 1) % 16].split("|")[-1]
-        if not last.startswith("D7"):
-            K, ntag = whole - 2, 2
-    elif whole == 1:
-        K, ntag = 0, 1
-    else:
-        K, ntag = 0, 0
     if g.offset > 0.12:
         bars.append((-1, "C7", JAZZ_PICKUP if K > 0 else None, None,
                      dict(no_walk=K == 0, tacet_comp=g.offset < g.bar_s * 0.6, no_drums=True)))
@@ -2095,74 +2387,154 @@ def style_jazz_end(ctx):
     elif ntag == 1:
         spec = "G7|C7" if K > 0 else "F/C|C7"
         bars.append((K, spec, TAG_SHORT if K > 0 else TAG_T2, None, dict(stop_at=2)))
-    # the clarinet glissando that lands on the button (high F)
     if ntag >= 1:
-        ctx.extra_clar = [dict(t=H, d=0.28, m=N("F6"), v=0.95, gliss=True, glide=g.beat_s * 1.9,
-                               slur=True, release=0.12, beat=(whole, 0))]
-    _jazz_band(ctx, g, bars, full=True)
+        if full:   # clarinet rip from the held C up to high F, landing on the button
+            ctx.extra_clar = [dict(t=H, d=0.3, m=N("F6"), v=0.98, gliss=True, glide=g.beat_s * 1.9,
+                                   slur=True, release=0.12, beat=(whole, 0))]
+        else:      # a neat little scoop onto F
+            ctx.extra_clar = [dict(t=H, d=0.34, m=N("F5"), v=0.86, scoop=0.8, scoop_t=0.07,
+                                   release=0.12, beat=(whole, 0))]
+    _jazz_band(ctx, g, bars, full=full)
     if g.offset > 0.25 and K > 0:
         ctx.part = "drums"
         for i, b in enumerate((3.0, 3.333, 3.667)):
-            x, res = snare(0.35 + 0.15 * i, "stick", variant=i)
-            ctx.place(x, g.t(-1, 0) + b * g.beat_s, 0.4 * res, -0.1, 0.15)
+            if full:
+                x, res = snare(0.35 + 0.15 * i, "stick", variant=i)
+                ctx.place(x, g.t(-1, 0) + b * g.beat_s, 0.4 * res, -0.1, 0.15)
+            else:
+                x, res = brush_tap(0.45 + 0.12 * i, variant=i)
+                ctx.place(x, g.t(-1, 0) + b * g.beat_s, 0.6 * res, -0.1, 0.12)
+
+    tlast = g.t(whole - 1, 0) if whole >= 1 else max(0.0, H - g.bar_s)   # stop-time bar downbeat
+    tb = g.t(whole - 1, 2) if whole >= 1 else max(0.0, H - 2 * g.beat_s)  # the hold (beat 3)
+    tba = H - g.beat_s * (1 - 0.64)                                      # swung and-of-4: "ba"
+    # ---- stop-time bar: the band drops (subito piano), then crescendos back into the button
+    if whole >= 1 and ntag:
+        duck = -5.5 if full else -3.0
+        pre = [(tlast - g.bar_s * 0.75, 0.0), (tlast - 0.1, -1.5)] if full else [(tlast - 0.1, 0.0)]
+        ctx.automate(pre + [(tlast + 0.06, duck), (tb + 0.15, duck), (H - 0.02, 0.0 if full else -1.0)])
     ctx.part = "ending"
-    tb = g.t(whole - 1, 2) if whole >= 1 else H - 0.5
-    if ntag >= 1:
-        # hold chord on beat 3 of the last bar (C7), snare roll crescendo, "ba" on the and-of-4
-        c7 = C("C7")
-        for j, m in enumerate(voice(c7.comp, 55, 72, None, center=63)):
-            play(ctx, piano_note, tb + 0.006 * j, m, 0.62, g.beat_s * 1.3, rel=0.1, gain=0.42, pan=-0.2,
-                 send=0.2, length=2.0, tone=0.7)
-        play(ctx, upright_note, tb, N("C2"), 0.8, g.beat_s * 1.4, rel=0.06, gain=0.62)
-        y = brass_note(N("E3"), g.beat_s * 1.4, 0.6, "trombone", voices=1, seed=99, scoop=1.5)
-        ctx.place(y, tb, 0.45, 0.25, 0.25)
-        n_roll = int((g.beat_s * 1.45) / 0.046)
+    c7 = C("C7")
+    c7v = voice(c7.comp, 55, 72, None, center=63)
+    if ntag >= 1 and tba - tb > 0.2:
+        # hold chord on beat 3 + a roll that really crescendos (-15 dB -> 0 dB)
+        for j, m in enumerate(c7v):
+            play(ctx, piano_note, tb + 0.006 * j, m, 0.5, g.beat_s * 1.3, rel=0.1, gain=0.34 if full else 0.3,
+                 pan=-0.2, send=0.2, length=2.0, tone=0.6)
+        play(ctx, upright_note, tb, N("C2"), 0.7, g.beat_s * 1.4, rel=0.06, gain=0.55)
+        if full:
+            y = brass_note(N("E3"), g.beat_s * 1.4, 0.6, "trombone", voices=1, seed=99, scoop=1.5)
+            y = y * np.linspace(0.45, 1.25, len(y), dtype=F32)        # swell
+            ctx.place(y, tb, 0.45, 0.25, 0.25)
+        span = tba - 0.03 - tb
+        n_roll = max(3, int(span / (0.045 if full else 0.06)))
+        ctx.part = "roll"
         for i in range(n_roll):
-            v = 0.22 + 0.5 * (i / max(1, n_roll - 1)) ** 1.5
-            x, res = snare(v, "stick", variant=i % 3)
-            ctx.place(x, tb + i * 0.046 + ctx.hum(0.003, 0.006), 0.38 * res, -0.1 + 0.05 * (i % 2), 0.15)
-    tba = H - g.beat_s * (1 - 0.64)  # swung and-of-4
-    if H > 0.25:
-        for j, m in enumerate(voice(C("C7").comp, 55, 72, None, center=63)):
-            play(ctx, piano_note, tba + 0.004 * j, m, 0.6, 0.12, rel=0.06, gain=0.3, pan=-0.2, send=0.2,
-                 length=1.0, tone=0.8)
-        play(ctx, upright_note, tba, N("C2"), 0.7, 0.15, rel=0.05, gain=0.45)
-        x, res = snare(0.65, "stick", 1)
-        ctx.place(x, tba, 0.35 * res, -0.1, 0.15)
-        x, res = kick(0.55, "hard")
-        ctx.place(x, tba, 0.3 * res, 0.0, 0.0)
-    # ---- THE BUTTON ----
+            x01 = i / max(1, n_roll - 1)
+            db = -15.0 + 15.0 * x01 ** 1.2
+            if full:
+                x, res = snare(0.3 + 0.55 * x01, "stick", variant=i % 3)
+                ctx.place(x, tb + span * i / n_roll + ctx.hum(0.003, 0.006), 0.5 * res * db2lin(db),
+                          -0.1 + 0.05 * (i % 2), 0.15)
+            else:
+                x, res = brush_tap(0.35 + 0.5 * x01, variant=i % 3)
+                ctx.place(x, tb + span * i / n_roll + ctx.hum(0.003, 0.006), 0.75 * res * db2lin(db),
+                          -0.1 + 0.05 * (i % 2), 0.12)
+    ctx.part = "ending"
+    if H > 0.25 and ntag >= 1:
+        # "ba" -- the and-of-4 pickup hit
+        for j, m in enumerate(c7v):
+            play(ctx, piano_note, tba + 0.004 * j, m, 0.65, 0.12, rel=0.06, gain=0.34 if full else 0.28,
+                 pan=-0.2, send=0.2, length=1.0, tone=0.8)
+        play(ctx, upright_note, tba, N("C2"), 0.75, 0.15, rel=0.05, gain=0.5)
+        if full:
+            for j, m in enumerate((N("E3"), N("G3"), N("Bb3"), N("C4"))):
+                play(ctx, banjo_note, tba + 0.006 * j, m, 0.75, 0.12, rel=0.05, gain=0.5, pan=0.42, send=0.15,
+                     variant=j % 2)
+            x, res = snare(0.75, "stick", 1)
+            ctx.place(x, tba, 0.42 * res, -0.1, 0.15)
+            x, res = kick(0.6, "hard")
+            ctx.place(x, tba, 0.35 * res, 0.0, 0.0)
+        else:
+            x, res = brush_tap(0.8, variant=1)
+            ctx.place(x, tba, 0.7 * res, -0.1, 0.12)
+            x, res = kick(0.45, "soft")
+            ctx.place(x, tba, 0.3 * res, 0.0, 0.0)
+    # ---- THE BUTTON ("DUM") ----
     ctx.chords.append((H, C("F6")))
     ctx.note("chord", H, "F6 (button)")
-    F6 = [N("A4"), N("C5"), N("D5"), N("F5"), N("A5")]
-    for j, m in enumerate([N("F2"), N("F3")] + F6 + [N("F6")]):
-        play(ctx, piano_note, H + 0.003 * j, m, 0.9, 0.3, rel=0.12, gain=0.5, pan=-0.25 + 0.06 * j, send=0.25,
-             length=1.0, tone=0.8)
-    play(ctx, upright_note, H, N("F1"), 1.0, 0.35, rel=0.08, gain=0.75)
-    for j, m in enumerate([N("F3"), N("A3"), N("D4"), N("F4"), N("A4")]):
-        play(ctx, banjo_note, H + 0.007 * j, m, 0.9, 0.3, rel=0.08, gain=0.6, pan=0.42, send=0.2, variant=j % 2)
-    y = brass_note(N("F3"), 0.32, 0.9, "trombone", voices=1, seed=7, scoop=0.6, fall=0.0)
-    ctx.place(y, H, 0.55, 0.25, 0.3)
-    y = brass_note(N("A3"), 0.32, 0.85, "trombone", voices=1, seed=8, scoop=0.4)
-    ctx.place(y, H + 0.004, 0.4, 0.15, 0.3)
-    x, res = kick(1.0, "hard")
-    ctx.place(x, H, 0.85 * res, 0.0, 0.05)
-    x, res = snare(1.0, "stick", 2)
-    ctx.place(x, H, 0.55 * res, -0.1, 0.2)
-    x, res = crash(1.0, 0)
-    ctx.place(x, H, 0.75 * res, 0.35, 0.25)
-    x, res = crash(0.8, 1)
-    ctx.place(x, H + 0.004, 0.45 * res, -0.4, 0.25)
-    # natural decay into silence by the end of the cue
-    i0 = int((H + 0.18) * SR)
-    if i0 < ctx.n:
-        k = ctx.n - i0
-        w = (np.cos(np.linspace(0, np.pi / 2, k)) ** 1.5).astype(F32)[:, None]
-        ctx.dry[i0:] *= w
-        ctx.wet[i0:] *= w
+    if full:
+        F6v = [N("A4"), N("C5"), N("D5"), N("F5"), N("A5")]
+        # a dense, sustained tutti (loud for its peak) rather than one huge transient
+        for j, m in enumerate([N("F2"), N("F3")] + F6v + [N("F6")]):
+            play(ctx, piano_note, H + 0.003 * j, m, 1.0, 0.42, rel=0.12, gain=0.72, pan=-0.25 + 0.06 * j,
+                 send=0.25, length=1.0, tone=0.85)
+        play(ctx, upright_note, H, N("F1"), 1.0, 0.45, rel=0.08, gain=0.9)
+        play(ctx, upright_note, H + 0.004, N("F2"), 0.9, 0.45, rel=0.08, gain=0.5)
+        for j, m in enumerate([N("F3"), N("A3"), N("D4"), N("F4"), N("A4")]):
+            play(ctx, banjo_note, H + 0.007 * j, m, 1.0, 0.42, rel=0.08, gain=0.85, pan=0.42, send=0.2,
+                 variant=j % 2)
+        for m, gn, pn, sd in ((N("F3"), 0.95, 0.25, 7), (N("A3"), 0.7, 0.12, 8), (N("C4"), 0.62, 0.35, 9)):
+            y = brass_note(m, 0.44, 0.95, "trombone", voices=1, seed=sd, scoop=0.5)
+            ctx.place(y, H + 0.003 * (sd - 7), gn, pn, 0.3)
+        x, res = kick(1.0, "hard")
+        ctx.place(x, H, 0.85 * res, 0.0, 0.05)
+        x, res = snare(1.0, "stick", 2)
+        ctx.place(x, H, 0.6 * res, -0.1, 0.2)
+        x, res = crash(1.0, 0)
+        ctx.place(x, H, 0.8 * res, 0.35, 0.25)
+        x, res = crash(0.8, 1)
+        ctx.place(x, H + 0.004, 0.55 * res, -0.4, 0.25)
+        # the band is limited lower than the button, so the button is the cue's true peak
+        c = np.full(ctx.n, JAZZ_BAND_CEILING, dtype=np.float64)
+        c[max(0, int((H - 0.006) * SR)):] = 0.89
+        ctx.ceiling = c
+    else:
+        for j, m in enumerate([N("F2"), N("C3"), N("A4"), N("C5"), N("D5"), N("F5")]):
+            play(ctx, piano_note, H + 0.004 * j, m, 0.8, 0.28, rel=0.12, gain=0.42, pan=-0.25 + 0.06 * j,
+                 send=0.22, length=1.0, tone=0.7)
+        play(ctx, upright_note, H, N("F2"), 0.95, 0.32, rel=0.08, gain=0.7)
+        x, res = kick(0.75, "soft")
+        ctx.place(x, H, 0.55 * res, 0.0, 0.05)
+        x, res = brush_tap(1.0, variant=2)
+        ctx.place(x, H, 0.85 * res, -0.1, 0.15)
+        x, res = ride(0.7, variant=1)
+        ctx.place(x, H, 0.5 * res, 0.4, 0.2)
+    # ring-out.  jazz_end: the film ends at the picture cut, so the button is damped to
+    # -45 dB *at the cut* (linear-in-dB = a natural, choked decay) and the overhang past the
+    # picture is silent.  jazz_title: the overhang is build_audio's crossfade into the next
+    # cue, so the button rings on through it, reaching -45 dB at the end of the render.
+    cut = ctx.cut if full else ctx.D
+    ctx.flush_parts()
+    _ring_out(ctx, H + min(0.22, 0.45 * (cut - H)), cut, floor_db=45.0)
     ctx.anchors.update(bpm=bpm, bar=g.bar_s, final_hit=H, own_ending=True, first_downbeat=g.t(0, 0),
+                       stop_time=tb, tag_bar=tlast, picture_cut=ctx.cut,
                        bars=[g.t(b, 0) for b in range(-1, whole + 1) if 0 <= g.t(b, 0) <= ctx.D])
     return make_ir(1.15, 0.012, 0.5, seed=21, er_gain=0.7)
+
+
+def _ring_out(ctx, t0, t1, floor_db=45.0):
+    """Schedule the ending's damping (applied by _master to the *mixed* signal, after the
+    reverb, so the room tail dies with the band): from t0 an exponential (linear-in-dB)
+    decay reaching -floor_db at t1, then a 15 ms cosine to true silence; zero after t1."""
+    i0 = int(max(0.0, t0) * SR)
+    i1 = int(min(ctx.D, max(t1, t0 + 0.02)) * SR)
+    if i0 >= ctx.n:
+        return
+    i1 = min(i1, ctx.n)
+    w = np.ones(ctx.n, dtype=np.float64)
+    w[i0:] = 0.0
+    k = i1 - i0
+    if k > 0:
+        x = np.arange(k) / k
+        w[i0:i1] = 10.0 ** (-floor_db * x ** 1.3 / 20.0)   # damping firms up as it goes
+        kf = min(k, int(0.015 * SR))
+        w[i1 - kf:i1] *= 0.5 + 0.5 * np.cos(np.linspace(0, np.pi, kf))
+    ctx.post_gain = w.astype(F32)
+
+
+def style_jazz_end(ctx):
+    return _jazz_with_ending(ctx, "jazz_end", full=True)
 
 
 # =============================================================================
@@ -2171,12 +2543,31 @@ def style_jazz_end(ctx):
 TENSION_CHART = ["Dm", "Dm(maj7)/C#", "Dm7/C", "Bm7b5", "Bbmaj7", "A7sus4|A7", "Dm", "A7b9"]
 TENSION_UP = [("F4", "A4"), ("F4", "A4"), ("F4", "A4"), ("F4", "A4"), ("F4", "A4"),
               ("E4", "G4"), ("F4", "A4"), ("E4", "G4")]
-TENSION_CELLO = [[(0, "F3", 8)], [], [(0, "E3", 8)], [], [(0, "D3", 4)], [(0, "D3", 2), (2, "C#3", 2)],
+# cello line: F (2 bars) -> D (2 bars, root of Dm7/C and 3rd of Bm7b5 -- an E here rubbed
+# a semitone against the bassoon's / pizzicato's F) -> F (5th of Bbmaj7) -> D, C# -> D -> E
+TENSION_CELLO = [[(0, "F3", 8)], [], [(0, "D3", 8)], [], [(0, "F3", 4)], [(0, "D3", 2), (2, "C#3", 2)],
                  [(0, "D3", 4)], [(0, "E3", 4)]]
 TENSION_BASSOON = {2: "1 D3 .5; 1.5 E3 .5; 2 F3 .5; 3 E3 .5; 3.5 C3 .5",
                    3: "0 B2 1; 1.5 D3 .5; 2 F3 .5; 2.5 A3 .5; 3 G#3 .5; 3.5 A3 .5",
                    6: "1 A2 .5; 1.5 D3 .5; 2 F3 .5; 2.5 A3 1",
                    7: "0 G3 .5; .5 E3 .5; 1 C#3 .5; 1.5 Bb2 1; 3 A2 .5"}
+RUB_IVS = (1, 13)          # minor 2nd / minor 9th: the intervals sustained parts must not hold
+
+
+def rubs(m, t0, t1, book, min_ov=0.1, ivs=RUB_IVS, skip=None):
+    """Entries of `book` [(t0, t1, midi, part)] overlapping [t0, t1] by >= min_ov seconds
+    that make one of the intervals `ivs` (absolute semitones) with midi note m."""
+    return [b for b in book if b[3] != skip and min(t1, b[1]) - max(t0, b[0]) >= min_ov
+            and abs(m - b[2]) in ivs]
+
+
+def safe_pitch(m, t0, t1, book, pcs, lo, hi, **kw):
+    """m if it does not rub against `book` over [t0, t1], else the nearest pitch in [lo, hi]
+    whose pitch class is in pcs and which does not; None if there is none."""
+    if not rubs(m, t0, t1, book, **kw):
+        return m
+    cands = [x for x in range(lo, hi + 1) if x % 12 in pcs and not rubs(x, t0, t1, book, **kw)]
+    return min(cands, key=lambda x: (abs(x - m), x)) if cands else None
 
 
 def style_tension(ctx):
@@ -2187,8 +2578,69 @@ def style_tension(ctx):
     def chart(bar):
         return bar_chords(TENSION_CHART[bar % 8])
 
+    def tones_over(t0, t1):
+        """Pitch classes common to every chord sounding over [t0, t1)."""
+        pcs = None
+        for bar in range(max(0, int((t0 - g.offset) // g.bar_s) - 1), nb + 1):
+            for (b, c) in chart(bar):
+                cs, ce = g.t(bar, b), g.t(bar, b + 4.0 / len(chart(bar)))
+                if ce > t0 + 0.05 and cs < t1 - 0.05:
+                    pcs = set(c.tones) if pcs is None else pcs & set(c.tones)
+        return pcs or set()
+
     _log_chart(ctx, g, nb, chart)
     ctx.anchors.update(bpm=92, bar=g.bar_s)
+    # Every sustained part goes into one book, in order of priority (bassoon tune, cello
+    # line, drone, pizzicato); each later part is kept out of m2/m9 rubs with the earlier.
+    book = []
+    bassoon = {}
+    for bar in range(2, nb):
+        bs = TENSION_BASSOON.get(bar % 8)
+        if not bs or g.t(bar, 0) > ctx.D:
+            continue
+        ns = _melody_to_phrases(ctx, g, bar, bs, vel=0.7)
+        for nt in ns:
+            nt["d"] = min(nt["d"], g.beat_s * 0.42) if nt["d"] < g.beat_s * 0.6 else nt["d"] * 0.9
+            nt["release"] = 0.05
+            book.append((nt["t"], nt["t"] + nt["d"] + 0.05, nt["m"], "bassoon"))
+        bassoon[bar] = ns
+    cello = []
+    for bar in range(4, nb):
+        for (b, nm, d) in TENSION_CELLO[bar % 8]:
+            t0 = g.t(bar, b)
+            if t0 > ctx.D:
+                continue
+            L = g.d(bar, b, d) * 0.97
+            m = safe_pitch(N(nm), t0, t0 + L + 0.15, book, tones_over(t0, t0 + L), N("C3"), N("A3"))
+            if m is not None:
+                cello.append((t0, L, m))
+                book.append((t0, t0 + L + 0.15, m, "cello"))
+    drone = []
+    for bar in range(0, nb, 2):
+        k = bar % 8
+        t0 = g.t(bar, 0)
+        if t0 > ctx.D:
+            break
+        for m, gn in ((N("D2"), 0.55), (N("A2"), 0.22 if k != 4 else 0.0)):
+            if gn == 0:
+                continue
+            L = g.bar_s * 2
+            if rubs(m, t0, t0 + L + 0.3, book):
+                L = g.bar_s            # re-bow after one bar instead of holding into the rub
+                if rubs(m, t0, t0 + L + 0.3, book):
+                    continue
+            drone.append((t0, L, m, gn, k))
+            book.append((t0, t0 + L + 0.3, m, "drone"))
+    for (t0, L, m, gn, k) in drone:
+        ctx.part = "drone"
+        y = bowed_note(m, L, 0.6, "bass", attack=1.2, release=0.8, voices=3, vib=5.0, seed=k)
+        ctx.place(y, t0, gn, 0.0, 0.15)
+    for (t0, L, m) in cello:
+        ctx.part = "cello"
+        y = bowed_note(m, L, 0.55, "cello", attack=0.6, release=0.5, voices=2, vib=9.0, seed=int(m))
+        ctx.place(y, t0, 0.36, -0.15, 0.3)
+        ctx.note("cello", t0, f"{nname(m)} {L:.2f}s")
+
     for bar in range(nb):
         k = bar % 8
         cyc = bar // 8
@@ -2202,40 +2654,41 @@ def style_tension(ctx):
             x, res = woodblock(0.42 + 0.05 * (b % 2 == 0) + ctx.hum(0.02, 0.03), high=(b % 2 == 0),
                                variant=int(rng.integers(3)))
             ctx.place(x, g.t(bar, b), 0.32 * res, -0.35 if b % 2 == 0 else 0.35, 0.12)
-        # contrabass drone, re-bowed every 2 bars
-        ctx.part = "drone"
-        if k % 2 == 0:
-            for m, gn in ((N("D2"), 0.55), (N("A2"), 0.22)):
-                y = bowed_note(m, g.bar_s * 2, 0.6, "bass", attack=1.2, release=0.8, voices=3, vib=5.0, seed=k)
-                ctx.place(y, t0, gn, 0.0, 0.25)
         # pizzicato: bass line on 1 & 3, tiptoe chord tones on 2 & 4 ... and creeping pickups
         ctx.part = "pizz"
-        bass_pc = cb[0][1].bass
-        lb = nearest(bass_pc, N("C3"), N("A2"), N("D3"))
+        c0 = cb[0][1]
+        lb = nearest(c0.bass, N("C3"), N("A2"), N("D3"))
         up1, up2 = N(TENSION_UP[k][0]), N(TENSION_UP[k][1])
-        seq = [(0, lb, 0.75), (1, up1, 0.5), (2, lb + 7 if lb + 7 < up1 else lb + 12, 0.55), (3, up2, 0.5)]
+        # beat 3: the chord's own fifth (F over Bm7b5, A over Dm(maj7)/C#), never bass + 7
+        fifth = nearest(c0.fifth, lb + 7, lb + 3, lb + 9)
+        seq = [(0, lb, 0.75), (1, up1, 0.5), (2, fifth if fifth < up1 else fifth - 12, 0.55), (3, up2, 0.5)]
         if len(cb) > 1:
             seq[2] = (2, nearest(cb[1][1].bass, lb, N("G2"), N("D3")), 0.55)
         if bar == 0:
             seq = [seq[0], seq[2]]
         for (b, m, v) in seq:
+            t = g.t(bar, b)
+            c = chord_at(cb, b)
+            # a pizz rings ~0.45 s: keep it out of m2/m9 rubs with the sustained parts
+            m = safe_pitch(m, t - 0.03, t + 0.45, book, set(c.tones), m - 7, m + 7, skip="pizz")
+            if m is None:
+                continue
+            book.append((t, t + 0.45, m, "pizz"))
             x, res = pizz_note(m, v + ctx.hum(0.04, 0.06), variant=int(rng.integers(2)))
-            ctx.place(x, g.t(bar, b) + ctx.hum(0.006), 0.85 * res, -0.2 if m < 55 else 0.25, 0.25)
+            ctx.place(x, t + ctx.hum(0.006), 0.85 * res, -0.2 if m < 55 else 0.25, 0.25)
         if k in (3, 7) or (cyc > 0 and k == 5):
+            # creeping chromatic pickup into the next bass note (a whole step if the half step
+            # would ring against a sustained part entering on that note)
             nxt = nearest(chart(bar + 1)[0][1].bass, lb, N("A2"), N("D3"))
-            x, res = pizz_note(nxt - 1, 0.4)
-            ctx.place(x, g.t(bar, 3.5) + ctx.hum(0.006), 0.7 * res, -0.2, 0.25)
+            tp = g.t(bar, 3.5)
+            mp = next((x for x in (nxt - 1, nxt - 2) if not rubs(x, tp, tp + 0.45, book, skip="pizz")), None)
+            if mp is not None:
+                x, res = pizz_note(mp, 0.4)
+                ctx.place(x, tp + ctx.hum(0.006), 0.7 * res, -0.2, 0.25)
         if bar >= 1 and k in (1, 3, 5, 7) and cyc >= 0:
             ctx.part = "timp"
             x, res = timpani(N("D2") if k != 7 else N("A1"), 0.32 + 0.05 * cyc)
-            ctx.place(x, g.t(bar, 0), 0.45 * res, 0.0, 0.3)
-        # bowed cello creeping line (from bar 4)
-        if bar >= 4:
-            ctx.part = "cello"
-            for (b, nm, d) in TENSION_CELLO[k]:
-                y = bowed_note(N(nm), g.d(bar, b, d) * 0.97, 0.55, "cello", attack=0.6, release=0.5,
-                               voices=2, vib=9.0, seed=k)
-                ctx.place(y, g.t(bar, b), 0.36, -0.15, 0.3)
+            ctx.place(x, g.t(bar, 0), 0.45 * res, 0.0, 0.2)
         # high violins harmonic (second time round)
         if cyc >= 1 and k % 4 == 0:
             ctx.part = "violins"
@@ -2243,20 +2696,16 @@ def style_tension(ctx):
                            vib=4.0, seed=bar, bright=0.3)
             ctx.place(y, t0, 0.1, 0.3, 0.45)
         # sneaky staccato bassoon answers the pizzicato (bars 3-4 and 7-8 of the cycle)
-        bs = TENSION_BASSOON.get(k)
-        if bs and (bar >= 2):
+        ns = bassoon.get(bar)
+        if ns:
             ctx.part = "bassoon"
-            ns = _melody_to_phrases(ctx, g, bar, bs, vel=0.7)
-            for nt in ns:
-                nt["d"] = min(nt["d"], g.beat_s * 0.42) if nt["d"] < g.beat_s * 0.6 else nt["d"] * 0.9
-                nt["release"] = 0.05
             _log_melody(ctx, ns, "bassoon")
             for ph_ in _split_phrases(ns, gap=0.6):
                 t0b, yb = bassoon_phrase(ph_, rng)
                 ctx.place(yb, t0b, 0.55, 0.15, 0.3)
         if k == 7:
             ctx.part = "glock"
-            for m in (N("G#5"), N("D6")):
+            for m in (N("C#6"), N("G6")):   # the A7 tritone, resolving into the Dm
                 x, res = glock_note(m, 0.4)
                 ctx.place(release_tail(x, 0.6, 0.3), g.t(bar, 3.5), 0.12 * res, 0.4, 0.4)
     return make_ir(1.9, 0.02, 0.7, seed=31)
@@ -2267,25 +2716,72 @@ def style_tension(ctx):
 # =============================================================================
 THERAPY_CHART = ["Gm", "Gm/F", "Ebmaj7", "D7sus4|D7", "Cm7", "F7", "Bbmaj7", "A7b5|D7",
                  "Gm", "Gm/F", "Em7b5", "A7b9", "Cm6", "D7b9", "Gm", "D7sus4|D7"]
-THERAPY_MEL = ["1 Bb4 .5; 1.5 C5 .5; 2 D5 2", "0 Eb5 1.5; 1.5 D5 .5; 2 Bb4 1; 3 A4 1", "0 G4 3", "3 D5 1",
-               "0 Eb5 1.5; 1.5 D5 .5; 2 C5 1; 3 Bb4 1", "0 A4 3", "1 D5 .5; 1.5 F5 .5; 2 A5 2",
-               "0 G5 1.5; 1.5 Eb5 .5; 2 D5 1; 3 C5 1", "0 Bb4 3.5", "",
-               "1 G4 .5; 1.5 Bb4 .5; 2 D5 1; 3 E5 1", "0 C#5 2; 2 Bb4 1; 3 A4 1",
-               "0 A4 1; 1 C5 .5; 1.5 Eb5 .5; 2 G5 2", "0 F#5 1; 1 Eb5 1; 2 C5 1; 3 A4 1",
-               "0 Bb4 2; 2 A4 .5; 2.5 G4 1.5", ""]
+# The clarinet sings 1-2 bar phrases and *breathes* (rests >= ~0.3 beat) between them; the
+# piano answers in the clarinet's rests (bars 3, 6-7, 9 and 15 of the 16-bar form).
+THERAPY_MEL = ["1 Bb4 .5; 1.5 C5 .5; 2 D5 1.55",
+               "0 Eb5 1.5; 1.5 D5 .5; 2 Bb4 1; 3 A4 1",
+               "0 G4 2.6",
+               "3 D5 1",
+               "0 Eb5 1.5; 1.5 D5 .5; 2 C5 1; 3 Bb4 .65",
+               "0 A4 2.6",
+               "",
+               "",
+               "0 Bb4 3",
+               "",
+               "1 G4 .5; 1.5 Bb4 .5; 2 D5 1; 3 E5 .65",
+               "0 C#5 2; 2 Bb4 1; 3 A4 .65",
+               "0 A4 1; 1 C5 .5; 1.5 Eb5 .5; 2 G5 1.6",
+               "0 F#5 1; 1 Eb5 1; 2 C5 1; 3 A4 .65",
+               "0 Bb4 2; 2 A4 .5; 2.5 G4 1.4",
+               ""]
 THERAPY_FILLS = {2: "3 Bb4 .5; 3.5 G4 .5", 5: "3 C5 .5; 3.5 Eb5 .5", 3: "0 A4 .5; .5 D5 .5; 1 G5 1; 2 F#5 1",
                  9: "0 D5 .5; .5 F5 .5; 1 A5 1.5; 2.5 G5 .5; 3 F5 1",
                  15: "0 G4 .5; .5 C5 .5; 1 D5 1; 2 C5 .5; 2.5 A4 .5; 3 F#4 1"}
+# the piano takes the tune itself while the clarinet rests
+THERAPY_PIANO_MEL = {6: "1 D5 .5; 1.5 F5 .5; 2 A5 2", 7: "0 G5 1.5; 1.5 Eb5 .5; 2 D5 1; 3 C5 1"}
 
 
-def _therapy_rubato(b):
-    x = (b % 8) / 8.0
-    return 1.0 + 0.05 * math.sin(TWO_PI * x) - 0.16 * math.exp(-((x - 0.93) / 0.06) ** 2)
+def _therapy_rubato_fn(seed):
+    """Seeded rubato: every 2-bar phrase gets its own tempo, push/pull (random phase),
+    a ritardando into its last beat and sometimes a mid-phrase linger."""
+    rng = rng_for("therapy-rubato", seed)
+    P = 64
+    base = rng.uniform(0.95, 1.05, P)
+    amp = rng.uniform(0.02, 0.07, P)
+    phs = rng.uniform(-1.6, 1.6, P)
+    rit = rng.uniform(0.06, 0.2, P)
+    pos = rng.uniform(0.86, 0.95, P)
+    rit2 = rng.uniform(0.0, 0.11, P) * (rng.random(P) < 0.5)
+    pos2 = rng.uniform(0.38, 0.5, P)
+
+    def f(b):
+        p = int(b // 8) % P
+        x = (b % 8) / 8.0
+        v = (base[p] * (1.0 + amp[p] * math.sin(TWO_PI * x + phs[p]))
+             - rit[p] * math.exp(-((x - pos[p]) / 0.06) ** 2)
+             - rit2[p] * math.exp(-((x - pos2[p]) / 0.05) ** 2))
+        return max(v, 0.6)
+    return f
+
+
+def _phrase_arch(ph, base=0.5, rise=0.2, taper=0.45):
+    """Phrase-level dynamics: crescendo to the phrase's peak note, diminuendo after it, and
+    taper the last note away."""
+    n = len(ph)
+    if not n:
+        return
+    pk = max(range(n), key=lambda i: (ph[i]["m"] + 3.0 * min(ph[i]["d"], 1.5), -i))
+    for i, nt in enumerate(ph):
+        x = (i + 1) / (pk + 1) if i <= pk else 1.0 - (i - pk) / (n - pk)
+        nt["v"] = base + rise * smoothstep(x) + nt.get("v_jit", 0.0)
+    ph[-1]["taper"] = taper
+    if n == 1:
+        ph[0]["v"] = base + rise * 0.6
 
 
 def style_therapy(ctx):
-    g = _grid_for("therapy", ctx.D)
-    nb = _bars_needed(ctx, g)
+    g = _grid_for("therapy", ctx.D, seed=ctx.seed)
+    nb = _bars_needed(ctx, g, extra=3)
     rng = ctx.rng
 
     def chart(bar):
@@ -2305,45 +2801,94 @@ def style_therapy(ctx):
         if nxt is not None and nxt["t"] - (nt["t"] + nt["d"]) < 0.08:
             nt["d"] = nxt["t"] - nt["t"]
             nxt["slur"] = rng.random() < 0.7
-        nt["v"] = 0.55 + 0.12 * min(1.0, nt["d"] / 1.5) + float(rng.normal(0, 0.03))
-        nt["swell"] = 0.25 if nt["d"] > 0.9 else 0.0
+        nt["v_jit"] = float(rng.normal(0, 0.02))
+        nt["swell"] = 0.22 if nt["d"] > 0.9 else 0.0
         nt["vib"] = 12.0 if nt["d"] > 0.8 else 0.0
-        nt["release"] = 0.25
+        nt["release"] = 0.22
         nt["attack"] = 0.06
+    phrases = _split_phrases(notes, gap=0.2)
+    for ph in phrases:
+        _phrase_arch(ph, base=0.47, rise=0.2, taper=0.5)
     _log_melody(ctx, notes, "clarinet")
     ctx.part = "clarinet"
-    for ph in _split_phrases(notes, gap=0.25):
+    for ph in phrases:
         t0, y = clarinet_phrase(ph, rng, vib_depth=12.0, vib_rate=5.0, bright=0.45, breath=0.05)
-        ctx.place(y, t0, 0.62, 0.1, 0.32)
-    # piano
+        ctx.place(y, t0, 0.55, 0.1, 0.32)
+    tune = [(nt["t"], nt["d"], nt["m"]) for nt in notes]
+    # ---- piano.  Played with the sustain pedal: every chord rings until the next chord
+    # (pedal change ~0.1 s after it), the left hand re-strikes softly at mid-bar (half-pedal),
+    # and the right hand's answers are pedalled legato.  The voicings keep clear of every
+    # melody note sounding over them (no m2/m9 under the clarinet or the piano's own tune).
     ctx.part = "piano"
-    prev = None
+    TONE, LEN = 0.3, 8.0
+    pmel = []      # the piano's own tune: (t, d, m, vel, is_answer)
+    for bar in range(nb):
+        if g.t(bar, 0) > ctx.D:
+            break
+        k = bar % 16
+        fill = THERAPY_FILLS.get(k)
+        if fill:
+            for nt in _melody_to_phrases(ctx, g, bar, fill, vel=0.32):
+                pmel.append((nt["t"], nt["d"], nt["m"] + 12 if nt["m"] < 64 else nt["m"], 0.3, False))
+        pm = THERAPY_PIANO_MEL.get(k)
+        if pm:   # the answer: the tune in the piano's right hand, singing a little louder
+            pn = _melody_to_phrases(ctx, g, bar, pm, vel=0.4)
+            _log_melody(ctx, pn, "piano")
+            for i, nt in enumerate(pn):
+                arch = 0.06 * math.sin(math.pi * (i + 0.5) / len(pn))
+                pmel.append((nt["t"], nt["d"], nt["m"], 0.36 + arch, True))
+    pmel.sort(key=lambda x: x[0])
+    tune_all = tune + [(t, d, m) for (t, d, m, v, a) in pmel]
+    segs = []      # (t_start, t_end, chord, bar, beat, beats)
     for bar in range(nb):
         cb = chart(bar)
         if g.t(bar, 0) > ctx.D:
             break
         for (b, c) in cb:
             seg = 4.0 / len(cb)
-            t = g.t(bar, b) + ctx.hum(0.008)
-            m = nearest(c.bass, N("D2"), N("C2"), N("C3"))
-            play(ctx, piano_note, t, m, 0.38, g.d(bar, b, seg) + 0.3, rel=0.5, gain=0.5, pan=-0.3, send=0.3,
-                 length=4.0, tone=0.25)
-            v = voice(c.comp, 55, 70, prev, center=62)
-            prev = v
-            for j, mm in enumerate(v):
-                tr = g.t(bar, b + 0.5) + 0.07 * j + ctx.hum(0.01)
-                play(ctx, piano_note, tr, mm, 0.26 + 0.03 * j + ctx.hum(0.02, 0.04), g.d(bar, b + 0.5, seg - 0.5) + 0.2,
-                     rel=0.6, gain=0.42, pan=-0.2 + 0.08 * j, send=0.32, length=4.0, tone=0.25)
-            if seg >= 4 and rng.random() < 0.5 and not THERAPY_FILLS.get(bar % 16):
-                mm = v[min(len(v) - 1, 1 + int(rng.integers(len(v) - 1)))] + 12
-                play(ctx, piano_note, g.t(bar, 2.5) + ctx.hum(0.01), mm, 0.22, g.d(bar, 2.5, 1.5), rel=0.6,
-                     gain=0.35, pan=0.1, send=0.35, length=3.0, tone=0.25)
-        fill = THERAPY_FILLS.get(bar % 16)
-        if fill:
-            for nt in _melody_to_phrases(ctx, g, bar, fill, vel=0.32):
-                play(ctx, piano_note, nt["t"] + ctx.hum(0.01), nt["m"] + 12 if nt["m"] < 64 else nt["m"],
-                     0.3 + ctx.hum(0.03, 0.05), nt["d"] * 1.1, rel=0.5, gain=0.45, pan=0.05, send=0.35,
-                     length=3.0, tone=0.3)
+            segs.append((g.t(bar, b), g.t(bar, b + seg), c, bar, b, seg))
+    prev = None
+    for (ts, te, c, bar, b, seg) in segs:
+        k = bar % 16
+        answering = k in THERAPY_PIANO_MEL or k in THERAPY_FILLS
+        hold = te - ts + 0.1                      # pedal change just after the next chord
+        # left hand: the bass note, pedalled through the chord
+        m = nearest(c.bass, N("D2"), N("C2"), N("C3"))
+        play(ctx, piano_note, ts + ctx.hum(0.008), m, 0.38, hold, rel=0.35, gain=0.5, pan=0.0,
+             send=0.08, length=LEN, tone=TONE)
+        if seg >= 4:   # half-pedal: a soft fifth (or octave) re-struck at mid-bar keeps the bed alive
+            th = g.t(bar, b + 2)
+            m5 = nearest(c.fifth, m + 7, m + 3, m + 9)
+            if any(a - m5 in (1, 13) for a in sounding(tune_all, th, te, min_d=0.3)):
+                m5 = m + 12
+            play(ctx, piano_note, th + ctx.hum(0.01), m5, 0.27, te - th + 0.1, rel=0.35, gain=0.42,
+                 pan=0.0, send=0.08, length=LEN, tone=TONE)
+        # right hand: rolled chord on the off-beat, pedalled to the next chord
+        tr0 = g.t(bar, b + 0.5)
+        v = voice(c.comp, 55, 70, prev, center=62, avoid=sounding(tune_all, tr0, te, min_d=0.3))
+        prev = v
+        for j, mm in enumerate(v):
+            tr = tr0 + 0.07 * j + ctx.hum(0.01)
+            play(ctx, piano_note, tr, mm, 0.24 + 0.03 * j + ctx.hum(0.02, 0.04), te - tr + 0.1,
+                 rel=0.4, gain=0.4, pan=-0.2 + 0.08 * j, send=0.3, length=LEN, tone=TONE)
+        if seg >= 4 and rng.random() < 0.5 and not answering:
+            mm = v[min(len(v) - 1, 1 + int(rng.integers(len(v) - 1)))] + 12
+            th = g.t(bar, b + 2.5)
+            if not any(a - mm in (1, 13) or mm - a == 1 for a in sounding(tune_all, th, te, min_d=0.2)):
+                play(ctx, piano_note, th + ctx.hum(0.01), mm, 0.22, te - th + 0.1, rel=0.4,
+                     gain=0.35, pan=0.1, send=0.32, length=LEN, tone=TONE)
+    # the piano's tune (answers + fills), pedalled legato: each note holds into the next one
+    # and the last note of a group rings to the next pedal change
+    changes = [x[1] for x in segs]
+    for i, (t, d, m, vel, ans) in enumerate(pmel):
+        nxt = pmel[i + 1][0] if i + 1 < len(pmel) else None
+        pedal = next((ce for ce in changes if ce > t + d - 0.05), t + d) + 0.1
+        if nxt is not None and nxt - (t + d) < 0.3:      # inside a group: legato into the next note
+            hold = max(d * 1.05, min(nxt + 0.08, pedal) - t)
+        else:                                          # last of a group: rings to the pedal change
+            hold = max(d * 1.05, pedal - t)
+        play(ctx, piano_note, t + ctx.hum(0.012 if ans else 0.01), m, vel + ctx.hum(0.02, 0.04), hold,
+             rel=0.45, gain=0.55 if ans else 0.45, pan=0.05, send=0.33, length=LEN, tone=TONE)
     return make_ir(1.7, 0.018, 0.65, seed=41)
 
 
@@ -2390,11 +2935,16 @@ def style_montage(ctx):
 
     _log_chart(ctx, g, nb, chart)
     ctx.anchors.update(bpm=128, bar=g.bar_s, melody_in=g.t(intro, 0))
-    # whistle melody
+    # whistle melody.  The whistler states the 4-bar hook, then the tune becomes
+    # call-and-response: whistle on the even bars, the banjo answers the odd bars an octave
+    # lower.  Keeps the 0.6-1.3 kHz speech band clear half the time once dialogue can land.
+    def response(k):
+        return k is not None and k >= 4 and k % 2 == 1
+
     notes = []
     for bar in range(nb):
         k = k_of(bar)
-        if k is None:
+        if k is None or response(k):
             continue
         notes += _melody_to_phrases(ctx, g, bar, MONTAGE_MEL[k], vel=0.75)
     notes = [n for n in notes if n["t"] < ctx.D]
@@ -2407,7 +2957,8 @@ def style_montage(ctx):
     ctx.part = "whistle"
     for ph in _split_phrases(notes, gap=0.2):
         t0, y = whistle_phrase(ph, rng)
-        ctx.place(y, t0, 0.5, 0.08, 0.25)
+        hook = k_of(ph[0]["beat"][0]) < 4    # the first statement of the hook is featured
+        ctx.place(y, t0, 0.5 * (1.33 if hook else 1.0), 0.08, 0.25)
     # glockenspiel doubles the second half
     ctx.part = "glock"
     for nt in notes:
@@ -2441,6 +2992,19 @@ def style_montage(ctx):
     roll = [2, 1, 0, 2, 1, 0, 2, 0]
     for bar in range(5, nb):
         cb = chart(bar)
+        if response(k_of(bar)):
+            ans = _melody_to_phrases(ctx, g, bar, MONTAGE_MEL[k_of(bar)], transpose=-12, vel=0.7)
+            _log_melody(ctx, ans, "banjo")
+            for i, nt in enumerate(ans):
+                if nt["t"] > ctx.D:
+                    break
+                acc = 0.08 * (abs(nt["beat"][1] % 1) < 1e-6)
+                play(ctx, banjo_note, nt["t"] + ctx.hum(0.004), nt["m"], 0.68 + acc + ctx.hum(0.03, 0.05),
+                     nt["d"] * 0.9, rel=0.12, gain=0.62, pan=-0.3, send=0.18, variant=i % 2)
+                if nt["d"] >= g.beat_s * 0.9:   # banjo players fill long notes with a quick re-pick
+                    play(ctx, banjo_note, g.t(nt["beat"][0], nt["beat"][1] + 0.5), nt["m"], 0.5, nt["d"] * 0.45, rel=0.1,
+                         gain=0.5, pan=-0.3, send=0.18, variant=(i + 1) % 2)
+            continue
         for e in range(8):
             b = e * 0.5
             t = g.t(bar, b)
@@ -2449,28 +3013,40 @@ def style_montage(ctx):
             c = chord_at(cb, b)
             v3 = voice(c.tones[:3], 55, 70, bprev, center=62, max_span=12)
             bprev = v3
-            strings = [N("G4")] + v3[::-1][:2]  # drone + two fretted
+            # 5th-string G drone + two fretted strings (the drone re-tunes to the chord's fifth
+            # when G would rub against it, e.g. against the F# of D7)
+            drone = N("G4") if 7 in c.allowed else nearest(c.fifth, N("G4"), N("E4"), N("B4"))
+            strings = [drone] + v3[::-1][:2]
             m = strings[roll[e]]
             play(ctx, banjo_note, t + ctx.hum(0.004), m, 0.55 + 0.12 * (e % 2 == 0) + ctx.hum(0.04, 0.06),
                  g.beat_s * 0.9, rel=0.1, gain=0.6, pan=-0.4, send=0.15, variant=e % 2)
-    # bouncy bass
+    # bouncy bass: root on 1, fifth on 3, and a chromatic walk-up into the next downbeat.  The
+    # walk-up aims at the octave the next downbeat will actually be played in (same rule as
+    # the downbeat), approaching from below when that stays in range, else from above.
     ctx.part = "bass"
+    LO, HI = N("C2"), N("E3")
+
+    def downbeat_note(c):
+        return nearest(c.bass, N("G2"), LO, HI)
     last = N("G2")
     for bar in range(nb):
         cb = chart(bar)
         for (b, kind) in ((0, "R"), (2, "F")):
             c = chord_at(cb, b)
-            pc = c.bass if (kind == "R" or len(cb) > 1) else (c.fifth if c.bass == c.root else c.root)
-            m = nearest(pc, last if kind == "F" else N("G2"), N("C2"), N("E3"))
+            if kind == "R" or len(cb) > 1:
+                m = downbeat_note(c) if kind == "R" else nearest(c.bass, last, LO, HI)
+            else:
+                m = nearest(c.fifth if c.bass == c.root else c.root, last, LO, HI)
             last = m
             play(ctx, upright_note, g.t(bar, b) + ctx.hum(0.003), m, 0.82, g.beat_s * 0.55, rel=0.05,
                  gain=0.6, pan=0.0, send=0.06)
         nxt = chart(bar + 1)[0][1]
         if bar % 2 == 1 or chart(bar)[-1][1].sym != nxt.sym:
-            tgt = nearest(nxt.bass, last, N("C2"), N("E3"))
-            for (b, mm) in ((3, tgt - 2 if tgt - 2 != last else tgt + 2), (3.5, tgt - 1)):
-                play(ctx, upright_note, g.t(bar, b) + ctx.hum(0.003), mm, 0.6, g.beat_s * 0.4, rel=0.04,
-                     gain=0.5, pan=0.0, send=0.06)
+            tgt = downbeat_note(nxt)
+            step = -1 if tgt - 2 >= LO else 1          # approach from below unless out of range
+            for (b, mm) in ((3, tgt + 2 * step), (3.5, tgt + step)):
+                play(ctx, upright_note, g.t(bar, b) + ctx.hum(0.003), int(np.clip(mm, LO, HI)), 0.6,
+                     g.beat_s * 0.4, rel=0.04, gain=0.5, pan=0.0, send=0.06)
     # drums: kick 1 & 3, claps 2 & 4, shaker 8ths
     ctx.part = "drums"
     for bar in range(nb):
@@ -2480,16 +3056,16 @@ def style_montage(ctx):
                 break
             if b in (0, 2):
                 x, res = kick(0.7, "soft")
-                ctx.place(x, t, 0.55 * res, 0.0, 0.0)
+                ctx.place(x, t, 0.33 * res, 0.0, 0.0)
             elif bar >= intro:
                 x, res = clap(0.8 + ctx.hum(0.04, 0.08), variant=int(rng.integers(3)))
-                ctx.place(x, t + ctx.hum(0.003), 0.9 * res, 0.0, 0.3)
+                ctx.place(x, t + ctx.hum(0.003), 0.8 * res, 0.0, 0.3)
                 x, res = snare(0.3, "stick", variant=int(rng.integers(3)))
                 ctx.place(x, t, 0.18 * res, -0.1, 0.1)
             for h in (0, 0.5):
                 if bar >= intro:
                     x, res = shaker(0.55 if h == 0 else 0.4, variant=int(rng.integers(3)))
-                    ctx.place(x, g.t(bar, b + h) + ctx.hum(0.003), 0.38 * res, 0.45, 0.08)
+                    ctx.place(x, g.t(bar, b + h) + ctx.hum(0.003), 0.3 * res, 0.45, 0.08)
         if bar % 8 == 7 and bar >= intro:
             for h in (3.5, 3.75):
                 x, res = clap(0.6, variant=1)
@@ -2522,11 +3098,18 @@ def style_serene(ctx):
         x = i / (len(gl) - 1)
         t = T * (1 - (1 - x) ** 1.7) * 0.95
         play(ctx, harp_note, t, m, 0.35 + 0.35 * x, None, gain=0.5, pan=-0.5 + x, send=0.5, variant=i % 2)
+    # the chill theme (vibes) is planned first so the harp, pad and choir keep out of its way;
+    # a vibes note rings ~0.8 s past its written length
+    mel = []
+    for bar in range(intro, nb):
+        mel += _melody_to_phrases(ctx, g, bar, SERENE_MEL[(bar - intro) % 8], vel=0.5)
+    tune = [(nt["t"], nt["d"] + 0.8, nt["m"]) for nt in mel]
     for bar in range(nb):
         cb = chart(bar)
         for (b0, c) in cb:
             seg = 4.0 / len(cb)
-            pcs = c.tones[1:] + [c.root]
+            ts = g.t(bar, b0)
+            pcs = _melody_safe_pcs(c.tones[1:] + [c.root], sounding(tune, ts, g.t(bar, b0 + seg) + 1.0), 3)
             arp = sorted({nearest(pc, ref, N("F#3"), N("A5")) for pc in pcs for ref in (N("A3"), N("E4"), N("B4"))})
             arp = arp[:7]
             seq = arp + arp[-2:0:-1]
@@ -2551,15 +3134,16 @@ def style_serene(ctx):
             if t > ctx.D:
                 break
             dur = g.d(bar, b0, seg)
+            snd = sounding(tune, t, t + dur + 0.4)
             ctx.part = "pad"
-            v = voice(c.comp, 50, 70, prev, center=60)
+            v = voice(c.comp, 50, 70, prev, center=60, avoid=snd)
             prev = v
             for j, m in enumerate(v):
                 y = pad_note(m, dur + 0.4, 0.55, voices=4, attack=1.6 if bar else 2.2, release=2.0, fc=2000,
                              seed=j)
-                ctx.place(y, t, 0.55, -0.45 + 0.3 * j, 0.5)
+                ctx.place(y, t, 0.55, PAD_PANS[j % len(PAD_PANS)], 0.38)
             ctx.part = "choir"
-            cv = voice(c.comp, 62, 77, cprev, center=69, max_span=14)
+            cv = voice(c.comp, 62, 77, cprev, center=69, max_span=14, avoid=snd)
             cprev = cv
             for j, m in enumerate(cv[-3:]):
                 y = choir_note(m, dur + 0.3, 0.6, "a", voices=3, attack=1.8 if bar else 2.5, release=2.0, seed=j)
@@ -2568,12 +3152,9 @@ def style_serene(ctx):
             x, _ = sub_note(nearest(c.bass, N("D2"), N("A1"), N("G#2")), dur + 1.5)
             y = x.copy()
             y *= smoothstep(np.arange(len(y), dtype=F32) / (0.8 * SR))
-            ctx.place(release_tail(y, dur + 0.2, 0.5), t, 0.5, 0.0, 0.1)
+            ctx.place(release_tail(y, dur + 0.2, 0.5), t, 0.5, 0.0, 0.04)
     # chill theme on vibes, slow
     ctx.part = "vibes"
-    mel = []
-    for bar in range(intro, nb):
-        mel += _melody_to_phrases(ctx, g, bar, SERENE_MEL[(bar - intro) % 8], vel=0.5)
     _log_melody(ctx, mel, "vibes")
     for nt in mel:
         if nt["t"] > ctx.D:
@@ -2621,16 +3202,19 @@ def style_action(ctx):
     notes = [n for n in notes if n["t"] < ctx.D]
     _log_melody(ctx, notes, "horns")
     ctx.part = "horns"
+    mel_t = []          # every sounding tune note (horns + trumpet doubling): the stabs avoid them
     for i, nt in enumerate(notes):
         nxt = notes[i + 1] if i + 1 < len(notes) else None
         d = min(nt["d"], (nxt["t"] - nt["t"]) if nxt else nt["d"]) * 0.92
         sec = (nt["beat"][0] % 16) >= 8
         y = brass_note(nt["m"], d, 0.8 if not sec else 0.9, "horn", voices=3, seed=i % 3, scoop=0.2)
         ctx.place(y, nt["t"] + ctx.hum(0.004), 0.62, -0.25, 0.3)
-        if sec:
-            y = brass_note(nt["m"] + 12 if nt["m"] < N("E5") else nt["m"], d, 0.7, "trumpet", voices=2,
-                           seed=i % 3, scoop=0.15)
+        mel_t.append((nt["t"], d + 0.1, nt["m"]))
+        if sec:  # B section: trumpets double the tune an octave up
+            mt = nt["m"] + 12 if nt["m"] < N("E5") else nt["m"]
+            y = brass_note(mt, d, 0.7, "trumpet", voices=2, seed=i % 3, scoop=0.15)
             ctx.place(y, nt["t"] + ctx.hum(0.004), 0.3, 0.25, 0.3)
+            mel_t.append((nt["t"], d + 0.1, mt))
     # low strings gallop ostinato
     ctx.part = "strings"
     for bar in range(nb):
@@ -2642,7 +3226,7 @@ def style_action(ctx):
             c = chord_at(cb, b)
             r = nearest(c.bass, N("D3"), N("A2"), N("G#3"))
             for (o, d, v) in ((0, 0.45, 0.95), (0.5, 0.2, 0.7), (0.75, 0.2, 0.75)):
-                for m, kind, gn in ((r, "cello", 0.45), (r - 12, "bass", 0.5)):
+                for m, kind, gn in ((r, "cello", 0.45), (r - 12, "bass", 0.4)):
                     y = bowed_note(m, g.beat_s * d, v, kind, attack=0.008, release=0.05, voices=2, vib=0.0,
                                    seed=int(o * 4), bright=0.9)
                     ctx.place(y, g.t(bar, b + o) + ctx.hum(0.003), gn, -0.1 if kind == "cello" else 0.1, 0.18)
@@ -2652,7 +3236,10 @@ def style_action(ctx):
                 y = bowed_note(m, g.beat_s * 0.22, 0.6 + 0.04 * i, "violin", attack=0.006, release=0.04,
                                voices=3, vib=0.0, seed=i % 2, bright=0.9)
                 ctx.place(y, g.t(bar, 2 + i * 0.25), 0.4, 0.3, 0.25)
-    # brass stabs (trumpets + trombones) in the melody's gaps
+    # brass stabs (trumpets + trombones) in the melody's gaps.  The beat-3.5 stab anticipates
+    # the next bar's chord while the tune may still hold the old chord's note, so every stab
+    # is voiced without the pitch classes a semitone from a sounding tune note (falling back
+    # to root + fifth): no A4/Bb4 or C#5/D5 crunches against the horns.
     ctx.part = "stabs"
     tprev = None
     for bar in range(nb):
@@ -2664,12 +3251,22 @@ def style_action(ctx):
             if t > ctx.D:
                 break
             c = chord_at(chart(bar + 1), 0) if b == 3.5 else chord_at(cb, b)
-            tv = voice(c.tones[:3], N("A4"), N("F5") + 4, tprev, center=N("D5"))
-            tprev = tv
-            for j, m in enumerate(tv):
-                y = brass_note(m, g.beat_s * d, 0.95, "trumpet", voices=1, seed=j, scoop=0.1)
-                ctx.place(y, t + 0.003 * j, 0.28, 0.2 + 0.1 * j, 0.25)
+            snd = sounding(mel_t, t, t + g.beat_s * d + 0.05, min_d=0.1, min_ov=0.03)
+
+            def ok(pc):
+                return not any((a - pc) % 12 in (1, 11) for a in snd)
+            pcs = [p_ for p_ in c.tones[:3] if ok(p_)]
+            if len(pcs) < 2:
+                pcs = [p_ for p_ in (c.root, c.fifth) if ok(p_)]
+            if pcs:
+                tv = voice(pcs, N("A4"), N("F5") + 4, tprev, center=N("D5"), avoid=snd)
+                tprev = tv
+                for j, m in enumerate(tv):
+                    y = brass_note(m, g.beat_s * d, 0.95, "trumpet", voices=1, seed=j, scoop=0.1)
+                    ctx.place(y, t + 0.003 * j, 0.28 * (1.0 if len(tv) > 2 else 1.15), 0.2 + 0.1 * j, 0.25)
             for m in (nearest(c.root, N("D3"), N("A2"), N("A3")), nearest(c.fifth, N("A3"), N("E3"), N("E4"))):
+                if not ok(m % 12):
+                    continue
                 y = brass_note(m, g.beat_s * d, 0.9, "trombone", voices=1, seed=5, scoop=0.1)
                 ctx.place(y, t, 0.3, -0.2, 0.25)
     # percussion
@@ -2681,19 +3278,20 @@ def style_action(ctx):
             break
         c = cb[0][1]
         tm = nearest(c.root, N("D2"), N("A1"), N("F2"))
+        # timpani: dampened after ~a beat so the low end doesn't pile up into a wash
         x, res = timpani(tm, 0.85)
-        ctx.place(x, t0, 0.7 * res, 0.0, 0.3)
+        ctx.place(release_tail(x, g.beat_s * 1.2, 0.18), t0, 0.62 * res, 0.0, 0.3)
         if bar % 2 == 1:
             x, res = timpani(nearest(c.fifth, N("A1"), N("F#1"), N("D2")), 0.7)
-            ctx.place(x, g.t(bar, 2), 0.55 * res, 0.0, 0.3)
+            ctx.place(release_tail(x, g.beat_s * 1.2, 0.18), g.t(bar, 2), 0.5 * res, 0.0, 0.3)
         if bar % 8 == 0 and bar > 0:
             x, res = crash(0.9, bar // 8 % 2)
             ctx.place(x, t0, 0.55 * res, -0.3, 0.3)
         for b in range(4):
             t = g.t(bar, b)
             if b in (0, 2) or (b == 3 and bar % 2 == 1):
-                x, res = kick(0.85, "hard")
-                ctx.place(x, t, 0.5 * res, 0.0, 0.0)
+                x, res = kick(0.85, "hard")   # short, punchy: no 50 Hz boom under the gallop
+                ctx.place(release_tail(x, 0.11, 0.05), t, (0.42 if b != 3 else 0.32) * res, 0.0, 0.0)
             if b in (1, 3):
                 x, res = snare(0.75 + ctx.hum(0.04, 0.06), "march", variant=int(rng.integers(3)))
                 ctx.place(x, t + ctx.hum(0.002), 0.5 * res, -0.08, 0.2)
@@ -2730,50 +3328,8 @@ def style_sunset(ctx):
 
     _log_chart(ctx, g, nb, chart)
     ctx.anchors.update(bpm=72, bar=g.bar_s, melody_in=g.t(intro, 0))
-    # guitar arpeggios
-    ctx.part = "guitar"
-    prev = None
-    for bar in range(nb):
-        cb = chart(bar)
-        for (b0, c) in cb:
-            seg = 4.0 / len(cb)
-            v = voice(c.comp, 55, 72, prev, center=63)
-            prev = v
-            bass = nearest(c.bass, N("D3"), N("E2"), N("E3"))
-            fifth = nearest((c.bass + 7) % 12, bass + 7, bass + 3, bass + 9)
-            pat = [bass, v[0], v[1], v[2], fifth, v[3], v[2], v[1]]
-            for e in range(int(seg * 2)):
-                t = g.t(bar, b0 + e * 0.5)
-                if t > ctx.D:
-                    break
-                m = pat[e]
-                vel = (0.55 if e in (0, 4) else 0.4) + ctx.hum(0.04, 0.06)
-                play(ctx, nylon_note, t + ctx.hum(0.008), m, vel, g.beat_s * (1.6 if e in (0, 4) else 1.2),
-                     rel=0.25, gain=0.85, pan=-0.25 + 0.04 * (e % 4), send=0.3, variant=e % 2)
-    # warm pad
-    ctx.part = "pad"
-    pprev = None
-    for bar in range(nb):
-        for (b0, c) in chart(bar):
-            seg = 4.0 / len(chart(bar))
-            t = g.t(bar, b0)
-            if t > ctx.D:
-                break
-            v = voice(c.comp, 52, 69, pprev, center=60)
-            pprev = v
-            for j, m in enumerate(v):
-                y = pad_note(m, g.d(bar, b0, seg) + 0.3, 0.42, voices=3, attack=1.5, release=1.8, fc=1600, seed=j)
-                ctx.place(y, t, 0.5, -0.4 + 0.27 * j, 0.45)
-    # soft upright on half notes
-    ctx.part = "bass"
-    for bar in range(nb):
-        cb = chart(bar)
-        for b in (0, 2):
-            c = chord_at(cb, b)
-            pc = c.bass if (b == 0 or len(cb) > 1) else (c.bass + 7) % 12
-            m = nearest(pc, N("D2"), N("A1"), N("C#3"))
-            play(ctx, upright_note, g.t(bar, b), m, 0.55, g.beat_s * 1.9, rel=0.1, gain=0.5, pan=0.0, send=0.1)
-    # clarinet quotes the chill theme an octave down (Barry's instrument, finally chill)
+    # clarinet quotes the chill theme (Barry's instrument, finally chill) -- planned first so
+    # the guitar and pad voicings can keep out of its way
     notes = []
     for bar in range(intro, nb):
         k = (bar - intro) % 24
@@ -2793,6 +3349,58 @@ def style_sunset(ctx):
         nt["swell"] = 0.2 if nt["d"] > 0.9 else 0.0
         nt["release"] = 0.3
         nt["attack"] = 0.07
+    tune = [(nt["t"], nt["d"], nt["m"]) for nt in notes]
+    # guitar arpeggios
+    ctx.part = "guitar"
+    prev = None
+    for bar in range(nb):
+        cb = chart(bar)
+        for (b0, c) in cb:
+            seg = 4.0 / len(cb)
+            ts, te = g.t(bar, b0), g.t(bar, b0 + seg)
+            v = voice(c.comp, 55, 72, prev, center=63, avoid=sounding(tune, ts, te + 0.3))
+            prev = v
+            while len(v) < 4:     # a melody-clashing tone was dropped: double an inner note
+                v = sorted(v + [v[1] + 12 if len(v) > 1 and v[1] + 12 <= 74 else v[0] - 12])
+            bass = nearest(c.bass, N("D3"), N("E2"), N("E3"))
+            # the chord's own fifth (B over E9/D -- an A would rub against the G#)
+            fifth = nearest(c.fifth, bass + 7, bass + 3, bass + 9)
+            pat = [bass, v[0], v[1], v[2], fifth, v[3], v[2], v[1]]
+            for e in range(int(seg * 2)):
+                t = g.t(bar, b0 + e * 0.5)
+                if t > ctx.D:
+                    break
+                m = pat[e]
+                vel = (0.55 if e in (0, 4) else 0.4) + ctx.hum(0.04, 0.06)
+                ring = g.beat_s * (1.6 if e in (0, 4) else 1.2)
+                capped = ring > te - t + 0.06            # left hand lifts at the chord change
+                play(ctx, nylon_note, t + ctx.hum(0.008), m, vel, te - t + 0.06 if capped else ring,
+                     rel=0.1 if capped else 0.25, gain=0.85, pan=-0.25 + 0.04 * (e % 4), send=0.3,
+                     variant=e % 2)
+    # warm pad
+    ctx.part = "pad"
+    pprev = None
+    for bar in range(nb):
+        for (b0, c) in chart(bar):
+            seg = 4.0 / len(chart(bar))
+            t = g.t(bar, b0)
+            if t > ctx.D:
+                break
+            dur = g.d(bar, b0, seg) + 0.3
+            v = voice(c.comp, 52, 69, pprev, center=60, avoid=sounding(tune, t, t + dur))
+            pprev = v
+            for j, m in enumerate(v):
+                y = pad_note(m, dur, 0.42, voices=3, attack=1.5, release=1.8, fc=1600, seed=j)
+                ctx.place(y, t, 0.5, PAD_PANS[j % len(PAD_PANS)], 0.36)
+    # soft upright on half notes (bass note, then the chord's own fifth)
+    ctx.part = "bass"
+    for bar in range(nb):
+        cb = chart(bar)
+        for b in (0, 2):
+            c = chord_at(cb, b)
+            pc = c.bass if (b == 0 or len(cb) > 1) else c.fifth
+            m = nearest(pc, N("D2"), N("A1"), N("C#3"))
+            play(ctx, upright_note, g.t(bar, b), m, 0.55, g.beat_s * 1.9, rel=0.1, gain=0.5, pan=0.0, send=0.08)
     _log_melody(ctx, notes, "clarinet")
     ctx.part = "clarinet"
     for ph in _split_phrases(notes, gap=0.3):
@@ -2809,12 +3417,14 @@ STYLE_FUNCS = {"lounge": style_lounge, "jazz_title": style_jazz_title, "jazz_end
                "serene": style_serene, "action": style_action, "sunset": style_sunset}
 
 
-def _render(style, duration, seed=0, hit_at=None):
+def _render(style, duration, seed=0, hit_at=None, fade_out=None, tail=None):
     if style not in STYLE_FUNCS:
         raise ValueError(f"unknown music style {style!r}; choose from {STYLES}")
     duration = float(max(0.05, duration))
     ctx = Ctx(style, duration, seed)
-    ctx.hit_at = hit_at
+    ctx.hit_at, ctx.tail = hit_at, tail
+    ctx.hit = _ending_hit(style, duration, hit_at, tail)
+    ctx.cut = _ending_cut(style, duration, hit_at, tail)
     ir = STYLE_FUNCS[style](ctx)
     tone = None
     if isinstance(ir, tuple):
@@ -2822,37 +3432,50 @@ def _render(style, duration, seed=0, hit_at=None):
     y = _master(ctx, ir, style, tone)
     # clean edges
     y = ramp_in(y, 3.0)
-    if not ctx.anchors.get("own_ending"):
-        fade = float(np.clip(0.18 * duration, 0.04, 1.5))
-        k = min(len(y), int(fade * SR))
+    if ctx.anchors.get("own_ending"):
+        y = ramp_out(y, 8.0)
+    else:
+        # de-click only: the cue plays at full level to the end (build_audio crossfades /
+        # cuts the music itself); fade_out > ~0.3 s gives a musical fade for auditioning
+        fo = DEFAULT_FADE_OUT if fade_out is None else max(0.0, float(fade_out))
+        k = min(len(y), max(1, int(round(fo * SR))))
         w = np.cos(np.linspace(0, np.pi / 2, k)) ** 2
         y[-k:] *= w[:, None].astype(F32)
-    else:
-        y = ramp_out(y, 8.0)
     y = np.clip(y, -0.9, 0.9).astype(F32)
     return y, ctx
 
 
-def render_music(style, duration, seed=0, hit_at=None):
+def render_music(style, duration, seed=0, hit_at=None, fade_out=None, tail=None):
     """Render `duration` seconds of music style `style` -> float32 (n, 2) at 48 kHz, peak <= 0.9.
 
-    Any duration works (0.3 s .. several minutes): cues are composed bar by bar and loop
-    by whole bars, ending with a short natural fade.  jazz_end instead ends on a final
-    band "button" timed to land at `hit_at` seconds (default: duration - 0.5) and rings
-    out into silence by the end.  Deterministic for a given (style, duration, seed).
+    Any duration works (0.3 s .. several minutes): cues are composed bar by bar and loop by
+    whole bars.  Looping cues play at full level right to the end and finish with a
+    `fade_out`-second de-click (default DEFAULT_FADE_OUT = 0.04 s), so the caller's own
+    crossfades and hard music-outs land on full-level music.
+
+    jazz_end (always) and jazz_title (when duration <= JAZZ_TITLE_TAG_MAX, or whenever
+    `hit_at` is given) compose their own ending: the title tune, a stop-time tag and a
+    "ba-DUM" button whose downbeat lands at `hit_at` seconds.  Default hit_at = duration -
+    tail - lead with tail defaulting to the overhang build_audio adds past the picture
+    (jazz_end 1.5 s, jazz_title 0.8 s) and lead 0.5 s (jazz_end) / 0.25 s (jazz_title); pass
+    tail=0 for stand-alone use.  jazz_end's button is damped to silence exactly at the picture
+    cut (duration - tail) and the overhang is silent; jazz_title's rings through its overhang.
+    Deterministic for a given (style, duration, seed, hit_at, fade_out, tail).
     """
-    y, _ = _render(style, duration, seed, hit_at)
+    y, _ = _render(style, duration, seed, hit_at, fade_out, tail)
     return y
 
 
-def music_anchors(style, duration, seed=0, hit_at=None):
+def music_anchors(style, duration, seed=0, hit_at=None, tail=None):
     """Musical landmarks of a cue (seconds from the cue start) for syncing visuals:
     bpm, beats_per_bar, bar (s), first_downbeat, downbeats [..], melody_in (when the
-    main tune enters) and, for jazz_end, final_hit.  Cheap: no audio is rendered."""
+    main tune enters), rubato flag and, for cues with a composed ending (jazz_end, short
+    jazz_title), final_hit and picture_cut (= duration - tail: where jazz_end falls silent).
+    Cheap: no audio is rendered."""
     if style not in STYLE_FUNCS:
         raise ValueError(f"unknown music style {style!r}; choose from {STYLES}")
     duration = float(max(0.05, duration))
-    g = _grid_for(style, duration, hit_at)
+    g = _grid_for(style, duration, hit_at, seed, tail)
     downs = []
     b = 0 if g.offset <= 1e-9 else -1
     while True:
@@ -2867,20 +3490,22 @@ def music_anchors(style, duration, seed=0, hit_at=None):
     out = dict(style=style, bpm=g.bpm, beats_per_bar=g.bpb, bar=round(g.bar_s, 4),
                first_downbeat=round(g.t(0, 0), 4), downbeats=downs,
                melody_in=round(g.t(MELODY_IN_BAR[style], 0), 4), rubato=g._map is not None)
-    if style == "jazz_end":
-        out["final_hit"] = round(_final_hit(duration, hit_at), 4)
+    H = _ending_hit(style, duration, hit_at, tail)
+    if H is not None:
+        out["final_hit"] = round(H, 4)
+        out["picture_cut"] = round(_ending_cut(style, duration, hit_at, tail), 4)
     return out
 
 
 def _calibrate(seconds=60.0, seeds=(0, 1)):
-    """Measure the pre-gain RMS of each style (paste the result into CAL)."""
+    """Measure the pre-gain integrated loudness (LUFS) of each style (paste into CAL)."""
     res = {}
     for st in STYLES:
         vals = []
         for sd in seeds:
             _, ctx = _render(st, seconds, sd)
-            vals.append(ctx.pre_rms)
-        res[st] = round(float(np.mean(vals)), 5)
+            vals.append(lufs(ctx.pre))
+        res[st] = round(float(np.mean(vals)), 2)
     return res
 
 
@@ -2891,7 +3516,11 @@ def _main(argv):
     ap.add_argument("seconds", type=float, nargs="?", default=30.0)
     ap.add_argument("out", nargs="?", default=None, help="output .wav (or directory for 'all')")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--hit-at", type=float, default=None, help="jazz_end: time of the final button")
+    ap.add_argument("--hit-at", type=float, default=None, help="jazz_end/jazz_title: time of the final button")
+    ap.add_argument("--tail", type=float, default=None,
+                    help="jazz_end/jazz_title: seconds of the render past the picture (default 1.5 / 0.8)")
+    ap.add_argument("--fade-out", type=float, default=None,
+                    help=f"end fade of looping cues in seconds (default {DEFAULT_FADE_OUT})")
     ap.add_argument("--schedule", action="store_true", help="print the musical event schedule")
     a = ap.parse_args(argv)
     import soundfile as sf
@@ -2901,7 +3530,7 @@ def _main(argv):
     styles = STYLES if a.style == "all" else [a.style]
     for st in styles:
         t0 = time.time()
-        y, ctx = _render(st, a.seconds, a.seed, a.hit_at)
+        y, ctx = _render(st, a.seconds, a.seed, a.hit_at, a.fade_out, a.tail)
         el = time.time() - t0
         if a.style == "all":
             out = os.path.join(a.out or ".", f"{st}.wav")
@@ -2911,12 +3540,12 @@ def _main(argv):
             os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
         sf.write(out, y, SR)
         print(f"{st:11s} {a.seconds:6.1f}s rendered in {el:5.2f}s  peak={np.abs(y).max():.3f}  "
-              f"rms={rms_db(y):6.1f} dBFS  -> {out}")
+              f"rms={rms_db(y):6.1f} dBFS  {lufs(y):6.1f} LUFS  -> {out}")
         if a.schedule:
             for (t, part, text) in sorted(ctx.log, key=lambda e: e[0]):
                 if t >= 0:
                     print(f"   {t:8.3f}  {part:10s} {text}")
-            print("   anchors:", music_anchors(st, a.seconds, a.seed, a.hit_at))
+            print("   anchors:", music_anchors(st, a.seconds, a.seed, a.hit_at, a.tail))
 
 
 if __name__ == "__main__":

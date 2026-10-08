@@ -121,7 +121,7 @@ SCENES = [
         ("say", "barry", "I heard that.", dict(mood="deadpan", gap=0.1)),
         ("pause", 0.3),
     ]),
-    dict(id="s02_title", setting="title", music="jazz_title", tail=0.3, events=[
+    dict(id="s02_title", music_gain=1.45, music_fade=0.02, setting="title", music="jazz_title", tail=0.3, events=[
         ("beat", "title_card", 2.4, "White Yeseva serif 'CHILL CAPYBARA' centred on black, Woody-Allen style"),
         ("beat", "title_credit", 2.2, "Second card, same style, smaller: 'with MOUNT SNOOZE as itself (dormant)'"),
     ]),
@@ -186,7 +186,7 @@ SCENES = [
         ("cam", "volcano"),
         ("music", "tension", dict(fade=0.4)),
         ("sfx", "rumble_small", dict(gain=0.5)),
-        ("sfx", "whoosh", dict(offset=1.3, gain=0.7)),
+        ("sfx", "whoosh", dict(offset=1.13, gain=0.7)),
         ("beat", "volcano_sneeze", 2.1, "Mount Snooze sneezes: little puff (0.0s), little puff (0.5s), a held beat, then one big smoke cloud (1.4s, on the whoosh) that hangs over the crater"),
         ("cam", "trio"),
         ("say", "doreen", "Bless you! That's just Mount Snooze, sweetie. It's been asleep for a thousand years.", dict(mood="chill", to="barry")),
@@ -245,12 +245,12 @@ SCENES = [
     # ------------------------------------------------------- PREPARATION MONTAGE
     dict(id="s06_montage", setting="spring_day", music="montage", transition="wipe", tail=0.5, events=[
         ("cam", "signs"),
-        ("sfx", "hammer"), ("sfx", "hammer", dict(offset=0.95)),
-        ("beat", "hammer_signs", 2.5, "Barry hammers left-pointing arrow signs into the left bank; each sign pops up on the third (loudest) hit of its hammer sfx: 'EXIT' at 0.8s, 'NO, REALLY. THIS WAY.' at 1.75s"),
+        ("sfx", "hammer"), ("sfx", "hammer", dict(offset=1.40625)),
+        ("beat", "hammer_signs", 2.5, "Barry hammers left-pointing arrow signs into the left bank; each sign pops up on the third (loudest) hit of its hammer sfx: 'EXIT' at 0.94s, 'NO, REALLY. THIS WAY.' at 2.34s"),
         ("sfx", "pop", dict(offset=0.35)),
         ("beat", "sunny_sign_planted", 1.4, "The signs camera pushes in: Barry plants one last little sign at the very end of the row, 'YES, YOU, SUNNY' (pops up at 0.35s), and pats it once with his snout. Hold so it reads"),
         ("cam", "rules"),
-        ("sfx", "hammer"),
+        ("sfx", "hammer", dict(offset=0.31875)),
         ("beat", "rules_sign", 2.4, "Barry plants a big sign by the pool and steps back so it can be read: 'SPRING RULES -- 1. Introduce yourself  2. Say goodbye  3. No vultures on heads'"),
         ("sfx", "flap"), ("sfx", "land", dict(offset=0.6)),
         ("beat", "gerald_ignores_rules", 1.8, "Gerald lands on the top edge of the rules sign (the rules stay readable), reads it, then hops onto Barry's head anyway"),
@@ -268,7 +268,7 @@ SCENES = [
     ]),
 
     # ---------------------------------------------------------------- ERUPTION
-    dict(id="s07_eruption", setting="spring_evening", music="lounge", tail=0.5, events=[
+    dict(id="s07_eruption", setting="spring_evening", music="lounge", tail=0.5, ambience=["water"], events=[
         ("cam", "trio"),
         ("cue", "gerald_on_sign", "Golden hour. Barry wears his helmet. Gerald is perched on the top edge of the SPRING RULES sign behind them, not on Barry"),
         ("say", "doreen", "Barry, honey. One orange. For me.", dict(mood="happy", to="barry")),
@@ -292,13 +292,13 @@ SCENES = [
         ("sfx", "glass_pop", dict(offset=0.9)),
         ("beat", "thermo_pops", 1.3, "Close on Barry's thermometer, stuck in the water by his rock: the red line shoots past 39.8 to the top (0-0.9s) and the bulb pops at 0.9s"),
         ("cam", "trio"),
-        ("sfx", "rumble_big", dict(gain=0.5)), ("sfx", "boil", dict(offset=0.6, gain=0.6)),
+        ("sfx", "rumble_big", dict(gain=0.9)), ("sfx", "boil", dict(offset=0.6, gain=0.6)),
         ("beat", "big_rumble", 1.6, "Violent rumble; the water starts to boil around them; oranges bounce on every head"),
         ("cam", "barry_cu"),
         ("say", "barry", "Twelve seconds. I was chill for twelve seconds.", dict(mood="deadpan", gap=0.2)),
         ("cam", "volcano"),
-        ("sfx", "explosion"),
-        ("music", "action", dict(fade=0.05)),
+        ("sfx", "explosion"), ("sfx", "eruption_bed"),
+        ("music", "action", dict(fade=2.0)),
         ("beat", "eruption", 3.2, "Mount Snooze erupts: smoke plume, lava fountains, the sky goes red; the orange grove on its flank shakes"),
         ("cam", "trio"),
         ("say", "doreen", "Oh no. I'm having a thought! I don't care for it!", dict(mood="panic")),
@@ -404,19 +404,20 @@ SCENES = [
         ("cam", "barry_cu"),
         ("say", "barry", "No reason.", dict(mood="smug", to="sunny")),
         ("sfx", "sting_bad"),
+        ("music", None, dict(fade=0.05)),
         ("pause", 0.7),
         ("cam", "trio"),
-        ("sfx", "whoosh"),
+        ("sfx", "whoosh_left"),
         ("beat", "everyone_bolts", 1.8, "0-0.3s: Sunny and Doreen zip out of frame left in a puff of dust (motion lines). Gerald stays hanging in mid-air in perch pose where Sunny's head was, looks down (0.6s), then flaps (1.2s) and hovers. Barry floats on, calm, helmet on, eyes closed"),
         ("cam", "wide"),
         ("say", "narrator", "Nothing... bothers the capybara.", dict(gap=0.3)),
-        ("sfx", "rumble_small", dict(gain=0.4)),
+        ("sfx", "rumble_distant", dict(gain=0.9)),
         ("beat", "hill_sneeze", 1.4, "Same wide: Barry floats alone, eyes closed, helmet on, Gerald hovering above. Far behind the new spring, one gentle green hill puffs two tiny smoke clouds (0.0s, 0.35s), then one big one (0.8s) -- the exact Mount Snooze sneeze. Gerald looks at it. Barry does not open his eyes"),
         ("cam", "barry_cu"),
         ("say", "barry", "Almost nothing.", dict(mood="chill", gap=0.2)),
         ("pause", 0.2),
     ]),
-    dict(id="s10_end", setting="title", music="jazz_end", transition="cut", tail=0.5, events=[
+    dict(id="s10_end", music_gain=1.45, music_fade=0.02, setting="title", music="jazz_end", transition="cut", tail=0.5, events=[
         ("beat", "end_card", 1.9, "'CHILL CAPYBARA', then 'THE END', white serif on black"),
         ("beat", "end_credit_volcano", 2.3, "Next card, same style: 'MOUNT SNOOZE appeared as itself (no longer dormant)'"),
         ("beat", "end_credit_fish", 3.1, "Last card: 'No fish were harmed in the making of this film. They left early.' Jazz button on the cut to black"),
