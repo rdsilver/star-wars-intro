@@ -76,6 +76,12 @@ def tts(text, voice, speed):
     if os.path.exists(path):
         audio, _ = sf.read(path, dtype="float32")
         return audio
+    archived = os.path.join(ROOT, "assets", "tts", key + ".flac")  # committed takes (exact reproducibility)
+    if os.path.exists(archived):
+        audio, _ = sf.read(archived, dtype="float32")
+        return audio
+    if os.environ.get("TTS_ARCHIVE_ONLY"):
+        raise RuntimeError(f"missing archived TTS take for {text!r}")
     samples, sr = kokoro().create(text, voice=voice_style(voice), speed=speed, lang=lang)
     samples = np.asarray(samples, dtype=np.float32)
     # trim silence at the edges (keep 40 ms of padding)
