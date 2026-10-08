@@ -3,10 +3,13 @@
 // darker same-hue outlines, rounded shapes. Every function is a pure function of its options
 // (time `t` included): deterministic, no Math.random, ctx state restored on exit.
 //
-// Cost at 1920×1080 (min of 5 runs, flush-amortised, machine under load): most props 0.3-1 ms;
+// Cost at 1920×1080 (min of 3×100 runs, flushed, machine under load): most props 0.3-1 ms;
 // orange r14 ≈0.2 ms (12 for orange rain ≈2.6 ms); hot rock + trail r14 ≈0.8 ms; SPRING RULES
-// sign at .42 ≈1.7 ms; raft ≈3.7 / 6.9 / 13 / 19 ms at scale .5 / 1 / 1.6 / 2.5 (hull layers
-// are cached bitmaps); burning sign at scale 2 ≈10 ms (≈4 at .6); thermometer pop ≈2.7 ms.
+// sign at .42 ≈1.7 ms; raft ≈3.4 / 7.4 ms at scale .6 / 1.2 (hull layers are cached bitmaps;
+// an ANIMATED grade (kit lightFor during the eruption) adds only ≈+15-25%: the cache is
+// untinted and re-tinted on a copy); raft while building ≈6 ms at .5 (live, splashes);
+// burning sign ≈11 ms at scale 2 (≈2.5 ms each at .6); thermometer close-up s 4.2 ≈3.8 ms, its
+// pop ≈4.5 ms at scale 5 (in air or under water); splat / splash / burst ≈1 ms.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API   (all coordinates in 1280×720 design units; angles in RADIANS)
@@ -32,36 +35,59 @@
 //   o.water the tint is a neutral cool shade that reads as "under water" over any water.
 //   o.water = {top, mid, base, deep, line, foam} overrides the palette.
 //
-// drawOrange(ctx, {x, y, r=16, rot, squash=0, t, seed, leaf=true, leaves=1, flip, waterY,
-//                  grade|light, alpha})
+// drawOrange(ctx, {x, y, r=16, rot, squash=0, bounce=0, t, seed, leaf=true, leaves=1, flip,
+//                  waterY, grade|light, alpha})
 //     THE SAME ORANGE AS THE RIG'S HEAD ORANGE (capybara.drawCapyOrange; a faithful port is
 //     used below ~24 device px, minus sub-pixel pores). (x,y) = centre; the bottom point
-//     (x, y+r) stays put while squashing. squash 0..1 = a SMASHED fruit: flattens on impact
-//     (0-.2), the peel tears into uneven flaps (.15-.55) — back flaps stand up showing pith,
-//     front flaps fold down over the cup — lumpy pulp with loose segment chunks bulges out,
-//     juice pools; .55-1 keeps slumping/spreading (body ≤ 1.3× the orange's width). The leaf
-//     rides a peel flap. The WORN squashed orange is the rig's accessories.orange:'squashed'
-//     (a different object): at the doreen_splat impact switch the accessory and cover the
-//     swap with drawJuiceSplat (its first frames are bigger than the orange).
+//     (x, y+r) stays put while squashing.
+//     squash 0..1 = the SMASH, one continuous morph: 0-.12 the whole glossy orange flattens on
+//       impact (pores + highlight kept, juice starts to pool), from .12 the peel tears into
+//       uneven flaps (back flaps stand up showing pith, front flaps fold over the cup) while the
+//       pores and highlight wear off, lumpy pulp bulges out (loose segment chunks only late),
+//       .55-1 keeps slumping/spreading (body ≤ 1.3× the orange's width). The leaf glides from
+//       the top of the dome onto a peel flap — no jumps anywhere.
+//     bounce -1..1 = SQUASH & STRETCH for hops / landings (s04 orange_rolls), separate from the
+//       smash: scale (1 + .35 b, 1 - .5 b) about the base point (b > 0 squash, b < 0 stretch;
+//       pores, highlight and an undistorted leaf kept) — the rig's drawCapyOrange squash < .5
+//       uses the same scale. Ignored while squash > 0.
+//     ONE squashed orange: the worn accessories.orange:'squashed' and drawCapyOrange squash ≥ .5
+//     ARE this squash 1 (the rig delegates to props). At the doreen_splat impact switch the
+//     accessory on the hit frame and cover it with drawJuiceSplat(t = since impact, r ≈ 1.75 ×
+//     the orange radius): its hit frame is its biggest.
 // drawJuiceSplat(ctx, {x, y, r=24, t, seed, rot, life=1.2, gravity=1, puddle=false, floor=0,
 //                      grade|light, alpha})
-//     Orange-juice burst. t = seconds since impact: splat punches out big (frame 1 ≥ 0.6 r),
-//     then SHRINKS into the spray (gone by 0.34 s) — no fade; a quick ring of mist droplets +
-//     soft puff (0-0.14 s); ballistic droplets that shrink out by `life`; pulp flecks; two peel
-//     chips. puddle:true adds a growing juice puddle at y + floor.
+//     Orange-juice burst. t = seconds since impact. The HIT FRAME (t < 1/24) is already the
+//     biggest (1.15 r; its body covers an orange of radius ≤ r/1.6), it settles, then SHRINKS
+//     into the spray (gone by 0.34 s) — no fade. The splat is wet: a lumpy body, arms fat at
+//     the base that taper to a neck and end in teardrop drops, detached drops, pulp sacs and
+//     glossy specular glints; a quick ring of mist droplets (0-0.14 s); ballistic glossy
+//     droplets that shrink out by `life`; pulp flecks; one small peel fleck. puddle:true adds a
+//     growing juice puddle at y + floor.
 // drawHelmet(ctx, {x, y, scale=1, rot, flip, strap=true, soot=0, grade|light, alpha})
 //     THE RIG'S HELMET (capybara.drawCapyHelmet): identical worn / on a rock / in a paw.
 //     Origin = middle of the bottom rim, visor → +x. scale 1 = the helmet on a scale-1 head:
 //     pass capyAnchors(o).helmet.scale to match a worn one. strap: open chin strap dangling.
 // drawThermometer(ctx, {x, y, scale=1, rot, flip, level=0.5, reading=null, showTag=true,
-//                       tagSide='right', tagSize=13, labels=auto, length=100, t, waterY,
-//                       broken=0, popAt=0.16, dur=1.3, surgeEnd=0.92, surge=true,
+//                       tagPop=true, tagSide='right', tagSize=13, labels=auto, length=100, t,
+//                       waterY, broken=0, popAt=0.16, dur=1.3, surgeEnd=0.92, surge=true,
 //                       since, popTime=0.9, breakAt='bulb'|'top', grade|light, alpha})
 //     BARRY'S THERMOMETER = THE RIG'S (capybara.drawCapyThermometer draws glass, column, ticks,
 //     bulb; props adds the rest). VERTICAL, bulb at the bottom; origin = bulb centre; the tube
 //     runs up to y - 102*scale (length 100). level 0..1 = red column (thermoLevel(°C): 30 °C → 0,
-//     45 °C → 1). reading '39.4' + showTag → big upright readable tag "39.4°" pointing at the
-//     top of the column. labels (default on at scale ≥ 2.2): printed 30/35/40/45 scale.
+//     45 °C → 1); the column's FLAT top sits on the level line (its rounded meniscus above it).
+//     reading + showTag → big upright readable tag "39.4°" pointing at that flat top:
+//       reading:'auto' = the CURRENT animated column, formatted (39.8) every frame — it counts
+//         up during a creep or the surge. s04 thermo_check ("the red line creeps up and settles
+//         on 39.8"): level: U.tween(S.since('thermo_check'), 0, 1.35, thermoLevel(39.4),
+//         thermoLevel(39.8), ease.outCubic), reading: 'auto'  (the paw thermometer passes
+//         accessories.thermometer.reading straight through, so 'auto' works there too).
+//       reading:'39.8' = that number; during a break, once the surging column passes it, the
+//         tag counts up with the column, trembles while the bulb strains and POPS OFF with the
+//         glass (flies away, keeping the peak reading) — callers never hide it by hand
+//         (tagPop:false keeps it on).
+//     labels (default on at scale ≥ 2.2, close-ups): the printed 30/35/40/45 scale on a real
+//     °C grid — major ticks at 30/35/40/45, a minor tick every 1 °C, painted over the glass
+//     highlight (the close-up tube is the rig's art, ported, with this scale).
 //     THE BREAK — two ways to drive it:
 //       broken 0..1 over `dur` s, popping at popAt (fraction). s07 thermo_pops (1.3 s beat,
 //         glass_pop sfx at 0.9 s):  broken: S.prog('thermo_pops'), popAt: 0.9 / 1.3
@@ -72,10 +98,15 @@
 //     then — timed in SECONDS from the pop — a 2-frame white-hot comic flash, a red splat
 //     ~1.9× the swollen bulb that punches out and breaks up into a ballistic spray + glass
 //     shards (all gone by ≈0.32 s), the column drains (≈0.45 s) leaving the rig's jagged stub.
-//     breakAt:'top' blows the cap off instead (red geyser) — reads best when the bulb is under
-//     water (with waterY a bulb popping under the surface also throws a water splash).
+//     breakAt:'top' blows the cap off instead: a red geyser + the rounded glass cap (jagged
+//     break, red residue) on ONE ballistic arc up and away (it clears the frame in a close-up).
+//     WITH waterY: in-air spray / shards / cap only above the surface (anything below is
+//     culled); a bulb popping UNDER the surface makes a muffled shock ring, a red INK CLOUD that
+//     blooms and slowly drifts up (≈2 s), bubbles rising to the surface and glass shards that
+//     sink slowly — all water-coloured — plus a small bump/splash on the surface above it.
 // thermoLevel(celsius, lo=30, hi=45) → level 0..1
-// thermoAnchors(o) → {bulb, top, column (top of red column), tag} caller-space points
+// thermoAnchors(o) → {bulb, top, column (flat top of the red column), tag, reading (the number
+//                    the tag shows now, e.g. '39.8' — the tag adds '°' — or null)} caller-space
 // drawSign(ctx, {x, y, text | lines, style='wood'|'arrow'|'board', arrowDir='left'|'right',
 //                w, h, size=24, sizes, weight=700, scale=1, rot, burn=0, t, seed, paint,
 //                paint2, board, stake=30, drive=1, ground=true, wrap=true, glyph, drips=0,
@@ -99,7 +130,11 @@
 //     '#D9473C'), default natural wood. glyph:true (1 line) adds a painted arrow toward
 //     arrowDir. drive 0..1: how far the stake is hammered in (0 → board ~28 units higher).
 //     drips 0..1: opt-in paint drips (close-ups). burn 0..1: char creeps up from the bottom
-//     behind a glowing ember front, letters blacken, flames + smoke (uses t).
+//     behind a glowing ember front, letters blacken (uses t). The FIRE is world-up whatever
+//     the sign's rot / flip / signWobble: separate licking flames of uneven height and phase
+//     below ≈.55, merging into a continuous flame sheet with flickering tongues above it;
+//     smoke starts at the flame tips, dark and dense near the source, billowing, merging and
+//     drifting with noise (smokeWind=0.35 leans it right; negative = left); embers rise.
 //     highlight = line index (e.g. 2 → '2. Say goodbye' for Gerald's glance), highlightK 0..1
 //     wipes in a painted underline + a warm wash behind that line.
 //     Tested texts: 'EXIT', 'EVACUATION ROUTE', 'NO, REALLY. THIS WAY.', 'YES, YOU, SUNNY',
@@ -111,8 +146,8 @@
 //                   lines: [{text, x, y, w, h, size}] (centre + extent of each painted line)}
 // signWobble(dt, amp=0.08) → rot (radians) of a sign hit dt seconds ago (damped wobble).
 // drawRaft(ctx, {x, y, scale=1, t, flip, layer='both'|'back'|'front', flagText='S.S. TOLD
-//                YOU SO', flagShow, flagPerch, build=1, bob=0, rock=0, wind=0.6, flagDir=1,
-//                paddle=true, wake=0, dir=-1, wet, submerge, waterY, cache=true,
+//                YOU SO', flagShow, flagPerch, build=1, buildDur=1.3, bob=0, rock=0, wind=0.6,
+//                flagDir=1, paddle=true, wake=0, dir=-1, wet, submerge, waterY, cache=true,
 //                grade|light, alpha})
 //     Reed-bundle raft: 3 lashed bundles with upturned tips (the near one rides ~1/3 under
 //     water), rope lashings, a bamboo mast with stays and a swallowtail banner painted with
@@ -123,25 +158,37 @@
 //       → the passengers with their ground (capyAnchors(o).ground) on raftAnchors(o).sits[i]
 //       → layer:'front' (front bundle, its lashings + knots, waterline foam, bow foam). The
 //       front bundle hides their bottoms/feet so they sit IN the raft. 'both' = the old order.
-//     build 0..1 assembles it for the montage: bundles drop in one by one and pop to size
-//       (0-0.42, opaque), lashings wrap (0.42-0.7), mast rises (0.7-0.82), banner unfurls
-//       (0.82-0.95), oar (0.95-1). bob 0..1 floating bob/roll (0 = on land); rock = extra roll.
+//     build 0..1 assembles it for the montage: bundles drop in one by one (0-0.42, opaque),
+//       lashings wrap (0.42-0.7), mast rises (0.7-0.82), banner unfurls (0.82-0.95), oar
+//       (0.95-1). AFLOAT (bob > 0 or waterY — the moored montage raft) each bundle falls INTO
+//       the river: it smacks in with a long splash (buildDur = seconds build 0→1 takes, for the
+//       splash timing; all splashes are over by build 1), dips under and settles, and floats at
+//       its own depth at once — its own submerged tint, foam line and ripples ramp in over ≈4
+//       frames as it lands (the back bundles' are then hidden by the nearer ones). The hull
+//       switches to the cached bitmap at build 1 with the same rim / line weight / tint: no pop.
+//       On land (bob 0, no waterY) bundles drop and bounce. s06 build_raft: build:
+//       S.prog('build_raft', 1.3) on drawMooredRaft (bob .6).
+//       bob 0..1 floating bob/roll (0 = on land); rock = extra roll.
 //     Floating (bob > 0 or waterY): the hull below the waterline is water-tinted (submerge:false
 //       disables), a foam line + lapping ripples run along the waterline. wind 0..1 banner
 //       flutter; flagDir ±1 = caller-space side the banner streams to. wake 0..1 with dir ±1
 //       (direction of travel): bow foam + wake lines. flagShow = number of flagText characters
 //       painted (e.g. 4 → just 'S.S.').
-//     flagPerch {k=1, w=48, at}: GERALD SITS ON THE BANNER (s08 gerald_covers_flag). His weight
-//       bunches everything after the first word into an accordion pile ≈w wide that sags under
-//       him; the crumpled letters vanish in the folds, the banner reads 'S.S.'. Animate k 0→1 as
-//       he shuffles down and settles; draw him at raftAnchors(o).flagPerch with scale
-//       raftAnchors(o).geraldScale, after the raft (lab sheet 'gag_flag' uses the real Gerald).
+//     flagPerch {k=1, w=48, at}: GERALD SITS ON THE BANNER (s08 gerald_covers_flag). His SEAT
+//       (raftAnchors(o).flagPerch) is just past the first word 'S.S.' and is the SAME point for
+//       every k — only its height follows the banner's sag as he settles — so tween him from
+//       mastTop to flagPerch (k = 0: lands on the flat banner), then animate k 0→1. His weight
+//       gathers the cloth into a crumple zone that grows OUTWARD from his feet (opaque pleats
+//       swallow the letters; the rest stays flat and readable and slides toward him) until all
+//       of 'TOLD YOU SO' is a pile ≈w wide under him and the banner reads 'S.S.'. Draw him after
+//       the raft with scale raftAnchors(o).geraldScale (lab sheets 'flag_perch', 'gag_flag').
 //     Static hull layers are cached as bitmaps per device resolution (cache:false = live).
 // raftAnchors(o) → {seats:[4 deck points, stern→bow] (deck top, y -42), sits:[4 points]
 //                   (passenger ground for the layer sandwich, y = RAFT.sitY), deck,
 //                   mastTop (Gerald perches), flag (banner centre), flagWords:[{text,x,y,w,h}],
-//                   flagCover ({x,y,w,h} over 'TOLD YOU SO'; with flagPerch it is the pile and
-//                   its bottom-centre = flagPerch), flagPerch ({x,y,angle,w,geraldScale} | null),
+//                   flagCover ({x,y,w,h} over 'TOLD YOU SO'; with o.flagPerch its bottom-centre
+//                   IS the seat for every k — kit on:'flag' stays put), flagPerch ({x, y, angle,
+//                   w (current crumple width), k, geraldScale} — ALWAYS returned, k = 0 too),
 //                   geraldScale (Gerald matching the passengers ≈ .62 × raft scale),
 //                   tipL, tipR, waterline, angle, sitY, seatY, scale} in caller space (bob/rock
 //                   included). Pass the same o.
@@ -183,23 +230,35 @@
 //                     tone='grey'|'dark'|'dust'|'white'|'soot', grade|light})
 //     cartoon cloud puffs. life 0..1 = age (grows, rises, fades AS ONE LAYER); omit for a
 //     static puff. 'dust' for scramble/launch puffs, 'dark' for volcanic smoke.
-// drawWaterSplash(ctx, {x, y, r=24, t, seed, big=false, alpha, grade, water, colors})
+// drawWaterSplash(ctx, {x, y, r=24, t, seed, big=false, w=0, part='both', alpha, grade, water,
+//                       colors})
 //     water crown + droplets + ripple rings where something drops in; (x,y) = entry point on
-//     the surface, t = seconds since entry (done by ~1.4 s). big:true adds a tall centre jet
-//     (raft launch, big plops). Orange plop ≈ r 16-22; falling rock ≈ r 26-34. grade picks the
-//     water palette of the setting (golden-hour / dusk / eruption / sunset river); colors (or
-//     water) overrides it.
+//     the surface, t = seconds since entry (done by ~1.4 s). The water is SEE-THROUGH: a
+//     translucent crown (whitewater at the crest, clear at the surface — the water behind
+//     shows through) with white foam rims and teardrop foam tips, no dark outline; foam stays
+//     near-white under every grade. big:true adds a Worthington jet: thick at the base,
+//     tapering, swelling a drop at its tip and pinching off 3 teardrops that sail up and fall
+//     back in (raft launch, big plops). w = half-length of a LONG entry (a reed bundle, the
+//     raft): crown, foam and rings stretch into a stadium. part 'back' | 'front' splits it
+//     around an object sitting in the splash (far wall + foam + jet behind, near wall +
+//     droplets in front). Orange plop ≈ r 16-22; falling rock ≈ r 26-34. grade picks the water
+//     palette of the setting; colors (or water) overrides it.
 // drawImpactBurst(ctx, {x, y, r=56, text='BONK!', t, rot=-0.08, seed, grade|light})
-//     comic starburst; t = seconds since impact: pops in 0-0.14 s, holds, then squashes to
-//     nothing over 0.55-0.68 s (3 frames, no fade); omit t for a static burst.
+//     comic starburst; t = seconds since impact: the HIT FRAME (t < 1/24, the bonk sfx frame)
+//     is the peak (1.18× overshoot), it settles with a quick damped wobble, holds, then
+//     squashes to nothing over 0.55-0.68 s (3 frames, no fade); omit t for a static burst.
 // drawSpeechBubble(ctx, {x, y, text, w=240, size=22, to:{x,y}, style='speech'|'thought'|'shout'})
 //     (x,y) = bubble centre; tail points at `to`. Returns {w, h}.
 // PROP_COLORS — shared palette.   RAFT — raft geometry constants.   GRADES — light + water
 // palettes per setting.
 // lab — sheets (node src/lab.js props <sheet> out.png [--frames 8 --dt 0.1]):
-//     all, orange, thermometer, thermo_pop (--frames: the pop at 24 fps), raft (build stages),
-//     raft_context (layer sandwich with the real cast), gag_flag (Gerald covers the flag),
-//     signs, rules (SPRING RULES at trio scale + highlight + line anchors), signs_env (env's
+//     all, orange (smash, bounce, splat, worn vs loose squashed), thermometer, thermo_pop
+//     (--frames 12 --dt 0.0417 --t 0.95: the pop at 24 fps, in air / top / under water),
+//     thermo_check (reading:'auto' creep, --frames 8 --dt 0.2), raft (build stages),
+//     raft_build (moored in the river at 24 fps: --frames 16 --dt 0.0417), raft_context
+//     (layer sandwich with the real cast), gag_flag (Gerald covers the flag), flag_perch
+//     (k 0 → 1 with the seat point), signs, burn (world-up fire on tilted / flipped / wobbling
+//     signs), rules (SPRING RULES at trio scale + highlight + line anchors), signs_env (env's
 //     sign beside props signs; arrow text), fx, dupes (worn vs loose at the same scale),
 //     grades (lighting + water per setting), closeup, context, context_erupt
 'use strict';
@@ -2163,7 +2222,8 @@ function drawThermometer(ctx, o = {}) {
     }
   });
 }
-function thermoTag(ctx, o, G, st, txt) {
+function thermoTag(ctx, o, G, st, num) {
+  const txt = num + '°';
   const B = begin(ctx, o);
   const t = o.t || 0;
   const side = o.tagSide === 'left' ? -1 : 1;
@@ -5312,26 +5372,27 @@ function drawWaterSplash(ctx, o = {}) {
   }
   const pc = clamp(t / 0.62);
   if (pc < 1) {
-    const hgt = r * (big ? 1.45 : 1.1) * Math.sin(PI * Math.pow(pc, 0.65));
+    const hgt = r * (big ? 1.45 : w > 0 ? 1.3 : 1.1) * Math.sin(PI * Math.pow(pc, 0.65));
     const spread = r * (0.5 + 0.7 * ease.outCubic(pc));
     const crownA = 1 - smoothstep(0.7, 1, pc);
     // crown wall: back half (behind the entry point) then the front lip
     const wall = (backSide) => {
       const sgn = backSide ? -1 : 1;
-      const n = Math.max(backSide ? 5 : 4, Math.round((backSide ? 5 : 4) + (2 * w) / (r * (backSide ? 1.1 : 1.5))));
+      const n = Math.max(backSide ? 5 : 4, Math.round((backSide ? 5 : 4) + (2 * w) / (r * (backSide ? 1.1 : 1.2))));
       const base = (u) => (w > 0 ? stadU(u, w, spread * 1.04, spread * 0.27, sgn) : stadPt(PI + sgn * u * PI, 0, spread * 1.04, spread * 0.27));
       const peaks = [];
       for (let i = 0; i < n; i++) {
         const u = (i + 0.5 + (hash1(seed * 3.7 + i) - 0.5) * (w > 0 ? 0.7 : 0.35)) / n;
         const [bx, by] = base(u);
-        const mid = w > 0 ? 0.3 + 0.7 * Math.pow(hash1(seed * 9.1 + i), 1.4) : 1 - Math.abs(u - 0.5) * 0.7;
-        const h = hgt * mid * (backSide ? 0.5 + 0.5 * hash1(seed + i * 3.3) : 0.36 + 0.3 * hash1(seed * 2 + i));
+        const mid = w > 0 ? 0.45 + 0.55 * Math.pow(hash1(seed * 9.1 + i), 1.2) : 1 - Math.abs(u - 0.5) * 0.7;
+        const h = hgt * mid * (backSide ? 0.5 + 0.5 * hash1(seed + i * 3.3) : (w > 0 ? 0.55 : 0.36) + 0.3 * hash1(seed * 2 + i));
         // tips splay OUTWARD from the core (the entry segment for long splashes)
         const cx = clamp(bx, -w, w), ox = bx - cx;
         const lean = (hash1(seed * 1.3 + i * 7.7) - 0.5) * 0.3 * h;
         peaks.push({ bx, by, h, tx: bx + ox * 0.6 * h / Math.max(1, r) + lean, ty: by - h });
       }
-      const dip = hgt * (backSide ? 0.22 : 0.14);
+      // valleys between the peaks: a lace for a round plop, a solid curtain for a long entry
+      const dip = hgt * (w > 0 ? 0.38 : backSide ? 0.22 : 0.14);
       const top = () => {
         let p0 = base(0);
         ctx.moveTo(p0[0], p0[1]);
@@ -5375,7 +5436,7 @@ function drawWaterSplash(ctx, o = {}) {
         ctx.moveTo(lerp(pk.bx, pk.tx, 0.12) - spread * 0.05, pk.by - pk.h * 0.12);
         ctx.quadraticCurveTo(lerp(pk.bx, pk.tx, 0.45) - spread * 0.06, pk.by - pk.h * 0.55, lerp(pk.bx, pk.tx, 0.85), pk.ty + pk.h * 0.16);
       });
-      ctx.strokeStyle = rgba('#FFFFFF', 0.45 * crownA);
+      ctx.strokeStyle = rgba('#FFFFFF', (w > 0 ? 0.22 : 0.4) * crownA);
       ctx.lineWidth = 1.1 * k;
       ctx.stroke();
       // foam tips + beads pinching off the tallest peaks
@@ -5829,6 +5890,15 @@ const lab = {
     });
     lbl(ctx, 'bundles drop in 0-.42 · lashings .42-.7 · mast .7-.82 · banner .82-.95 · oar .95-1', 640, 40, 15);
   },
+  // s06 build_raft, moored in the river (bob .6) at 24 fps: build = (t % 1.6) / 1.3 — the
+  // bundles smack into the water one by one, then lashings, mast, banner, oar
+  raft_build(ctx, t) {
+    sheetBg(ctx, '#BFE3F0', '#F2E3C6');
+    waterStrip(ctx, 0, 1280, 380, 340);
+    const b = clamp((t % 1.6) / 1.3);
+    drawRaft(ctx, { x: 640, y: 560, scale: 1.25, t, bob: 0.6, wind: 0.5, build: b, buildDur: 1.3 });
+    lbl(ctx, `build ${b.toFixed(3)}  (buildDur 1.3, bob .6)`, 640, 700, 16, '#FFFFFF');
+  },
   raft_context(ctx, t) {
     sheetBg(ctx, '#F7A26B', '#6B4C8A');
     waterStrip(ctx, 0, 1280, 470, 250);
@@ -5994,11 +6064,12 @@ const lab = {
     row(560, 'thermometer: rig drawCapyThermometer | props drawThermometer (pairs)');
     drawThermometer(ctx, { x: 520, y: 540, scale: 2.2 * 0.558, level: thermoLevel(39.4), reading: '39.4', t });
     lbl(ctx, '+ reading tag', 545, 580, 12);
-    // squash: the worn splat vs the loose squash morph (different objects: the worn one is the
-    // rig accessory orange:'squashed'; cover the swap with drawJuiceSplat's first frames)
+    // squash: ONE squashed orange — the worn orange:'squashed' IS props squash 1 (the rig
+    // delegates); at the impact cover the swap with drawJuiceSplat's hit frame
     const d2 = { who: 'doreen', x: 900, y: 560, scale: 1.1, pose: 'swim', t, flip: true, accessories: { orange: 'squashed', flower: true, juice: 0.6 } };
     C.drawCapybara(ctx, d2);
-    drawOrange(ctx, { x: 1160, y: 470, r: 22, t, squash: 1 });
+    const O2 = C.capyAnchors({ ...d2, accessories: { orange: true, flower: true } }).orange;
+    drawOrange(ctx, { x: 1160, y: 470, r: O2.r, t, squash: 1 });
     lbl(ctx, "worn orange:'squashed' (rig) | loose squash:1 (props)", 1000, 640, 13);
   },
   // lighting + water: the same props under every grade (o.grade), floating with waterY
