@@ -2,105 +2,205 @@
 // See DESIGN.md §5. Everything is drawn in 1280x720 design/world units, is a pure function of
 // its inputs (time included), never uses Math.random, and restores all ctx state it touches.
 // Environments extend ≥300 units past every frame edge (camera zoom ≥ 0.75 shows no void).
+// Every public entry point sanitises its inputs: t / numeric options that are NaN, ±Infinity,
+// strings… fall back to their defaults, a null/non-object `o` means {}, and a non-finite camera
+// transform draws nothing (a NaN reaching Skia would abort the process with a Rust panic).
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // PUBLIC API
 // ─────────────────────────────────────────────────────────────────────────────
 // drawTherapyOffice(ctx, t, o)       Dr. Shelley's office inside a giant hollow log: one-point
 //                                    perspective log tunnel with carved rib arches, growth-ring
-//                                    back wall, round window (jungle + tiny Mount Snooze beyond,
-//                                    swaying leaves, light beam + dust motes), framed diploma
-//                                    'Swamp University — PhD in Feelings', a Rorschach inkblot that
-//                                    looks like an erupting volcano, alcove bookshelf, hanging
-//                                    pothos, potted fern, standing lamp + glow pool, 70s rug,
-//                                    teal log-couch (LEFT), oxblood wingback (RIGHT), side table with
-//                                    the 'Serenity' candle (lit) and the fee bowl of oranges.
-//   o.volcanoSmoke 0..1 (0.35)  smoke wisps from Mount Snooze in the window (>0.6 adds crater glow)
-//   o.puff 0..1         (0)     progress of a big dark smoke puff in the window (beat
-//                               'window_puff'): grows fast, lingers, fades out by 1
+//                                    back wall, round window (jungle + Mount Snooze beyond — the
+//                                    same silhouette as env_spring's — swaying leaves, light beam +
+//                                    dust motes), framed diploma 'Swamp University — PhD in
+//                                    Feelings', a volcano-shaped Rorschach inkblot, alcove bookshelf,
+//                                    hanging pothos, potted fern, a LIT standing lamp (glowing
+//                                    shade, warm halo + up/down light cones on the wall, a floor pool
+//                                    that catches the rug's edge, warm wash on the wingback), 70s
+//                                    rug, teal log-couch (LEFT), oxblood wingback (RIGHT), side table
+//                                    with the 'Serenity' candle (lit) and the fee bowl of oranges.
+//   o.volcanoSmoke 0..1 (0.35)  smoke from Mount Snooze in the window: 0.35 = a thin dark wisp that
+//                               reads at zoom 1; ≥0.6 a thicker column + crater glow; 0 = none
+//   o.puff 0..1         (0)     beat 'window_puff' progress (the kit runs it from window_puff to
+//                               60 % into shelley_turns): two quick little "pff"s, then a big dark
+//                               three-tier billow fills the upper-right pane (crater glow under
+//                               it), lingers, and from 0.62 is blown up-and-right OUT of the pane
+//                               (it slides behind the frame while thinning) — gone by ≈0.95. Its tail
+//                               (0.8 → 0.97) also stops the ambient wisp, so at puff ≥ 0.97 the
+//                               window shows a CLEAR BLUE SKY (+ two small white clouds). Keep puff
+//                               at 1 for the rest of s05 (the kit does) and the sky stays clear.
+//   o.clear 0..1        (0)     NEW: explicit override that suppresses the volcano wisp + glow
+//                               (1 = clear sky whatever volcanoSmoke says)
 //   o.candle   bool     (true)  candle flame + glow
 //   o.hourglass 0..1 | null     null/undefined → no hourglass; a number shows a small hourglass
 //                               on the side table, value = fraction of sand fallen (1 = time's up)
 //   o.oranges  int      (6)     oranges in the fee bowl (0..6)
 //   o.dust     bool     (true)  dust motes floating in the window light beam
-//   o.cache    bool     (true)  the static room is cached as resolution-matched tiles (≈4–15 ms
-//                               per 1080p frame instead of ≈100 ms). false = draw directly.
+//   o.cache    bool     (true)  static room (incl. the view through the window) is cached (see
+//                               PERFORMANCE). false = draw everything directly (≈100 ms/frame).
 // drawTherapyOfficeFront(ctx, t, o)  draw AFTER the characters: the couch cushion's front face
-//                                    (sinks Barry's belly into the cushion) + the wingback's near
-//                                    arm (hides Shelley's lower shell / legs).
+//                                    (sinks Barry's belly into the cushion), the wingback's near arm
+//                                    (hides Shelley's lower shell / legs) and a soft daylight pool
+//                                    from the window on Shelley's head.
+//   o.shelleyLight 0..2 (1)     strength of that window light (0 = off)
 // OFFICE                              anchors (world units):
-//   couch {x:368,y:486}  origin for Barry, drawCapybara({pose:'lie', scale:1}) facing RIGHT
-//                        (head on the raised head-end); cushion top = OFFICE.couchSeatY (540)
+//   couch {x:368,y:486}  origin for Barry, drawCapybara({pose:'lie', scale:1}) facing RIGHT; the
+//                        raised head-end has NO pillow, so the space in front of his snout is clear
+//                        for the direct-address close-up; cushion top = OFFICE.couchSeatY (540)
 //   chair {x:978,y:532}  tortoise SEAT origin: drawTortoise({x,y, flip:true, scale:1}) faces LEFT
 //                        towards Barry; everything below OFFICE.armTopY (506) is hidden by the arm
-//   window {x:930,y:270,r:84}  glass centre/radius — Shelley's head sits just below it, so a
-//                        'window' shot (zoom ≈2.5 on {930,300}) frames Mount Snooze behind him
+//   window {x:905,y:217,r:80}  glass centre/radius (CHANGED: was {905,196,90} — smaller and lower so
+//                        one frame holds the whole porthole AND Shelley's head). Carved frame ring
+//                        out to OFFICE.windowOuterR (≈98): frame top ≈119, bottom ≈315, ≈13 units
+//                        clear of Shelley's head top (≈328; OFFICE.shelleyHead {935,354}). The view is
+//                        scaled with the window, so the composition inside is unchanged: transom set
+//                        high, OFFICE.crater {938,233} (CHANGED) = Mount Snooze's crater in the
+//                        lower-right pane, its smoke rises into the clear upper-right pane.
 //   diploma {x,y,w,h}, candle {x,y} (flame base), lamp {x,y} (shade bottom centre),
 //   table {x,y} (top centre), oranges {x,y} (top of pile), hourglass {x,y} (base),
 //   alcove {x,y}, fern {x,y} (pot rim), floorY (back floor edge), vp {x,y}, backR
-//   Suggested framings: office_wide {640,360,z 0.9–1}; barry_couch {400,470,z 2};
-//   shelley_cu {940,430,z 2}; window {930,300,z 2.5}.
+//   OFFICE.framings (withCamera objects): office_wide {640,360,z1} (z0.9 also clean),
+//     barry_couch {400,470,z2}, shelley_cu {935,400,z2}, window {914,268,z2.0} (CHANGED: the whole
+//     porthole + Shelley's head and neck swivel). The kit's own window framing {912,286,z2.05}
+//     (+push 0.004) also holds both: frame top ≥ 6 units inside the frame for the whole beat.
 //
 // drawRiverSunset(ctx, t, o)        aftermath: wide calm river at sunset (#FF9E5E → #5B3A7A sky),
 //                                    low sun + shimmering reflection column, layered silhouetted
-//                                    jungle banks with mirrored reflections, distant Mount Snooze
-//                                    still smoking with a faint red crater glow + lava scar, lit
-//                                    stratus clouds, first stars, birds, lily pads, drifting
-//                                    ash/embers, ripples drifting with the current.
+//                                    jungle banks with broken-up mirrored reflections, a TINY distant
+//                                    Mount Snooze (env_spring's silhouette, dusk-tinted and hazed
+//                                    toward the sky, ≈105 wide above the far treeline, crater at
+//                                    RIVER.volcano, cooled lava tongue, faint red crater glow) LEFT of
+//                                    the raft: its smoke rises ≈80 units nearly straight, then bends
+//                                    up-LEFT into a soft drifting plume (away from cast, mast, flag and
+//                                    sun). Lit stratus lenses, first stars, birds, lily pads,
+//                                    ash/embers, ripples drifting with the current. Nothing with x
+//                                    in 440…860 stands above the horizon except the low far hills /
+//                                    scrub line (that band is behind the raft's cast in every shot).
 //   o.ash 0..1        (0.35)  drifting ash flakes + glowing embers
-//   o.smoke 0..1      (1)     Mount Snooze smoke column
-//   o.glow 0..1       (1)     Mount Snooze crater/lava glow
-//   o.sunset 0..1     (0)     0 = sun resting on the horizon; 1 = sun sunk ~40 units lower
+//   o.smoke 0..1      (1)     Mount Snooze smoke column (0 = none)
+//   o.glow 0..1       (1)     Mount Snooze crater glow
+//   o.volcano {x,y}           NEW, optional per-shot CHEAT of the crater position (default
+//                             RIVER.volcano; x clamped 120…1180, y 300…372, rounded). Keep it FIXED
+//                             within a shot (it is part of the cached background, like o.sun) — e.g.
+//                             {x: 598, y: 352} tucks it right behind Barry's shoulder in a tight CU.
+//   o.sun {x,y} | o.sunX / o.sunY   sun position (default RIVER.sun {955,350}: clear of the cast;
+//                             e.g. {x:645,y:356} puts it right behind Barry for 'Am I chill?').
+//                             x is clamped to the river opening 600…1040. The sky glow is part of the
+//                             cached background, so keep it fixed within a shot (changing it per
+//                             frame re-renders the background every frame).
+//   o.sunset 0..1     (0)     0 = sun resting on the horizon; 1 = sunk ~38 units, tucked behind the
+//                             far hills (may be animated freely)
 //   o.flow            (1)     ripple drift speed multiplier
-//   o.birds           (true)  three tiny distant birds
-//   o.raft            (true)  dark raft shadow + back halves of the wake rings at the raft position
+//   o.birds           (true)  three tiny distant birds (high in the sky, clear of Gerald's perch)
+//   o.raft            (true)  soft raft shadow + back halves of the wake rings at the raft position
 //   o.raftX/raftY/raftW       raft waterline centre / width (default RIVER.raftPos, 330)
-// drawRiverFront(ctx, t, o)         draw AFTER the raft + cast: translucent water band that
-//                                    submerges the raft's lower edge (seamless: it re-renders the
-//                                    same water), waterline glints + foam, front halves of the wake
-//                                    rings, a few near ash flakes/embers, dark foreground reeds +
-//                                    cattails (bottom corners) and a drooping palm frond (top-left).
-//   o.raftX (640) o.raftY (520) o.raftW (330)  raft waterline centre / width (move with the raft)
+//   o.cache           (true)  static background cache (false = draw directly)
+// drawRiverFront(ctx, t, o)         draw AFTER the raft + cast: a THIN lapping strip just under the
+//                                    waterline (≈15 units, feathered down and at both ends) that
+//                                    hides the raft's submerged edge without hiding its reflection,
+//                                    waterline glints + foam, front halves of the wake rings, near
+//                                    ash, foreground reeds + cattails and a drooping palm frond.
+//   o.raftX (640) o.raftY (520) o.raftW (330)  raft waterline centre / width (move with the raft;
+//                 raftW 0 = no strip/wake)
 //   o.foreground (true)  foreground silhouettes;  o.wake (true)  wake rings + foam
-//   o.ash (0.35)  same as above;  o.grade 0..1 (0)  optional sunset colour grade over the whole
-//                 frame (lilac multiply + warm backlight) — sits daylight-coloured characters into
-//                 the sunset; costs ≈10 ms at 1080p, so use it for held shots / close-ups.
+//   o.ash (0.35)  same as above;  o.grade 0..1 (0)  sunset colour grade over the whole frame (one
+//                 cached multiply: warm near the sun, lilac away from it) — sits daylight-coloured
+//                 characters into the sunset; ≈3 ms at 1080p.
 // drawRiverReflection(ctx, t, o, fn) mirror-draws fn(ctx2) (e.g. the raft + cast) into the water as
-//                                    a rippled, fading reflection. Call after drawRiverSunset and
-//                                    BEFORE drawing the raft. fn is called ONCE (into a scratch
-//                                    canvas with the same transform), then blitted in 26 strips.
+//                                    a rippled, fading reflection. fn is called ONCE into a scratch
+//                                    canvas with the same transform, then blitted in whole-pixel
+//                                    strips (3–4 device px, so close-ups stay smooth), each offset by
+//                                    a smooth function of depth (gentler in close-ups) and faded
+//                                    continuously — strongest right under the waterline.
 //   o.y (RIVER.raftPos.y)  waterline / mirror axis;  o.x0, o.x1  horizontal extent (world units)
 //   o.depth (150)  how far below the waterline it reaches;  o.alpha (0.45)
+//   o.drawSource (false)  NEW: ALSO composite fn's own un-mirrored drawing at 1:1 afterwards, so the
+//                 caller does NOT call fn a second time. Recommended pipeline:
+//                   drawRiverSunset → drawRiverReflection(…, {…, drawSource:true}, raftAndCast)
+//                   → drawRiverFront
+//                 Pixel-equivalent to drawing fn directly (same device transform, integer blit;
+//                 fn must use source-over drawing only — the characters/props do) and it halves
+//                 the cost of the raft + cast in every raft shot (they were rendered twice).
 //   (assumes the camera is not rotated by more than shake-level amounts)
+// riverFrameVolcano(cam, keep, margin = 14, volcano)  NEW, pure: returns a copy of camera
+//   {x,y,zoom,...} shifted as little as possible (zoomed out only if it cannot fit) so that the
+//   smoking volcano box (RIVER.volcanoBox, or the box of a cheated `volcano` {x,y}) plus every
+//   {x0,y0,x1,y1} in `keep` (e.g. Barry's head) is in frame with `margin` units to spare.
 // RIVER                               anchors: raftPos {640,520} (raft waterline centre),
-//   waterY 392 (= horizonY, far water edge; water spans waterY → bottom), sun {x,y,r},
-//   volcano {x,y} (crater), banks {left,right} (where each bank meets the far water).
-//   Cast on the raft reads best at scale ≈0.7–0.8. Suggested framings: raft_wide {640,360,z1};
-//   barry_cu {600,440,z2}; volcano {360,290,z2.5}.
+//   waterY 392 (= horizonY, far water edge; water spans waterY → bottom), sun {x:955,y:350,r:46},
+//   volcano {x:404,y:338} (crater; CHANGED: was 450,280 — smaller, lower, left of the cast and
+//   clear of the kit's gerald_flag frame), volcanoTop {x:391,y:262} (NEW: top of the readable smoke
+//   column, ≈76 above the crater), volcanoBox {x0:348,y0:252,x1:462,y1:380} (NEW: cone above the treeline + readable smoke — a
+//   close-up that contains it reads as "tiny Mount Snooze, still smoking"), banks {left,right}.
+//   The cast sits on the raft at scale ≈0.55–0.6 (the kit's layout). RIVER.framings:
+//   raft_wide {640,360,z1}, barry_cu {572,372,z2.35} (CHANGED: Barry + the smoking volcano over his
+//   shoulder), gerald_flag {680,300,z2.4}, fish {640,540,z2}, volcano {398,312,z2.6} (CHANGED).
+//   RIVER.volcanoCU {barryFacingRight, barryFacingLeft}: {volcano, cam} close-up cheats (NEW) — pass
+//   .volcano as o.volcano for that shot and frame with .cam: tiny Mount Snooze right behind
+//   Barry's shoulder, smoke rising out of frame (lab sheet river_kit, bottom-right).
+//   NOTE for the kit: a scale-normalised Barry CU at zoom ≈4 with his eye at screen y≈335 only
+//   shows world y ≥ ≈340, i.e. ≤50 units of sky above the horizon — no background element can
+//   appear "over his shoulder" there. Use RIVER.volcanoCU (eye at screen y≈430, zoom 3.3 + the
+//   o.volcano cheat), RIVER.framings.barry_cu (wider, default volcano) or riverFrameVolcano.
 //
 // drawTitleCard(ctx, t, o)          full-frame title card; t = seconds since the card began.
 //   o.style  'woody' (default) | 'groovy'
-//   o.lines  strings or {text, size, font, color, spacing, gap}
-//            woody: pure black card, white Yeseva caps, centred, generous letter-spacing; first
-//                   line is the big one (o.size, default 74), following lines default 0.5x.
-//                   No animation except fades. Default lines ['CHILL CAPYBARA'].
+//   o.lines  strings or {text, size, font, color, spacing, gap, at, fade, wrap}
+//            woody: white serif (Yeseva) on pure black, centred, no animation except fades. All-caps
+//                   lines are tracked (0.14em); mixed / lower-case lines are set solid (0.01em).
+//                   Long lines wrap with balanced breaks at o.wrap (980) / line.wrap (a break after
+//                   . , ; : is preferred; '\n' forces one). lines[0] uses o.size (74), later lines
+//                   default to max(40, 0.55·size). line.at (s) + line.fade (0.5) reveal a line later
+//                   on the same card without moving the others (s10: 'CHILL CAPYBARA', then
+//                   {text:'THE END', at:0.9}). A missing/null text renders as ''. o.bg (#000) colour,
+//                   or o.bg:false = no background, so cards can be layered. Default ['CHILL CAPYBARA'].
+//                   The exact s02/s10 cards are rendered in lab sheet 'titles_script'.
 //            groovy: end-title treatment — lines[0] = title (default 'Chill Capybara', Shrikhand,
 //                   sunset gradient + extruded shadow, letters pop in one by one then gently wave),
-//                   lines[1] (or o.sub) = subtitle (default 'THE END'). A striped 70s sun rises,
-//                   a capybara silhouette surfaces in front of it and an orange bounces onto its
-//                   head (t≈1.3–2.1), subtitle fades up at t≈2.
+//                   lines[1] (or o.sub) = subtitle (default 'THE END', fades up at t≈2.3). A striped
+//                   70s sun rises, a capybara silhouette surfaces and an orange arcs in from off-frame
+//                   right — always below the title — landing on its head at t=2.0 with two small
+//                   bounces (≤20 units) and squash keyed to each contact.
 //   o.fadeIn (0) / o.fadeOut (0) seconds; o.dur (Infinity) card length (fadeOut ends at dur)
-//   o.size   title font size (woody 74, groovy 108 — auto-shrinks to fit);  o.bg (groovy bg colour)
+//   o.size   title font size (woody 74, groovy 108 — auto-shrinks to fit);  o.wrap (woody, 980)
+//   o.cache  (groovy, true) backdrop + finished title letters are cached bitmaps (false = direct)
 // drawCaption(ctx, t, o)            animated caption overlay (e.g. 'THREE WEEKS LATER')
 //   o.text ('THREE WEEKS LATER'), o.style 'plank' (wooden sign drops in on ropes with a springy
 //   bounce + swing, yanked back up on exit) | 'banner' (70s stripes sweep across, a cream pill
 //   pops in with sparkles; everything wipes out to the right)
 //   o.inT (0) entrance start, o.outT (Infinity) exit start (same clock as t); o.x (640),
 //   o.y (plank 112 / banner 110), o.scale (1). Draws nothing outside [inT, outT + 0.75].
+// prewarm(which = 'all' | 'office' | 'river', outScale = 1.5)  optional: builds the static-layer
+//   tiles for the OFFICE/RIVER framings up front (≈1 s for all at 1080p) so the first frame of each
+//   shot doesn't pay it. outScale = output px per design unit (1.5 for 1080p).
 //
-// lab sheets: office, office_cast, office_framings, office_live (real cast when available),
-//             river, river_framings, river_live (cast + reflection + grade), titles,
-//             titles_groovy (single card; use --frames), caption (use --t / --frames)
+// PERFORMANCE (1920x1080, flushed, measured through the kit's stages with its drift + push on —
+// how scenes call it — on this shared, busy 4-core box): office ≈15–18 ms (window shot with the
+// puff ≈17.5, was ≈22–27) + front ≈2–3 ms; river sunset ≈19–22 ms + front ≈3 ms (+≈3 ms grade);
+// reflection ≈2 ms + one render of fn — with o.drawSource the kit's raft_wide frame drops from
+// ≈109 to ≈70–84 ms because the raft + cast are no longer rendered twice; groovy title ≈14 ms
+// (was ≈24). Static layers are cached three ways:
+//   · grid-aligned TILES per zoom level (built once; the first frame at a new level pays one
+//     static render, ≈0.1–0.5 s — see prewarm());
+//   · a per-shot COMPOSITE: the tiles covering the view (snapped to a 128-unit grid) copied once
+//     into one canvas, so a moving camera costs ONE filtered drawImage per frame (≈10–12 ms at
+//     1080p — the floor of Skia's bilinear resampling of a full frame on this box; ≈15–20 %
+//     cheaper than blitting the ~15–20 tiles, which turned out NOT to be the main cost);
+//   · from the 2nd frame of a truly held shot, a full-frame snapshot at that exact transform (one
+//     1:1 blit, ≈3 ms).
+// The window view (live layer) is drawn into a small exact-size device-space scratch and masked
+// once instead of drawing ~20 shapes through an anti-aliased even-odd clip (11.8 → ≈3–6 ms).
+// Caches are pure memos keyed by constant inputs: frames are bit-identical whatever order or
+// process renders them (verified: a frame rendered alone == the same frame after 29 others).
+//
+// lab sheets: office, office_cast (anchors), office_framings, office_window (puff sequence +
+//             volcanoSmoke levels), office_live, office_kit (the REAL kit s05 window shots incl. the
+//             neck swivel), river, river_framings, river_kit (the REAL kit s08 shots: kit framings
+//             vs RIVER.framings.barry_cu / riverFrameVolcano), river_live (cast + reflection +
+//             grade), river_reflection (solid test block at z1/z2/z3), river_sun (sun options),
+//             titles, titles_script (exact s02/s10 cards), titles_groovy (use --frames), caption
+//             (use --t / --frames)
 'use strict';
 
 const U = require('./util');
@@ -264,32 +364,39 @@ function storeTile(k, cv) {
     _tileBytes -= fv.width * fv.height * 4;
   }
 }
-// render every missing tile of the block [c0..c1]x[r0..r1] with a single drawFn call
+// Tiles are rendered in fixed, grid-aligned SUPER-BLOCKS (SB x SB tiles, SB chosen from the level
+// so a block canvas stays ≈1.5k px): one drawFn call fills a whole block, then it is sliced. The
+// block a tile belongs to never depends on what was rendered before, which keeps tiles bit-exact
+// across processes/render order (Skia's AA is not translation-invariant at the bit level).
+const sbFor = (L) => clamp(Math.floor(1600 / (TILE * L)), 1, 4);
 function buildTiles(key, L, c0, c1, r0, r1, drawFn) {
-  let cm0 = Infinity, cm1 = -Infinity, rm0 = Infinity, rm1 = -Infinity;
-  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
-    if (_tiles.has(tileKey(key, L, c, r))) continue;
-    cm0 = Math.min(cm0, c); cm1 = Math.max(cm1, c); rm0 = Math.min(rm0, r); rm1 = Math.max(rm1, r);
-  }
-  if (cm0 === Infinity) return;
-  const tpx = Math.round(TILE * L);
-  const bx0 = T_X0 + cm0 * TILE, by0 = T_Y0 + rm0 * TILE;
-  const big = napi().createCanvas((cm1 - cm0 + 1) * tpx + 2 * TPAD, (rm1 - rm0 + 1) * tpx + 2 * TPAD);
-  const bc = big.getContext('2d');
-  bc.setTransform(L, 0, 0, L, TPAD - bx0 * L, TPAD - by0 * L);
-  drawFn(bc);
-  for (let r = rm0; r <= rm1; r++) for (let c = cm0; c <= cm1; c++) {
-    const k = tileKey(key, L, c, r);
-    if (_tiles.has(k)) continue;
-    const cv = napi().createCanvas(tpx + 2 * TPAD, tpx + 2 * TPAD);
-    cv.getContext('2d').drawImage(big, (c - cm0) * tpx, (r - rm0) * tpx, tpx + 2 * TPAD, tpx + 2 * TPAD, 0, 0, tpx + 2 * TPAD, tpx + 2 * TPAD);
-    storeTile(k, cv);
+  const SB = sbFor(L), tpx = Math.round(TILE * L);
+  for (let sr = Math.floor(r0 / SB) * SB; sr <= r1; sr += SB) {
+    for (let sc = Math.floor(c0 / SB) * SB; sc <= c1; sc += SB) {
+      const ce = Math.min(T_COLS - 1, sc + SB - 1), re = Math.min(T_ROWS - 1, sr + SB - 1);
+      let missing = false;
+      for (let r = sr; r <= re && !missing; r++) for (let c = sc; c <= ce; c++) if (!_tiles.has(tileKey(key, L, c, r))) { missing = true; break; }
+      if (!missing) continue;
+      const bx0 = T_X0 + sc * TILE, by0 = T_Y0 + sr * TILE;
+      const big = napi().createCanvas((ce - sc + 1) * tpx + 2 * TPAD, (re - sr + 1) * tpx + 2 * TPAD);
+      const bc = big.getContext('2d');
+      bc.setTransform(L, 0, 0, L, TPAD - bx0 * L, TPAD - by0 * L);
+      drawFn(bc);
+      for (let r = sr; r <= re; r++) for (let c = sc; c <= ce; c++) {
+        const k = tileKey(key, L, c, r);
+        if (_tiles.has(k)) continue;
+        const cv = napi().createCanvas(tpx + 2 * TPAD, tpx + 2 * TPAD);
+        cv.getContext('2d').drawImage(big, (c - sc) * tpx, (r - sr) * tpx, tpx + 2 * TPAD, tpx + 2 * TPAD, 0, 0, tpx + 2 * TPAD, tpx + 2 * TPAD);
+        storeTile(k, cv);
+      }
+    }
   }
 }
-function drawTiles(ctx, key, drawFn, m, cw, ch) {
+// level + tile block covering a canvas of cw x ch under transform m
+function tileBlock(m, cw, ch) {
   const det = m.a * m.d - m.b * m.c;
   const s = Math.sqrt(Math.abs(det));
-  if (!(s > 1e-6)) return;
+  if (!(s > 1e-6)) return null;
   const L = levelFor(s);
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const [px, py] of [[0, 0], [cw, 0], [0, ch], [cw, ch]]) {
@@ -299,7 +406,13 @@ function drawTiles(ctx, key, drawFn, m, cw, ch) {
   }
   const c0 = Math.max(0, Math.floor((x0 - T_X0) / TILE)), c1 = Math.min(T_COLS - 1, Math.floor((x1 - T_X0) / TILE));
   const r0 = Math.max(0, Math.floor((y0 - T_Y0) / TILE)), r1 = Math.min(T_ROWS - 1, Math.floor((y1 - T_Y0) / TILE));
-  if (c1 < c0 || r1 < r0) return;
+  if (c1 < c0 || r1 < r0) return null;
+  return { L, c0, c1, r0, r1 };
+}
+function drawTiles(ctx, key, drawFn, m, cw, ch) {
+  const B = tileBlock(m, cw, ch);
+  if (!B) return;
+  const { L, c0, c1, r0, r1 } = B;
   buildTiles(key, L, c0, c1, r0, r1, drawFn);
   ctx.save();
   ctx.imageSmoothingEnabled = true;
@@ -316,6 +429,64 @@ function drawTiles(ctx, key, drawFn, m, cw, ch) {
   }
   ctx.restore();
 }
+// 3. SHOT COMPOSITES — a moving camera (drift, push, shake) never repeats a transform, so every
+//    frame used to blit ≈15–20 filtered tiles. Instead the tiles covering the view plus a drift
+//    margin are copied ONCE (integer offsets at the tile level: an exact copy) into one canvas, and
+//    each frame is a single filtered drawImage of it (≈15–20 % cheaper; the floor is Skia's
+//    bilinear resampling of a full 1080p frame, ≈10–12 ms on this box). Its rect is snapped to a
+//    coarse grid from the frame's own view, so it is rebuilt only when the view crosses a grid line
+//    or the level changes, and its content is a pure function of (layer, level, rect).
+const _comps = [];                   // [{key, L, x0, y0, x1, y1, cv}] most recent last
+const COMP_SLOTS = 3;
+function compositeFor(key, drawFn, m, cw, ch) {
+  const det = m.a * m.d - m.b * m.c;
+  const sc = Math.sqrt(Math.abs(det));
+  if (!(sc > 1e-6)) return null;
+  const L = levelFor(sc);
+  let vx0 = Infinity, vy0 = Infinity, vx1 = -Infinity, vy1 = -Infinity;
+  for (const [px, py] of [[0, 0], [cw, 0], [0, ch], [cw, ch]]) {
+    const dx = px - m.e, dy = py - m.f;
+    const wx = (m.d * dx - m.c * dy) / det, wy = (-m.b * dx + m.a * dy) / det;
+    vx0 = Math.min(vx0, wx); vx1 = Math.max(vx1, wx); vy0 = Math.min(vy0, wy); vy1 = Math.max(vy1, wy);
+  }
+  // only the tiled world can be covered (views zoomed out past it show the plain fill beyond)
+  const WX0 = T_X0, WY0 = T_Y0, WX1 = T_X0 + T_COLS * TILE, WY1 = T_Y0 + T_ROWS * TILE;
+  vx0 = Math.max(vx0, WX0); vy0 = Math.max(vy0, WY0); vx1 = Math.min(vx1, WX1); vy1 = Math.min(vy1, WY1);
+  if (vx1 <= vx0 || vy1 <= vy0) return null;
+  // The composite's rect is a pure function of THIS frame's view (view + a small pad, snapped
+  // outward to a coarse 128-unit grid), so a frame resamples exactly the same canvas whatever was
+  // rendered before it (bit-identical across render order / processes). A slow drift or push
+  // keeps the same rect for many frames; crossing a grid line simply builds the next one.
+  const g = 128, pad = 4 / sc + 6;
+  const x0 = Math.max(WX0, Math.floor((vx0 - pad) / g) * g), y0 = Math.max(WY0, Math.floor((vy0 - pad) / g) * g);
+  const x1 = Math.min(WX1, Math.ceil((vx1 + pad) / g) * g), y1 = Math.min(WY1, Math.ceil((vy1 + pad) / g) * g);
+  for (let i = _comps.length - 1; i >= 0; i--) {
+    const C = _comps[i];
+    if (C.key === key && C.L === L && C.x0 === x0 && C.y0 === y0 && C.x1 === x1 && C.y1 === y1) {
+      if (i !== _comps.length - 1) { _comps.splice(i, 1); _comps.push(C); }
+      return C;
+    }
+  }
+  const W = Math.round((x1 - x0) * L), H = Math.round((y1 - y0) * L);
+  if (W < 1 || H < 1 || W * H > 24e6) return null;
+  const cv = napi().createCanvas(W, H);
+  const cc = cv.getContext('2d');
+  cc.setTransform(L, 0, 0, L, -x0 * L, -y0 * L);
+  drawTiles(cc, key, drawFn, cc.getTransform(), W, H);
+  const C = { key, L, x0, y0, x1, y1, cv };
+  _comps.push(C);
+  while (_comps.length > COMP_SLOTS) _comps.shift();
+  return C;
+}
+function drawComposite(ctx, key, drawFn, m, cw, ch) {
+  const C = compositeFor(key, drawFn, m, cw, ch);
+  if (!C) { drawTiles(ctx, key, drawFn, m, cw, ch); return; }
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'low';
+  ctx.drawImage(C.cv, C.x0, C.y0, C.cv.width / C.L, C.cv.height / C.L);
+  ctx.restore();
+}
 function drawCached(ctx, key, drawFn) {
   if (!finiteCtx(ctx)) return;
   const m = ctx.getTransform();
@@ -325,18 +496,19 @@ function drawCached(ctx, key, drawFn) {
   const fk = key + '|' + cw + 'x' + ch + '|' + q(m.a) + ',' + q(m.b) + ',' + q(m.c) + ',' + q(m.d) + ',' + q(m.e) + ',' + q(m.f);
   let fr = _frames.get(fk);
   if (fr === undefined) {
-    // first sighting: draw through the tiles, remember the transform
+    // first sighting: draw through the shot composite, remember the transform
     _frames.set(fk, null);
     if (_frames.size > 96) for (const [k, v] of _frames) { if (v === null) { _frames.delete(k); break; } }
-    drawTiles(ctx, key, drawFn, m, cw, ch);
+    drawComposite(ctx, key, drawFn, m, cw, ch);
     return;
   }
   if (fr === null) {
-    // second sighting: this is a held shot → compose a full-frame snapshot once
+    // second sighting: this is a held shot → compose a full-frame snapshot once (from the same
+    // composite, so held and moving frames resample identically)
     fr = napi().createCanvas(cw, ch);
     const fc = fr.getContext('2d');
     fc.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
-    drawTiles(fc, key, drawFn, m, cw, ch);
+    drawComposite(fc, key, drawFn, m, cw, ch);
     let n = 0;
     for (const v of _frames.values()) if (v) n++;
     if (n >= FRAME_SLOTS) for (const [k, v] of _frames) { if (v) { _frames.delete(k); break; } }
@@ -365,8 +537,8 @@ const OFFICE = {
   chair: { x: 978, y: 532 },
   chairSeatY: 528,
   armTopY: 506,
-  window: { x: 905, y: 196, r: 90 },
-  crater: { x: 942, y: 214 },        // Mount Snooze's crater as seen through the window
+  window: { x: 905, y: 217, r: 80 },
+  crater: { x: 938, y: 233 },        // Mount Snooze's crater as seen through the window (set below)
   shelleyHead: { x: 935, y: 354 },   // where Dr. Shelley's head sits (on plain wall, below the window)
   diploma: { x: 412, y: 222, w: 156, h: 116 },
   alcove: { x: 640, y: 372 },
@@ -376,6 +548,30 @@ const OFFICE = {
   oranges: { x: 820, y: 478 },
   lamp: { x: 1182, y: 296 },
   fern: { x: 98, y: 622 },
+};
+
+// The window view is authored in legacy coordinates (WIN0: the window as first designed) and
+// mapped onto OFFICE.window by winXf (uniform scale about the glass centre), so the volcano, the
+// smoke, the leaves and the mullions keep their composition whatever the window's size/position.
+const WIN0 = { x: 905, y: 196, r: 90 };
+const CRATER0 = { x: 942, y: 214 };
+const WIN_K = OFFICE.window.r / WIN0.r;
+function winXf(ctx) {
+  ctx.translate(OFFICE.window.x, OFFICE.window.y);
+  ctx.scale(WIN_K, WIN_K);
+  ctx.translate(-WIN0.x, -WIN0.y);
+}
+OFFICE.crater = { x: OFFICE.window.x + (CRATER0.x - WIN0.x) * WIN_K, y: OFFICE.window.y + (CRATER0.y - WIN0.y) * WIN_K };
+OFFICE.windowOuterR = (WIN0.r + 20) * WIN_K;     // glass + carved frame ring (top of frame = y − this)
+
+// suggested camera framings (withCamera objects) for the s05 shots
+OFFICE.framings = {
+  office_wide: { x: 640, y: 360, zoom: 1 },
+  barry_couch: { x: 400, y: 470, zoom: 2 },
+  shelley_cu: { x: 935, y: 400, zoom: 2 },
+  // the whole porthole (frame top ≈119) AND Shelley's head below it, incl. his neck swivel toward
+  // the window. The kit's {912,286,z2.05} (+push) also holds both (frame top ≥ 6 units inside).
+  window: { x: 914, y: 268, zoom: 2.0 },
 };
 
 const WOOD = {
@@ -563,7 +759,9 @@ function officeBackWall(ctx) {
 
 // ---------------------------------------------------------------- window frame (static part)
 function officeWindowFrame(ctx) {
-  const { x, y, r } = OFFICE.window;
+  const { x, y, r } = WIN0;
+  ctx.save();
+  winXf(ctx);
   // recess shadow
   glow(ctx, x + 4, y + 8, r + 40, r + 40, '#3A1A08', 0.4);
   // frame ring
@@ -606,6 +804,7 @@ function officeWindowFrame(ctx) {
     ctx.fillStyle = rgba('#F0B67C', 0.7);
     ctx.fill();
   }
+  ctx.restore();
 }
 
 // ════════════════════════════════════════════ Mount Snooze silhouette (shared with the river)
@@ -781,8 +980,9 @@ function windowWisp(ctx, t, cx, cy, amt) {
   ctx.restore();
 }
 // the big dark puff for beat 'window_puff' (p 0..1): two quick little "pff"s, then a big
-// three-tier billow that fills the upper-right pane and pushes past both mullions, lingers,
-// drifts up-right and fades to nothing by p = 1.
+// three-tier billow that fills the upper-right pane and pushes past both mullions, lingers, then
+// (p 0.62 → 0.95) is blown up and to the right, sliding out of the pane behind the frame while
+// it thins — gone by p ≈ 0.95 (the wisp is suppressed by then too: clear blue sky).
 const PUFF_LOBES = [
   // birth, grow, dx, dy, r  (final offsets from the crater, window units)
   [0.00, 0.12, 3, -9, 6.5], [0.08, 0.12, -3, -12, 7.5],
@@ -792,10 +992,11 @@ const PUFF_LOBES = [
   [0.39, 0.36, 9, -80, 18], [0.42, 0.36, -12, -86, 14], [0.43, 0.36, 30, -82, 12],
 ];
 function windowPuff(ctx, t, cx, cy, p) {
-  const A = 1 - smoothstep(0.7, 1, p);
+  const A = 1 - smoothstep(0.82, 0.96, p);
   if (p <= 0 || A <= 0.002) return;
   const lift = smoothstep(0.45, 1, p);
-  const ox = lift * 12, oy = -lift * 16, grow = 1 + 0.14 * lift;
+  const go = ease.inOutSine(smoothstep(0.62, 0.95, p));
+  const ox = lift * 12 + go * 104, oy = -lift * 16 - go * 64, grow = 1 + 0.14 * lift + 0.12 * go;
   const puffs = [];
   PUFF_LOBES.forEach(([b, d, dx, dy, r], i) => {
     const g = clamp((p - b) / d);
@@ -841,10 +1042,11 @@ const WIN_LEAVES = [
 // STATIC part of the window (cached with the room): sky, distant ridge, Mount Snooze, canopy,
 // palms, reveal shadow, sheen, mullions.
 function officeWindowStatic(ctx) {
-  const { x, y, r } = OFFICE.window;
-  const { x: vx, y: vy } = OFFICE.crater;
+  const { x, y, r } = WIN0;
+  const { x: vx, y: vy } = CRATER0;
   const ty = y + WIN_TRANSOM;
   ctx.save();
+  winXf(ctx);
   circle(ctx, x, y, r);
   ctx.clip();
   ctx.fillStyle = lg(ctx, 0, y - r, 0, y + r, [[0, '#6FC0EA'], [0.55, '#B9E3F2'], [1, '#FCE9C6']]);
@@ -907,95 +1109,149 @@ function officeWindowStatic(ctx) {
   fillStroke(ctx, '#8A5230', '#4A2611', 1.3);
   ctx.restore();
 }
-// clip to the panes (the glass minus the mullions)
-function windowPaneClip(ctx) {
-  const { x, y, r } = OFFICE.window;
-  const ty = y + WIN_TRANSOM, mw = WIN_MW + 0.6;
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, TAU);
-  ctx.rect(x - mw / 2, y - r, mw, r * 2);
-  ctx.clip('evenodd');
-  ctx.beginPath();
-  ctx.rect(x - r - 2, y - r - 2, r * 2 + 4, r * 2 + 4);
-  ctx.rect(x - r - 2, ty - mw / 2, r * 2 + 4, mw);
-  ctx.clip('evenodd');
-  circle(ctx, x, ty, 6);
-  ctx.rect(x - r - 2, y - r - 2, r * 2 + 4, r * 2 + 4);
-  ctx.clip('evenodd');
-}
 // LIVE part: drifting clouds, the smoke wisp + puff (rising out of the crater, behind nothing but
-// the cone), crater glow, swaying leaves on the left rim.
+// the cone), swaying leaves on the left rim, then the crater glow.
+// Performance: drawing ~20 shapes inside an anti-aliased even-odd pane clip cost 9–12 ms at 1080p
+// (Skia re-masks the clip for every draw). Instead the view is drawn UNCLIPPED into a small
+// device-space scratch canvas (same transform, integer offset), masked once (panes = glass minus
+// mullions, cone cut out of the smoke) and blitted 1:1 — pixel-equivalent, ≈3–4 ms.
+let _winScratch = null;
+function windowPuffClear(o, puff) {
+  // the big puff's tail (puff 0.8 → 0.97) also stops the ambient wisp: clear blue sky by the end
+  return Math.max(clamp(fin(o.clear, 0)), smoothstep(0.8, 0.97, puff));
+}
 function officeWindowLive(ctx, t, o) {
-  const { x, y, r } = OFFICE.window;
-  const smoke = clamp(fin(o.volcanoSmoke, 0.35), 0, 1.5);
+  const smoke0 = clamp(fin(o.volcanoSmoke, 0.35), 0, 1.5);
   const puff = clamp(fin(o.puff, 0));
-  const { x: vx, y: vy } = OFFICE.crater;
-  ctx.save();
-  windowPaneClip(ctx);
-  // two small clouds drifting slowly across the upper panes
+  const clr = windowPuffClear(o, puff);
+  const smoke = smoke0 * (1 - clr);
+  const W = OFFICE.window;
+  const m = ctx.getTransform();
+  // device-space bounding box of the glass
+  let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  const R = W.r + 3;
+  for (const [px, py] of [[W.x - R, W.y - R], [W.x + R, W.y - R], [W.x - R, W.y + R], [W.x + R, W.y + R]]) {
+    const dx = m.a * px + m.c * py + m.e, dy = m.b * px + m.d * py + m.f;
+    bx0 = Math.min(bx0, dx); bx1 = Math.max(bx1, dx); by0 = Math.min(by0, dy); by1 = Math.max(by1, dy);
+  }
+  const cw = (ctx.canvas && ctx.canvas.width) || Infinity, ch = (ctx.canvas && ctx.canvas.height) || Infinity;
+  bx0 = Math.max(0, Math.floor(bx0)); by0 = Math.max(0, Math.floor(by0));
+  bx1 = Math.min(cw, Math.ceil(bx1), bx0 + 4096); by1 = Math.min(ch, Math.ceil(by1), by0 + 4096);
+  const bw = bx1 - bx0, bh = by1 - by0;
+  if (bw >= 1 && bh >= 1) {
+    // exactly bw×bh (re-used only at the same size): Skia's output must not depend on what a
+    // previous frame left behind, so frames stay bit-identical whatever order they render in
+    if (!_winScratch || _winScratch.width !== bw || _winScratch.height !== bh) _winScratch = napi().createCanvas(bw, bh);
+    const c = _winScratch.getContext('2d');
+    c.save();
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.globalCompositeOperation = 'source-over';
+    c.globalAlpha = 1;
+    c.clearRect(0, 0, bw, bh);
+    c.setTransform(m.a, m.b, m.c, m.d, m.e - bx0, m.f - by0);
+    winXf(c);
+    windowViewLive(c, t, smoke, puff, clr);
+    c.restore();
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(_winScratch, 0, 0, bw, bh, bx0, by0, bw, bh);
+    ctx.restore();
+  }
+  // crater glow: from volcanoSmoke 0.6 up, and flaring with the puff (stays visible under it). It
+  // sits well inside the lower-right pane, so it needs no clip; 'screen' needs the real background.
+  const { x: vx, y: vy } = CRATER0;
+  const pg = clamp(puff / 0.06) * (1 - smoothstep(0.55, 0.95, puff));
+  const cg = Math.max(clamp((smoke - 0.55) * 1.6, 0, 0.8), pg * (0.85 + 0.15 * Math.sin(t * 9)));
+  if (cg > 0.01) {
+    ctx.save();
+    winXf(ctx);
+    ctx.globalCompositeOperation = 'screen';
+    glow(ctx, vx, vy + 1, 24, 10, '#FF7A2E', 0.9 * cg);
+    ctx.globalCompositeOperation = 'source-over';
+    ellipse(ctx, vx, vy + 1.6, 15, 2.2);
+    ctx.fillStyle = rgba('#FF9A4A', 0.9 * cg);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+// draws the live window view in WIN0 coordinates onto a TRANSPARENT scratch, then masks it
+function windowViewLive(c, t, smoke, puff, clr) {
+  const { x, y, r } = WIN0;
+  const { x: vx, y: vy } = CRATER0;
+  // 1. smoke (nearest of the sky layers), cut by the cone so it rises out of the crater
+  windowWisp(c, t, vx, vy, (smoke + 0.35 * clamp(puff * 4) * (1 - puff)) * (1 - clr));
+  windowPuff(c, t, vx, vy, puff);
+  c.save();
+  c.globalCompositeOperation = 'destination-out';
+  c.beginPath();
+  snoozeOutlineTrace(c, vx, vy, 0.42, y + r + 4);
+  c.fillStyle = '#000';
+  c.fill();
+  // 2. BEHIND the smoke: the view darkens a touch while the big puff shades the sun …
+  c.globalCompositeOperation = 'destination-over';
+  const dim = smoothstep(0.25, 0.5, puff) * (1 - smoothstep(0.75, 1, puff));
+  if (dim > 0.005) {
+    c.fillStyle = rgba('#4A5878', 0.16 * dim);
+    c.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+  // … and two small clouds drift slowly across the upper panes (under the dim)
   for (let i = 0; i < 2; i++) {
     const span = r * 2 + 90;
     const cxl = x - r - 45 + frac((t * 2.4 + i * 131) / span) * span;
     const cyl = y - 58 + i * 26;
     const s = i ? 0.75 : 1;
-    ctx.fillStyle = 'rgba(255,255,255,0.88)';
-    ctx.beginPath();
-    for (const [dx, dy, rr] of [[0, 0, 9], [11, -4, 11], [23, 0, 8], [-10, 2, 6.5]]) { ctx.moveTo(cxl + dx * s + rr * s, cyl + dy * s); ctx.arc(cxl + dx * s, cyl + dy * s, rr * s, 0, TAU); }
-    ctx.fill();
-    ctx.fillStyle = 'rgba(200,220,240,0.6)';
-    ctx.fillRect(cxl - 14 * s, cyl + 4 * s, 44 * s, 3.5 * s);
+    c.fillStyle = 'rgba(200,220,240,0.6)';
+    c.fillRect(cxl - 14 * s, cyl + 4 * s, 44 * s, 3.5 * s);
+    c.fillStyle = 'rgba(255,255,255,0.88)';
+    c.beginPath();
+    for (const [dx, dy, rr] of [[0, 0, 9], [11, -4, 11], [23, 0, 8], [-10, 2, 6.5]]) { c.moveTo(cxl + dx * s + rr * s, cyl + dy * s); c.arc(cxl + dx * s, cyl + dy * s, rr * s, 0, TAU); }
+    c.fill();
   }
-  // the view darkens a touch while the big puff shades the sun
-  const dim = smoothstep(0.25, 0.5, puff) * (1 - smoothstep(0.75, 1, puff));
-  if (dim > 0.005) {
-    ctx.fillStyle = rgba('#4A5878', 0.16 * dim);
-    ctx.fillRect(x - r, y - r, r * 2, r * 2);
-  }
-  // smoke: rises out of the crater, so the cone hides its root
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(x - r - 4, y - r - 4, r * 2 + 8, r * 2 + 8);
-  snoozeOutlineTrace(ctx, vx, vy, 0.42, y + r + 4);
-  ctx.clip('evenodd');
-  windowWisp(ctx, t, vx, vy, smoke + 0.35 * clamp(puff * 4) * (1 - puff));
-  windowPuff(ctx, t, vx, vy, puff);
-  ctx.restore();
-  // crater glow: from volcanoSmoke 0.6 up, and flaring with the puff (stays visible under it)
-  const pg = clamp(puff / 0.06) * (1 - smoothstep(0.55, 0.95, puff));
-  const cg = Math.max(clamp((smoke - 0.55) * 1.6, 0, 0.8), pg * (0.85 + 0.15 * Math.sin(t * 9)));
-  if (cg > 0.01) {
-    ctx.save();
-    ctx.globalCompositeOperation = 'screen';
-    glow(ctx, vx, vy + 1, 24, 10, '#FF7A2E', 0.9 * cg);
-    ctx.restore();
-    ellipse(ctx, vx, vy + 1.6, 15, 2.2);
-    ctx.fillStyle = rgba('#FF9A4A', 0.9 * cg);
-    ctx.fill();
-  }
-  // swaying jungle leaves framing the LEFT rim only
-  WIN_LEAVES.forEach(([dx, dy, L, W, a, col], i) => {
+  c.restore();
+  // 3. swaying jungle leaves framing the LEFT rim only (in front of everything)
+  WIN_LEAVES.forEach(([dx, dy, L, Wd, a, col], i) => {
     const lx = x - r + dx, ly = y + dy;
     const sway = Math.sin(t * 1.1 + i * 1.7) * 0.07 + noise1(t * 0.6 + i * 9) * 0.04;
-    leafPath(ctx, lx, ly, L, W, a + sway, 0.18);
-    ctx.fillStyle = col;
-    ctx.fill();
-    ctx.save();
-    ctx.translate(lx, ly);
-    ctx.rotate(a + sway);
-    ctx.beginPath();
-    ctx.moveTo(2, 0);
-    ctx.quadraticCurveTo(L * 0.5, L * 0.06, L * 0.95, L * 0.05);
-    ctx.strokeStyle = rgba('#8CCB7A', 0.7);
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-    ctx.restore();
+    leafPath(c, lx, ly, L, Wd, a + sway, 0.18);
+    c.fillStyle = col;
+    c.fill();
+    c.save();
+    c.translate(lx, ly);
+    c.rotate(a + sway);
+    c.beginPath();
+    c.moveTo(2, 0);
+    c.quadraticCurveTo(L * 0.5, L * 0.06, L * 0.95, L * 0.05);
+    c.strokeStyle = rgba('#8CCB7A', 0.7);
+    c.lineWidth = 1.2;
+    c.stroke();
+    c.restore();
   });
   // re-darken the rim over the leaves (the frame's reveal shadow)
-  circle(ctx, x, y, r - 4);
-  ctx.strokeStyle = 'rgba(60,30,10,0.3)';
-  ctx.lineWidth = 9;
-  ctx.stroke();
-  ctx.restore();
+  circle(c, x, y, r - 4);
+  c.strokeStyle = 'rgba(60,30,10,0.3)';
+  c.lineWidth = 9;
+  c.stroke();
+  // 4. mask to the panes: cut away everything outside the glass, then the mullions + hub.
+  // (destination-out only — @napi-rs/canvas mis-bounds the unbounded 'destination-in' under a
+  // translated transform and wipes the whole canvas)
+  const ty = y + WIN_TRANSOM, mw = WIN_MW + 0.6;
+  c.save();
+  c.globalCompositeOperation = 'destination-out';
+  c.fillStyle = '#000';
+  c.beginPath();
+  c.rect(x - r - 80, y - r - 80, r * 2 + 160, r * 2 + 160);
+  c.moveTo(x + r, y);
+  c.arc(x, y, r, 0, TAU);
+  c.fill('evenodd');
+  c.beginPath();
+  c.rect(x - mw / 2, y - r - 2, mw, r * 2 + 4);
+  c.rect(x - r - 2, ty - mw / 2, r * 2 + 4, mw);
+  c.moveTo(x + 6, ty);
+  c.arc(x, ty, 6, 0, TAU);
+  c.fill();
+  c.restore();
 }
 
 // ---------------------------------------------------------------- diploma
@@ -1884,16 +2140,22 @@ function officeChair(ctx) {
     ctx.restore();
   }
   // back: a slim, slightly reclined slab with the (far) wing sweeping forward
-  ctx.beginPath();
-  ctx.moveTo(1046, 596);
-  ctx.lineTo(1050, 486);
-  ctx.bezierCurveTo(1030, 474, 1012, 450, 1010, 414);
-  ctx.bezierCurveTo(1008, 380, 1022, 352, 1046, 340);
-  ctx.bezierCurveTo(1068, 326, 1104, 324, 1122, 338);
-  ctx.bezierCurveTo(1138, 350, 1138, 378, 1134, 410);
-  ctx.bezierCurveTo(1130, 450, 1130, 520, 1128, 596);
-  ctx.closePath();
+  const backPath = () => {
+    ctx.beginPath();
+    ctx.moveTo(1046, 596);
+    ctx.lineTo(1050, 486);
+    ctx.bezierCurveTo(1030, 474, 1012, 450, 1010, 414);
+    ctx.bezierCurveTo(1008, 380, 1022, 352, 1046, 340);
+    ctx.bezierCurveTo(1068, 326, 1104, 324, 1122, 338);
+    ctx.bezierCurveTo(1138, 350, 1138, 378, 1134, 410);
+    ctx.bezierCurveTo(1130, 450, 1130, 520, 1128, 596);
+    ctx.closePath();
+  };
+  backPath();
   ctx.fillStyle = lg(ctx, 1008, 0, 1138, 0, [[0, '#A84C58'], [0.5, VELVET.base], [1, VELVET.lo]]);
+  ctx.fill();
+  // warm wash from the standing lamp on the right of the back (strongest up near the shade)
+  ctx.fillStyle = rg(ctx, OFFICE.lamp.x - 10, OFFICE.lamp.y - 20, 30, 240, [[0, rgba('#FF9E58', 0.5)], [0.45, rgba('#F07A50', 0.24)], [1, rgba('#F07A50', 0)]]);
   ctx.fill();
   ctx.strokeStyle = VELVET.line;
   ctx.lineWidth = 2.2;
@@ -2156,13 +2418,22 @@ function officeLampGlowWall(ctx) {
   ctx.restore();
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
-  glow(ctx, x - 10, y - 10, 460, 400, '#FFAA4A', 0.36);
-  glow(ctx, x, y - 20, 170, 150, '#FFE0A0', 0.32);
-  // soft cone of light below the shade (stacked low-alpha cones = soft edges)
-  for (let i = 0; i < 4; i++) {
-    const k = 0.55 + i * 0.22;
-    poly(ctx, [[x - 50 * k, y + 2], [x + 50 * k, y + 2], [x + 260 * k, 700], [x - 280 * k, 700]]);
-    ctx.fillStyle = lg(ctx, 0, y, 0, 700, [[0, 'rgba(255,214,140,0.1)'], [1, 'rgba(255,214,140,0)']]);
+  glow(ctx, x - 10, y - 10, 460, 400, '#FFAA4A', 0.4);
+  // warm halo on the wall around the shade
+  glow(ctx, x, y - 38, 230, 200, '#FFC870', 0.42);
+  glow(ctx, x, y - 34, 120, 105, '#FFE6B0', 0.5);
+  // light escaping through the shade's top opening: a soft cone up the wall
+  for (let i = 0; i < 5; i++) {
+    const k = 0.6 + i * 0.18;
+    poly(ctx, [[x - 34, y - 74], [x + 34, y - 74], [x + 150 * k, y - 330], [x - 140 * k, y - 330]]);
+    ctx.fillStyle = lg(ctx, 0, y - 74, 0, y - 330, [[0, 'rgba(255,214,150,0.13)'], [0.5, 'rgba(255,214,150,0.045)'], [1, 'rgba(255,214,150,0)']]);
+    ctx.fill();
+  }
+  // and the wider cone below the shade, down to the floor (stacked low-alpha cones = soft edges)
+  for (let i = 0; i < 7; i++) {
+    const k = 0.5 + i * 0.13;
+    poly(ctx, [[x - 58 * k, y + 2], [x + 58 * k, y + 2], [x + 230 * k, 700], [x - 300 * k, 700]]);
+    ctx.fillStyle = lg(ctx, 0, y, 0, 700, [[0, 'rgba(255,214,140,0.1)'], [0.6, 'rgba(255,214,140,0.04)'], [1, 'rgba(255,214,140,0.012)']]);
     ctx.fill();
   }
   // window daylight on the wall around the window
@@ -2170,9 +2441,18 @@ function officeLampGlowWall(ctx) {
   glow(ctx, w.x, w.y, 230, 210, '#FFF0C8', 0.26);
   ctx.restore();
 }
+// warm pool of lamplight on the floorboards, catching the rug's right edge (drawn after the rug)
+function officeLampPool(ctx) {
+  const { x } = OFFICE.lamp;
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  glow(ctx, x - 40, 672, 250, 44, '#FFB060', 0.5);
+  glow(ctx, x - 26, 670, 150, 26, '#FFD898', 0.55);
+  glow(ctx, x - 14, 668, 70, 12, '#FFF0C8', 0.45);
+  ctx.restore();
+}
 function officeLamp(ctx) {
   const { x, y } = OFFICE.lamp;
-  glow(ctx, x - 20, 670, 240, 30, '#FFD27A', 0.25, 'screen');
   glow(ctx, x, 672, 40, 6, '#1A0A04', 0.5);
   // base
   ctx.beginPath();
@@ -2199,16 +2479,20 @@ function officeLamp(ctx) {
   fillStroke(ctx, '#D9A84A', '#5A3E10', 0.8);
   // shade (lit from inside)
   const tw = 36, bw = 62, ty = y - 74;
+  // translucent fabric lit from inside: hot core, warmer at the rims, pleats as faint shadows
   poly(ctx, [[x - tw, ty], [x + tw, ty], [x + bw, y], [x - bw, y]]);
-  ctx.fillStyle = lg(ctx, 0, ty, 0, y, [[0, '#F2D7A2'], [0.6, '#FBE6BA'], [1, '#FFF4D2']]);
+  ctx.fillStyle = lg(ctx, 0, ty, 0, y, [[0, '#FFD992'], [0.45, '#FFEBB8'], [1, '#FFF6DC']]);
   ctx.fill();
   ctx.save();
   poly(ctx, [[x - tw, ty], [x + tw, ty], [x + bw, y], [x - bw, y]]);
   ctx.clip();
-  ctx.strokeStyle = rgba('#D9B47A', 0.45);
+  ctx.fillStyle = lg(ctx, x - bw, 0, x + bw, 0, [[0, 'rgba(232,140,60,0.32)'], [0.22, 'rgba(255,200,120,0)'], [0.78, 'rgba(255,200,120,0)'], [1, 'rgba(232,140,60,0.32)']]);
+  ctx.fillRect(x - bw, ty, bw * 2, y - ty);
+  glow(ctx, x, y - 30, 46, 40, '#FFFFFF', 0.55);
+  ctx.strokeStyle = rgba('#E0A860', 0.4);
   ctx.lineWidth = 1;
   for (let i = -5; i <= 5; i++) { line(ctx, x + i * tw / 5.5, ty, x + i * bw / 5.5, y); ctx.stroke(); }
-  glow(ctx, x, y + 6, 70, 40, '#FFFFFF', 0.5);
+  glow(ctx, x, y + 6, 70, 40, '#FFFFFF', 0.6);
   ctx.restore();
   poly(ctx, [[x - tw, ty], [x + tw, ty], [x + bw, y], [x - bw, y]]);
   ctx.strokeStyle = '#B08A50';
@@ -2221,11 +2505,17 @@ function officeLamp(ctx) {
   fillStroke(ctx, '#C9572E', '#7A2E14', 1);
   // glowing opening underneath
   ellipse(ctx, x, y + 3, bw - 2, 5);
-  ctx.fillStyle = '#FFF6DA';
+  ctx.fillStyle = '#FFF8E4';
   ctx.fill();
   // finial
   circle(ctx, x, ty - 6, 4);
   fillStroke(ctx, '#D9A84A', '#5A3E10', 1);
+  // the lit shade blooms softly into the room
+  ctx.save();
+  ctx.globalCompositeOperation = 'screen';
+  glow(ctx, x, y - 32, 96, 74, '#FFD890', 0.3);
+  glow(ctx, x, y + 4, 74, 14, '#FFF2D0', 0.5);
+  ctx.restore();
 }
 
 // ---------------------------------------------------------------- window light beam
@@ -2286,10 +2576,10 @@ function officeStatic(ctx) {
   officeInkblot(ctx);
   officeDiploma(ctx);
   officeWindowFrame(ctx);
-  officeWindowStatic(ctx);
   officeFloor(ctx);
   officeLampGlowWall(ctx);
   officeRug(ctx);
+  officeLampPool(ctx);
   officeBeam(ctx);
   officeFern(ctx);
   officeCouch(ctx);
@@ -2297,6 +2587,7 @@ function officeStatic(ctx) {
   officeChair(ctx);
   officeLamp(ctx);
   officeHangingPlant(ctx);
+  officeWindowStatic(ctx);           // last: the view through the glass is not tinted by room light
 }
 
 function drawTherapyOffice(ctx, t, o) {
@@ -2341,14 +2632,62 @@ function drawTherapyOfficeFront(ctx, t, o) {
 // shadow, ash. The static layer is keyed by the sun position, so keep o.sun fixed within a shot.
 const HY = 392;                                      // horizon / far water edge
 const RB_X = 1040;                                   // right bank meets the far water here
+// Mount Snooze, tiny and far: crater at VOLC, drawn at RIVER_SNOOZE_S and squashed vertically by
+// RIVER_SNOOZE_K (reads broader and farther away). It sits LEFT of the raft's cast band (x 440–860
+// stays clear of silhouettes above the horizon), low enough that its crater + the first ≈80 units
+// of smoke fit in a close-up of Barry, and the smoke drifts up-LEFT, away from the cast, mast and sun.
+const VOLC = { x: 404, y: 338 };
+const RIVER_SNOOZE_S = 0.26, RIVER_SNOOZE_K = 0.8;
 const RIVER = {
   raftPos: { x: 640, y: 520 },
   waterY: HY,
   horizonY: HY,
   sun: { x: 955, y: 350, r: 46 },
-  volcano: { x: 450, y: 280 },
+  volcano: { ...VOLC },                               // crater centre
+  volcanoTop: { x: VOLC.x - 13, y: VOLC.y - 76 },     // top of the readable smoke column (≈76 above the crater)
+  volcanoBox: { x0: VOLC.x - 56, y0: VOLC.y - 86, x1: VOLC.x + 58, y1: VOLC.y + 42 }, // cone above the treeline + readable smoke
   banks: { left: { x: 600, y: HY + 3 }, right: { x: RB_X, y: HY + 3 } },
 };
+// suggested camera framings for the s08 shots (all verified against the default raft + cast)
+RIVER.framings = {
+  raft_wide: { x: 640, y: 360, zoom: 1 },
+  // Barry (on the raft at RIVER.raftPos) with tiny smoking Mount Snooze over his shoulder
+  barry_cu: { x: 572, y: 372, zoom: 2.35 },
+  gerald_flag: { x: 680, y: 300, zoom: 2.4 },
+  fish: { x: 640, y: 540, zoom: 2 },
+  volcano: { x: 398, y: 312, zoom: 2.6 },
+};
+// Close-up CHEATS (verified with the kit's raft layout: raft at RIVER.raftPos, Sunny/Barry/Doreen at
+// seats −126/+6/+128): pass `volcano` as o.volcano to drawRiverSunset for that shot only and use
+// `cam` (or any CU with Barry's eye at screen y ≈ 430). The mountain then sits right behind Barry's
+// shoulder (clear of the mast, the rigging and the others' oranges) and its smoke rises out of frame.
+RIVER.volcanoCU = {
+  barryFacingRight: { volcano: { x: 598, y: 352 }, cam: { x: 645, y: 395, zoom: 3.3 } },
+  barryFacingLeft: { volcano: { x: 712, y: 350 }, cam: { x: 620, y: 395, zoom: 3.3 } },
+};
+// Shift (and only if it cannot fit, zoom out) a camera {x,y,zoom,...} as little as possible so that
+// RIVER.volcanoBox — plus every box in `keep` ({x0,y0,x1,y1}, e.g. Barry's head) — is inside the
+// frame with `margin` design units to spare. Pure; returns a new camera object.
+const volcanoBoxAt = (v) => ({ x0: v.x - 56, y0: v.y - 86, x1: v.x + 58, y1: v.y + 42 });
+function riverFrameVolcano(cam, keep, margin = 14, volcano) {
+  cam = cam && typeof cam === 'object' ? cam : {};
+  const vb = volcano && typeof volcano === 'object' ? volcanoBoxAt({ x: fin(volcano.x, VOLC.x), y: fin(volcano.y, VOLC.y) }) : RIVER.volcanoBox;
+  const boxes = [vb].concat(Array.isArray(keep) ? keep : keep ? [keep] : []);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const b of boxes) {
+    if (!b) continue;
+    x0 = Math.min(x0, fin(b.x0, Infinity)); y0 = Math.min(y0, fin(b.y0, Infinity));
+    x1 = Math.max(x1, fin(b.x1, -Infinity)); y1 = Math.max(y1, fin(b.y1, -Infinity));
+  }
+  const m = clamp(fin(margin, 14), 0, 200);
+  x0 -= m; y0 -= m; x1 += m; y1 += m;
+  let zoom = Math.max(0.05, fin(cam.zoom, 1));
+  zoom = Math.min(zoom, 1280 / Math.max(1, x1 - x0), 720 / Math.max(1, y1 - y0));
+  const hw = 640 / zoom, hh = 360 / zoom;
+  const cx = fin(cam.x, 640), cy = fin(cam.y, 360);
+  const x = clamp(cx, x1 - hw, x0 + hw), y = clamp(cy, y1 - hh, y0 + hh);
+  return { ...cam, x, y, zoom };
+}
 const SKY = { top: '#2A1D4A', hi: '#5B3A7A', mid: '#A24E7C', low: '#E0716C', hor: '#FF9E5E' };
 const RIV = {
   far: '#C06A84', tree: '#7E3F6E', bankL: '#55295A', bankR: '#4E2654', near: '#22132C',
@@ -2374,11 +2713,23 @@ function crownsFor(side) {
   const R = rng(side < 0 ? 71 : 93);
   const out = [];
   if (side < 0) {
-    let x = 600;
+    // jungle wall on the far left, falling to a LOW scrub spit (x ≈ 330…600) at the river mouth so
+    // the sky behind the cast and around Mount Snooze stays clear
+    let x = 604;
     while (x > -560) {
       const big = x < 140;
-      const r = big ? R.range(46, 78) : R.range(15, 27) * (1 + (600 - x) / 900);
-      const top = big ? lerp(300, 70, clamp((140 - x) / 600)) + R.range(-25, 20) : lerp(381, 338, clamp((600 - x) / 460)) + R.range(-8, 8);
+      let r, top;
+      if (big) {
+        r = R.range(46, 78);
+        top = lerp(300, 70, clamp((140 - x) / 600)) + R.range(-25, 20);
+      } else if (x > 330) {
+        r = R.range(7, 12);
+        top = lerp(385, 374, (604 - x) / 274) + R.range(-2, 2);
+      } else {
+        const w = (330 - x) / 190;
+        r = lerp(12, 30, w) * R.range(0.85, 1.15);
+        top = lerp(374, 312, ease.inOutSine(w)) + R.range(-6, 6) * w;
+      }
       out.push([x, Math.min(top + r, leftEdge(x) - r * 0.45), r]);
       if (R() < 0.7) { const x2 = x + r * R.range(0.3, 0.6), r2 = r * R.range(0.5, 0.7); out.push([x2, Math.min(top + r * R.range(0.55, 0.85), leftEdge(x2) - r2 * 0.45), r2]); }
       x -= r * (big ? 0.95 : 1.15);
@@ -2397,10 +2748,9 @@ function crownsFor(side) {
   return out;
 }
 const CROWNS = { L: crownsFor(-1), R: crownsFor(1) };
-function bankFill(ctx, crowns, edgeFn, mirror, squash = 0.55) {
+function bankPath(ctx, crowns, edgeFn, mirror, squash = 0.55) {
   const yOf = (x, y) => (mirror ? edgeFn(x) + (edgeFn(x) - y) * squash : y);
   const sorted = crowns.slice().sort((a, b) => a[0] - b[0]);
-  ctx.beginPath();
   ctx.moveTo(sorted[0][0], edgeFn(sorted[0][0]));
   for (const [x, y] of sorted) ctx.lineTo(x, yOf(x, Math.min(y, edgeFn(x))));
   ctx.lineTo(sorted[sorted.length - 1][0], edgeFn(sorted[sorted.length - 1][0]));
@@ -2409,6 +2759,10 @@ function bankFill(ctx, crowns, edgeFn, mirror, squash = 0.55) {
     if (mirror) { ctx.moveTo(x + r, yOf(x, y)); ctx.ellipse(x, yOf(x, y), r, r * squash, 0, 0, TAU); }
     else { ctx.moveTo(x + r, y); ctx.arc(x, y, r, 0, TAU); }
   }
+}
+function bankFill(ctx, crowns, edgeFn, mirror, squash = 0.55) {
+  ctx.beginPath();
+  bankPath(ctx, crowns, edgeFn, mirror, squash);
   ctx.fill();
 }
 function edgeClip(ctx, below) {
@@ -2423,11 +2777,30 @@ function riverBankReflections(ctx) {
   ctx.save();
   const sh = '#3A1F4A';
   ctx.fillStyle = lg(ctx, 0, HY, 0, HY + 300, [[0, mix(RIV.water1, sh, 0.55)], [0.1, mix(RIV.water1, sh, 0.5)], [0.42, mix(RIV.water2, sh, 0.42)], [0.85, mix(RIV.water3, sh, 0.3)], [1, mix(RIV.water3, sh, 0.25)]]);
-  bankFill(ctx, CROWNS.L, leftEdge, true);
-  bankFill(ctx, CROWNS.R, rightEdge, true);
+  ctx.beginPath();
+  bankPath(ctx, CROWNS.L, leftEdge, true);
+  bankPath(ctx, CROWNS.R, rightEdge, true);
+  ctx.fill();
+  // break the mirrored canopy up with thin horizontal water streaks so it reads as a reflection
+  ctx.clip();
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  for (let k = 0; k < 30; k++) {
+    const y = HY + 6 + 320 * Math.pow(k / 29, 1.6);
+    for (let x = -520 + hash1(k * 3.1) * 120; x < 1820;) {
+      const len = (30 + hash1(x * 0.37 + k) * 140) * (0.6 + k / 29);
+      ctx.moveTo(x, y);
+      ctx.lineTo(x + len, y);
+      x += len + (20 + hash1(x * 0.11 + k * 7) * 90) * (0.6 + k / 29);
+    }
+  }
+  ctx.strokeStyle = rgba(RIV.water1, 0.3);
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
   ctx.restore();
 }
-const BANK_PALMS = [[-40, 190, 0.1, 0.035], [96, 150, -0.12, 0.04], [565, 58, 0.12, 0.06], [1085, 56, -0.1, 0.06], [1270, 160, 0.1, 0.04], [1440, 200, -0.08, 0.035]];
+// bank palms: nothing between x 440 and 860 (that band is behind the raft's cast in every shot)
+const BANK_PALMS = [[-40, 190, 0.1, 0.035], [96, 150, -0.12, 0.04], [284, 50, 0.12, 0.05], [1085, 56, -0.1, 0.06], [1270, 160, 0.1, 0.04], [1440, 200, -0.08, 0.035]];
 function riverBanksStatic(ctx) {
   ctx.save();
   ctx.save();
@@ -2467,8 +2840,20 @@ function riverBanksStatic(ctx) {
 function riverPalms(ctx, t) {
   for (const [px, h, lean, sw] of BANK_PALMS) {
     const left = px < 640;
-    const base = left ? leftEdge(px) - 10 : rightEdge(px) - 10;
-    palm(ctx, px, base - (h > 100 ? 60 : 0), h, lean, left ? '#3E1C48' : '#3A1A44', h > 100 ? 2 : 1.3, t, sw);
+    const ground = (left ? leftEdge(px) : rightEdge(px)) + 1;
+    const base = ground - 11 - (h > 100 ? 60 : 0), s = h > 100 ? 2 : 1.3;
+    const col = left ? '#3E1C48' : '#3A1A44';
+    // the trunk always reaches down to the bank's water edge (never ends on top of the bushes)
+    // (one path with the palm's own trunk base, overlapping it, so there is no AA seam)
+    ctx.beginPath();
+    ctx.moveTo(px - 2.4 * s + lean * 6, base - 6);
+    ctx.lineTo(px - 2.9 * s, ground);
+    ctx.lineTo(px + 2.9 * s, ground);
+    ctx.lineTo(px + 2.4 * s + lean * 6, base - 6);
+    ctx.closePath();
+    ctx.fillStyle = col;
+    ctx.fill();
+    palm(ctx, px, base, h, lean, col, s, t, sw);
   }
 }
 
@@ -2563,18 +2948,19 @@ function riverClouds(ctx, t, sun) {
 }
 // far hills + treeline (their silhouettes are also used to tuck the sinking sun behind them)
 const HILL_STEP = 30, TREE_STEP = 9;
-const hillRaw = (x) => HY - 14 - (noise1(x * 0.006 + 1.3) * 0.5 + 0.5) * 26;
+// the far hills dip around Mount Snooze so its cone reads down to the treeline
+const hillRaw = (x, vx = VOLC.x) => HY - 14 - (noise1(x * 0.006 + 1.3) * 0.5 + 0.5) * 26 * lerp(0.15, 1, smoothstep(55, 175, Math.abs(x - vx)));
 const treeRaw = (x) => HY - 8 - (noise1(x * 0.045 + 7) * 0.5 + 0.5) * 9 - (noise1(x * 0.011) * 0.5 + 0.5) * 6;
-function sampled(fn, step, x) {
+function sampled(fn, step, x, a) {
   const i = Math.floor((x + 500) / step), x0 = -500 + i * step;
-  return lerp(fn(x0), fn(x0 + step), (x - x0) / step);
+  return lerp(fn(x0, a), fn(x0 + step, a), (x - x0) / step);
 }
-const horizonTop = (x) => Math.min(sampled(hillRaw, HILL_STEP, x), sampled(treeRaw, TREE_STEP, x));
-const FAR_PALMS = [[120, 34, 0.15], [500, 28, -0.1], [1180, 36, -0.08], [1330, 30, 0.12]];
-function riverFarStatic(ctx, sun) {
+const horizonTop = (x, vx = VOLC.x) => Math.min(sampled(hillRaw, HILL_STEP, x, vx), sampled(treeRaw, TREE_STEP, x));
+const FAR_PALMS = [[120, 34, 0.15], [1180, 36, -0.08], [1330, 30, 0.12]];
+function riverFarStatic(ctx, sun, vol) {
   ctx.beginPath();
   ctx.moveTo(-500, HY + 2);
-  for (let x = -500; x <= 1800; x += HILL_STEP) ctx.lineTo(x, hillRaw(x));
+  for (let x = -500; x <= 1800; x += HILL_STEP) ctx.lineTo(x, hillRaw(x, vol.x));
   ctx.lineTo(1800, HY + 2);
   ctx.closePath();
   ctx.fillStyle = RIV.far;
@@ -2584,7 +2970,7 @@ function riverFarStatic(ctx, sun) {
   ctx.beginPath();
   for (let x = sun.x - 300; x <= sun.x + 300; x += HILL_STEP) {
     const xs = Math.floor((x + 500) / HILL_STEP) * HILL_STEP - 500;
-    if (x === sun.x - 300) ctx.moveTo(xs, hillRaw(xs)); else ctx.lineTo(xs, hillRaw(xs));
+    if (x === sun.x - 300) ctx.moveTo(xs, hillRaw(xs, vol.x)); else ctx.lineTo(xs, hillRaw(xs, vol.x));
   }
   ctx.strokeStyle = lg(ctx, sun.x - 300, 0, sun.x + 300, 0, [[0, rgba('#FFC890', 0)], [0.5, rgba('#FFC890', 0.7)], [1, rgba('#FFC890', 0)]]);
   ctx.lineWidth = 1.6;
@@ -2599,14 +2985,14 @@ function riverFarStatic(ctx, sun) {
   ctx.fill();
   for (const [px, h, lean] of FAR_PALMS) palm(ctx, px, HY - 8, h, lean, RIV.tree, 0.55);
 }
-function riverSunDisc(ctx, t, sun, sink) {
+function riverSunDisc(ctx, t, sun, sink, vol = VOLC) {
   const y = sun.y + sink * 38, r = sun.r;
   ctx.save();
   // tucked behind the far hills / treeline, so it can sink below them
   ctx.beginPath();
   const x0 = sun.x - r - 24, x1 = sun.x + r + 24;
   ctx.moveTo(x0, -600);
-  for (let x = x0; x <= x1; x += 3) ctx.lineTo(x, horizonTop(x));
+  for (let x = x0; x <= x1; x += 3) ctx.lineTo(x, horizonTop(x, vol.x));
   ctx.lineTo(x1, -600);
   ctx.closePath();
   ctx.clip();
@@ -2623,14 +3009,12 @@ function riverSunDisc(ctx, t, sun, sink) {
 }
 
 // Mount Snooze, tiny and far, still smoking ------------------------------------------
-const RIVER_SNOOZE_S = 0.36;
-const STUMPS = [[400, 334, 4.2], [405, 331, 4.8], [411, 334, 3.6], [416, 332, 4.4], [408, 338, 3.4], [419, 337, 3.8]];
 const RIVER_SNOOZE = {
   lit: '#BC7A98', mid: '#A26488', shade: '#7A4878', light: 1,
   ridgeLit: rgba('#F4A6A2', 0.34), ridgeDark: rgba('#4E2654', 0.3), edge: rgba('#4E2654', 0.6),
   rim: '#A86B90', rimLit: '#F6AE92', crater: '#3A1C3C', baseTint: '#C97C92',
   extra(ctx, X, s) {
-    // cooled lava tongue down the left flank (dark crust, faint glowing cracks)
+    // cooled lava tongue down the flank (dark crust, faint glowing cracks)
     const pts = SNOOZE_LAVA.map(X);
     ctx.beginPath();
     ribbonPath(ctx, pts, 10 * s, 40 * s, 0);
@@ -2641,10 +3025,6 @@ const RIVER_SNOOZE = {
     ctx.fillStyle = rgba('#5A2A4C', 0.62);
     ctx.fill();
     ctx.beginPath();
-    ribbonPath(ctx, pts, 3 * s, 12 * s, 0.9);
-    ctx.fillStyle = rgba('#3A1834', 0.4);
-    ctx.fill();
-    ctx.beginPath();
     for (let i = 0; i < pts.length - 1; i++) {
       const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
       const j = (hash1(i * 3.7) - 0.5) * 2.4 * s * 3;
@@ -2652,101 +3032,128 @@ const RIVER_SNOOZE = {
       ctx.lineTo((ax + bx) / 2 + j, (ay + by) / 2);
       ctx.lineTo(bx, by);
     }
-    ctx.strokeStyle = rgba('#FF7A40', 0.42);
-    ctx.lineWidth = Math.max(0.5, 2.2 * s);
+    ctx.strokeStyle = rgba('#FF7A40', 0.5);
+    ctx.lineWidth = Math.max(0.5, 2.6 * s);
     ctx.stroke();
-    // the burnt orange grove: a scorched patch on the lower-left flank with a few charred stumps
-    glow(ctx, 410, 334, 20, 6, '#3A1838', 0.5);
-    ctx.strokeStyle = rgba('#3A1836', 0.6);
-    ctx.lineCap = 'round';
-    ctx.lineWidth = 0.8;
-    ctx.beginPath();
-    for (const [x, y, h] of STUMPS) {
-      ctx.moveTo(x - 0.3, y);
-      ctx.lineTo(x + 0.3, y - h);
-      ctx.moveTo(x + 0.1, y - h * 0.55);
-      ctx.lineTo(x + (hash1(x) > 0.5 ? 1.6 : -1.6), y - h * 0.78);
-    }
-    ctx.stroke();
+    // the burnt orange grove: a scorched patch low on the left flank
+    const [gx, gy] = X([700, 330]);
+    glow(ctx, gx, gy, 90 * s, 22 * s, '#3A1838', 0.55);
   },
 };
-function riverVolcanoStatic(ctx) {
-  const v = RIVER.volcano;
-  drawSnoozeCone(ctx, v.x, v.y, RIVER_SNOOZE_S, HY + 6, RIVER_SNOOZE);
+// crater position: RIVER.volcano, or o.volcano {x,y} (a per-shot cheat, e.g. to put the mountain
+// right behind Barry's shoulder in a tight close-up). Rounded so the static-layer cache key is stable.
+function volcOf(o) {
+  const v = o.volcano && typeof o.volcano === 'object' ? o.volcano : {};
+  return { x: Math.round(clamp(fin(v.x, VOLC.x), 120, 1180)), y: Math.round(clamp(fin(v.y, VOLC.y), 300, 372)) };
+}
+// the cone, squashed vertically about the crater by RIVER_SNOOZE_K
+function riverVolcanoXf(ctx, vol) {
+  ctx.translate(vol.x, vol.y);
+  ctx.scale(1, RIVER_SNOOZE_K);
+  ctx.translate(-vol.x, -vol.y);
+}
+const volcBase = (vol) => vol.y + (HY + 6 - vol.y) / RIVER_SNOOZE_K;   // base line in the squashed space
+function riverVolcanoStatic(ctx, vol) {
+  ctx.save();
+  riverVolcanoXf(ctx, vol);
+  drawSnoozeCone(ctx, vol.x, vol.y, RIVER_SNOOZE_S, volcBase(vol), RIVER_SNOOZE);
+  ctx.restore();
+  // aerial perspective: a hazy sky-coloured veil over the far cone, thicker towards its foot
+  ctx.save();
+  ctx.beginPath();
+  ctx.save();
+  riverVolcanoXf(ctx, vol);
+  snoozeOutlineTrace(ctx, vol.x, vol.y, RIVER_SNOOZE_S, volcBase(vol));
+  ctx.restore();
+  ctx.fillStyle = lg(ctx, 0, vol.y - 6, 0, HY, [[0, rgba('#F08C80', 0.06)], [1, rgba('#F7A07A', 0.3)]]);
+  ctx.fill();
+  ctx.restore();
 }
 // smoke column: noise-edged blobs merged into one path per tone, filled with gradients that fade
-// to alpha 0 along the column (composited over the real sky). New puffs are born inside the crater
-// (hidden by the cone), the column bends downwind and spreads into a flattened anvil, and puffs
-// shrink to nothing before they recycle — no popping.
-function riverSmoke(ctx, t, o) {
-  const amt = clamp(fin(o.smoke, 1), 0, 1.5);
-  if (amt <= 0.005) return;
-  const v = RIVER.volcano;
-  const N = 46, Lp = 18, H = 205, W = 210;
+// to alpha 0 along the column (composited over the real sky). Puffs are born tiny in the crater
+// mouth, rise ≈80 units almost straight up (so a close-up holds crater + column), then bend
+// downwind to the upper LEFT — away from the raft, mast, flag and sun — spreading into a soft
+// drifting plume; puffs shrink to nothing before they recycle — no popping.
+const RSM = { N: 50, Lp: 18, CX: -8, CY: -190, EX: -205, EY: -158 };
+// centre line: quadratic from the crater (straight up first) bending into a slightly sagging plume
+function riverSmokePuffs(t, amt, v) {
+  const { N, Lp, CX, CY, EX, EY } = RSM;
   const puffs = [];
   for (let i = 0; i < N; i++) {
     const k = frac(t / Lp + (i + 0.7 * hash1(i * 4.3)) / N);
-    const rise = 1 - Math.pow(1 - k, 1.65);
-    const anvil = smoothstep(0.5, 1, k);
-    const x = v.x + W * (0.12 * k + 0.88 * k * k) + noise1(i * 3.7 + t * 0.12) * 7 * k;
-    const y = v.y + 8 - H * rise + noise1(i * 5.1 + t * 0.1) * 4 * k;
-    const size = (0.75 + 0.35 * hash1(i * 9.7)) * (0.72 + 0.28 * Math.min(1, amt));
-    const r = (5 + 24 * Math.pow(k, 0.75)) * size * (1 - smoothstep(0.86, 1, k));
-    puffs.push({ x, y, r, sx: 1 + 1.5 * anvil, sy: 1 - 0.32 * anvil, seed: i * 1.91 });
+    const a = Math.pow(k, 1.4);
+    const u = 1 - a;
+    const px = 2 * a * u * CX + a * a * EX, py = u * u * -2 + 2 * a * u * CY + a * a * EY;
+    // tangent → perpendicular for a lateral wobble that grows with the puff
+    const tx = 2 * u * CX + 2 * a * (EX - CX), ty = 2 * u * (CY + 2) + 2 * a * (EY - CY);
+    const tl = Math.hypot(tx, ty) || 1;
+    const size = (0.74 + 0.5 * hash1(i * 9.7)) * (0.72 + 0.28 * Math.min(1, amt));
+    const r = (5.8 + 20 * Math.pow(a, 0.85)) * size * (1 - smoothstep(0.82, 1, k)) * smoothstep(0, 0.012, k);
+    const wob = (noise1(i * 3.7 + t * 0.15) * 0.6 + (hash1(i * 6.1) - 0.5)) * r * 0.7 * smoothstep(0.02, 0.3, a);
+    const bend = smoothstep(0.3, 0.85, a);
+    puffs.push({
+      x: v.x + px - (ty / tl) * wob, y: v.y + py + (tx / tl) * wob,
+      r, sx: 1 + 0.8 * bend, sy: 1 - 0.22 * bend, seed: i * 1.91,
+    });
   }
-  const a = Math.min(1, amt) * 0.88;
-  const gx0 = v.x, gy0 = v.y, gx1 = v.x + W * 0.95, gy1 = v.y - H * 1.02;
-  const fade = (c, m) => [[0, rgba(c, a * m)], [0.45, rgba(c, a * m * 0.85)], [0.78, rgba(c, a * m * 0.45)], [1, rgba(c, 0)]];
+  // a permanent stem so the column always grows out of the crater mouth
+  const sz = 0.72 + 0.28 * Math.min(1, amt);
+  puffs.push({ x: v.x + noise1(t * 0.9) * 0.8, y: v.y - 3, r: 4.6 * sz, sx: 1.25, sy: 0.75, seed: 91.3 });
+  puffs.push({ x: v.x - 1 + noise1(t * 0.8 + 5) * 1.2, y: v.y - 9, r: 5.4 * sz, seed: 77.7 });
+  return puffs;
+}
+function riverSmoke(ctx, t, o, v = volcOf(o)) {
+  const amt = clamp(fin(o.smoke, 1), 0, 1.5);
+  if (amt <= 0.005) return;
+  const puffs = riverSmokePuffs(t, amt, v);
+  const a = Math.min(1, amt);
+  const gx0 = v.x, gy0 = v.y, gx1 = v.x + RSM.EX * 0.95, gy1 = v.y + RSM.EY * 1.05;
+  const fade = (c, m) => [[0, rgba(c, a * m)], [0.3, rgba(c, a * m * 0.9)], [0.7, rgba(c, a * m * 0.42)], [1, rgba(c, 0)]];
   ctx.save();
-  // the cone hides the newborn puffs (they rise out of the crater)
-  ctx.beginPath();
-  ctx.rect(-600, -700, 2600, HY + 760);
-  snoozeOutlineTrace(ctx, v.x, v.y, RIVER_SNOOZE_S, HY + 6);
-  ctx.clip('evenodd');
+  // soft outer haze (softens the scalloped edge), body, shadowed core, warm sun-side (right)
+  blobsPath(ctx, puffs, 1.22, 0, 0, t);
+  ctx.fillStyle = lg(ctx, gx0, gy0, gx1, gy1, fade('#7A4A72', 0.22));
+  ctx.fill();
   blobsPath(ctx, puffs, 1, 0, 0, t);
-  ctx.fillStyle = lg(ctx, gx0, gy0, gx1, gy1, fade('#4A2C52', 1));
+  ctx.fillStyle = lg(ctx, gx0, gy0, gx1, gy1, fade('#52325A', 0.8));
   ctx.fill();
-  blobsPath(ctx, puffs, 0.84, 0.13, 0.1, t);
-  ctx.fillStyle = lg(ctx, gx0, gy0, gx1, gy1, fade('#6A3E66', 0.95));
-  ctx.fill();
-  // warm underside lit by the low sun (lower right)
-  blobsPath(ctx, puffs, 0.56, 0.36, 0.3, t);
-  ctx.fillStyle = lg(ctx, gx0, gy0, gx1, gy1, fade('#D07274', 0.72));
+  blobsPath(ctx, puffs, 0.6, 0.34, -0.1, t);
+  ctx.fillStyle = lg(ctx, gx0, gy0, gx1, gy1, fade('#D9837A', 0.42));
   ctx.fill();
   ctx.restore();
 }
-function riverCraterGlow(ctx, t, o) {
+function riverCraterGlow(ctx, t, o, v = volcOf(o)) {
   const gl = clamp(fin(o.glow, 1), 0, 2);
   if (gl <= 0.01) return;
-  const v = RIVER.volcano;
+  const s = RIVER_SNOOZE_S / 0.36;
   const pulse = 0.75 + 0.25 * Math.sin(t * 1.7) + 0.1 * noise1(t * 3);
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
-  glow(ctx, v.x, v.y - 2, 44, 24, '#FF5A2A', 0.5 * gl * pulse);
+  glow(ctx, v.x, v.y - 3, 40 * s, 22 * s, '#FF5A2A', 0.55 * gl * pulse);
   ctx.restore();
-  ellipse(ctx, v.x, v.y + 1.8, 13, 1.9);
-  ctx.fillStyle = rgba('#FF8A4A', clamp(0.85 * gl));
+  ellipse(ctx, v.x, v.y + 1, 10, 1.5);
+  ctx.fillStyle = rgba('#FF8A4A', clamp(0.9 * gl));
   ctx.fill();
 }
 
 // water ----------------------------------------------------------------------------------
-function waterStatic(ctx, sun) {
+function waterStatic(ctx, sun, vol) {
   ctx.fillStyle = lg(ctx, 0, HY, 0, 900, WATER_STOPS);
   ctx.fillRect(-520, HY, 2340, 920);
   // far-water reflection of the treeline + Mount Snooze (+ a faint lava streak)
   ctx.fillStyle = rgba('#7E3F6E', 0.5);
   ctx.fillRect(-520, HY, 2340, 5);
-  const v = RIVER.volcano;
+  const v = vol;
   ctx.beginPath();
-  ctx.moveTo(v.x - 110, HY + 1);
-  ctx.bezierCurveTo(v.x - 55, HY + 10, v.x - 26, HY + 30, v.x - 9, HY + 44);
-  ctx.lineTo(v.x + 9, HY + 44);
-  ctx.bezierCurveTo(v.x + 28, HY + 30, v.x + 62, HY + 10, v.x + 120, HY + 1);
+  ctx.moveTo(v.x - 62, HY + 1);
+  ctx.bezierCurveTo(v.x - 32, HY + 7, v.x - 16, HY + 20, v.x - 6, HY + 30);
+  ctx.lineTo(v.x + 6, HY + 30);
+  ctx.bezierCurveTo(v.x + 17, HY + 20, v.x + 36, HY + 7, v.x + 66, HY + 1);
   ctx.closePath();
-  ctx.fillStyle = rgba('#8A527E', 0.3);
+  ctx.fillStyle = rgba('#8A527E', 0.26);
   ctx.fill();
-  ctx.fillStyle = rgba('#FF6A3A', 0.18);
-  ctx.fillRect(v.x - 3, HY + 30, 6, 18);
+  ctx.fillStyle = rgba('#FF6A3A', 0.2);
+  ctx.fillRect(v.x - 2, HY + 24, 4, 12);
   // faint reflections of the lit cloud undersides
   ctx.save();
   ctx.lineCap = 'round';
@@ -2912,7 +3319,7 @@ function riverBirds(ctx, t) {
   ctx.save();
   ctx.beginPath();
   for (let i = 0; i < 3; i++) {
-    const x = 860 + ((t * 7 + i * 26) % 900) - 300 + i * 14, y = 226 + i * 9 + Math.sin(t * 0.7 + i) * 4;
+    const x = 860 + ((t * 7 + i * 26) % 900) - 300 + i * 14, y = 162 + i * 8 + Math.sin(t * 0.7 + i) * 4;
     const f = Math.sin(t * 7 + i * 2);
     const s = 5 - i;
     ctx.moveTo(x - s, y - f * s * 0.6);
@@ -2949,11 +3356,11 @@ function raftShadow(ctx, t, o) {
   ctx.restore();
 }
 
-function riverStatic(ctx, sun) {
+function riverStatic(ctx, sun, vol = VOLC) {
   riverSkyStatic(ctx, sun);
-  riverVolcanoStatic(ctx);
-  riverFarStatic(ctx, sun);
-  waterStatic(ctx, sun);
+  riverVolcanoStatic(ctx, vol);
+  riverFarStatic(ctx, sun, vol);
+  waterStatic(ctx, sun, vol);
   riverBankReflections(ctx);
   riverBanksStatic(ctx);
 }
@@ -2964,13 +3371,14 @@ function drawRiverSunset(ctx, t, o) {
   const sun = sunOf(o);
   const sink = clamp(fin(o.sunset, 0));
   ctx.save();
-  if (o.cache === false) riverStatic(ctx, sun);
-  else drawCached(ctx, 'river|' + sun.x + ',' + sun.y, (c) => riverStatic(c, sun));
+  const vol = volcOf(o);
+  if (o.cache === false) riverStatic(ctx, sun, vol);
+  else drawCached(ctx, 'river|' + sun.x + ',' + sun.y + '|' + vol.x + ',' + vol.y, (c) => riverStatic(c, sun, vol));
   riverStars(ctx, t);
-  riverSunDisc(ctx, t, sun, sink);
+  riverSunDisc(ctx, t, sun, sink, vol);
   riverClouds(ctx, t, sun);
-  riverSmoke(ctx, t, o);
-  riverCraterGlow(ctx, t, o);
+  riverSmoke(ctx, t, o, vol);
+  riverCraterGlow(ctx, t, o, vol);
   waterLive(ctx, t, o, sun, null);
   riverPalms(ctx, t);
   if (o.birds !== false) riverBirds(ctx, t);
@@ -3174,17 +3582,29 @@ function drawRiverReflection(ctx, t, o, fn) {
   sx.clearRect(0, 0, cw, ch);
   sx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
   try { fn(sx); } finally { sx.restore(); }
+  // o.drawSource: also composite fn's own (un-mirrored) drawing at 1:1 after the reflection, so the
+  // caller does not render the raft + cast a second time (pixel-equivalent: same device transform,
+  // integer blit; only source-over drawing is assumed, which the characters/props use)
+  const blitSource = () => {
+    if (!o.drawSource) return;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.drawImage(_scratch, 0, 0);
+    ctx.restore();
+  };
   const yW = fin(o.y, RIVER.raftPos.y);
   const depth = clamp(fin(o.depth, 150), 0, 2000);
   const alpha = clamp(fin(o.alpha, 0.45));
-  if (depth <= 0 || alpha <= 0) return;
+  if (depth <= 0 || alpha <= 0) { blitSource(); return; }
   const sc = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c));
   const wy = m.b * 640 + m.d * yW + m.f;                // device-space waterline (assumes ~no rotation)
   const dd = depth * sc;
   let xa = o.x0 == null ? 0 : m.a * fin(o.x0, 0) + m.e, xb = o.x1 == null ? cw : m.a * fin(o.x1, 1280) + m.e;
   if (xa > xb) [xa, xb] = [xb, xa];
   xa = Math.max(0, Math.floor(xa)); xb = Math.min(cw, Math.ceil(xb));
-  if (xb - xa < 1) return;
+  if (xb - xa < 1) { blitSource(); return; }
   const hs = sc > 2.2 ? 4 : 3;                          // whole device rows: no overlap, no seams
   const wyi = Math.round(wy);
   const strips = Math.min(600, Math.ceil(dd / hs));
@@ -3212,6 +3632,7 @@ function drawRiverReflection(ctx, t, o, fn) {
     ctx.restore();
   }
   ctx.restore();
+  blitSource();
 }
 
 // ════════════════════════════════════════════════════════════ TITLE CARDS
@@ -3374,6 +3795,100 @@ function capySilhouette(ctx, x, y, s, col, rim) {
 function groovyTitleFill(ctx, y0, y1) {
   return lg(ctx, 0, y0, 0, y1, [[0, '#FFF0A8'], [0.35, '#FFC85A'], [0.7, '#FF8A50'], [1, '#F0566E']]);
 }
+// One title letter (extruded shadow, outline, sunset gradient, gloss stripe) is ~10 large text
+// draws; the finished letter is a pure function of (char, size, device scale), so it is rendered
+// once into a small bitmap at device resolution and then only blitted (pop-in scale/rotation and
+// the wave are applied to the blit). ~23 ms → ~8 ms per frame for the groovy card at 1080p.
+const _glyphs = new Map();
+function groovyLetter(ch, fs, w, dev) {
+  dev = Math.min(dev, 2400 / Math.max(1, fs * 1.6));         // keep the bitmap a sane size
+  const key = ch + '|' + fs.toFixed(2) + '|' + dev.toFixed(3);
+  let g = _glyphs.get(key);
+  if (g) return g;
+  const depth = Math.max(4, fs * 0.07);
+  const padX = fs * 0.12, top = fs * 1.02, bot = fs * 0.42 + depth;
+  const x0 = -w / 2 - padX, x1 = w / 2 + padX + depth;
+  const cw = Math.max(1, Math.ceil((x1 - x0) * dev)), chh = Math.max(1, Math.ceil((top + bot) * dev));
+  const cv = napi().createCanvas(cw, chh);
+  const c = cv.getContext('2d');
+  c.setTransform(dev, 0, 0, dev, -x0 * dev, top * dev);
+  c.font = `400 ${fs}px Shrikhand`;
+  c.textAlign = 'left';
+  c.textBaseline = 'alphabetic';
+  c.lineJoin = 'round';
+  for (let d = depth; d >= 1; d -= 1) {
+    c.fillStyle = d === depth ? '#14081C' : mix('#7A2A5A', '#C2406A', 1 - d / depth);
+    c.fillText(ch, -w / 2 + d * 0.7, d);
+  }
+  c.strokeStyle = '#2A0F33';
+  c.lineWidth = fs * 0.075;
+  c.strokeText(ch, -w / 2, 0);
+  c.fillStyle = groovyTitleFill(c, -fs * 0.78, fs * 0.05);
+  c.fillText(ch, -w / 2, 0);
+  c.save();
+  c.beginPath();
+  c.rect(-w, -fs * 0.62, w * 2, fs * 0.09);
+  c.clip();
+  c.fillStyle = 'rgba(255,255,240,0.55)';
+  c.fillText(ch, -w / 2, 0);
+  c.restore();
+  g = { cv, x0, y0: -top, w: (x1 - x0), h: top + bot };
+  _glyphs.set(key, g);
+  if (_glyphs.size > 160) _glyphs.delete(_glyphs.keys().next().value);
+  return g;
+}
+// the card's static backdrop (flat colour + radial glow, + the risen sun's halo once it has
+// settled): cached like the environments
+const G_R0 = 196;
+function groovySunGlow(ctx, SX, sy, HZ, a) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(-600, -600, 2480, HZ + 600);
+  ctx.clip();
+  glow(ctx, SX, sy, G_R0 * 1.9, G_R0 * 1.5, '#FF8A5A', 0.35 * a, 'screen');
+  ctx.restore();
+}
+function groovyBackdrop(ctx, bg, SX, HZ, sunUp) {
+  drawCached(ctx, 'groovybg|' + bg + (sunUp ? '|sun' : ''), (c) => {
+    c.fillStyle = bg;
+    c.fillRect(-600, -600, 2480, 1920);
+    c.fillStyle = rg(c, SX, HZ - 40, 40, 900, [[0, '#5A2458'], [0.45, '#3A1846'], [1, bg]]);
+    c.fillRect(-600, -600, 2480, 1920);
+    if (sunUp) groovySunGlow(c, SX, HZ, HZ, 1);
+  });
+}
+// the 70s striped sun as ONE analytic path (bands intersected with the disc): no AA path clip
+function sunBandsPath(ctx, SX, sy, R, bands) {
+  ctx.beginPath();
+  for (let [ya, yb] of bands) {
+    ya = Math.max(ya, sy - R); yb = Math.min(yb, sy + R);
+    if (yb - ya < 0.05) continue;
+    const pa = Math.asin(clamp((ya - sy) / R, -1, 1)), pb = Math.asin(clamp((yb - sy) / R, -1, 1));
+    ctx.moveTo(SX + R * Math.cos(pa), ya);
+    ctx.arc(SX, sy, R, pa, pb, false);
+    ctx.lineTo(SX - R * Math.cos(pb), yb);
+    ctx.arc(SX, sy, R, Math.PI - pb, Math.PI - pa, false);
+    ctx.closePath();
+  }
+}
+// orange flight for the groovy card: {u (flight 0..1), b (bounce height), sq (squash), rot} or null
+const HOP = { t0: 1.3, ti: 2.0, bounces: [[0.07, 0.34, 20], [0.06, 0.2, 7], [0.05, 0.12, 2.5]] };
+function orangeHop(t) {
+  if (t < HOP.t0) return null;
+  if (t < HOP.ti) {
+    const u = (t - HOP.t0) / (HOP.ti - HOP.t0);
+    return { u, b: 0, sq: -0.07 * smoothstep(0.75, 1, u), rot: 0.15 - 4 * (1 - u) };
+  }
+  let tau = t - HOP.ti, b = 0, sq = 0;
+  for (const [hold, per, amp] of HOP.bounces) {
+    if (tau < hold) { sq = (amp / 20) * 0.2 * Math.sin(Math.PI * tau / hold); tau = -1; break; }
+    tau -= hold;
+    if (tau < per) { b = amp * Math.sin(Math.PI * tau / per); sq = -0.04 * (amp / 20) * Math.sin(Math.PI * tau / per); tau = -1; break; }
+    tau -= per;
+  }
+  const since = t - HOP.ti;
+  return { u: 1, b, sq, rot: 0.15 + 0.12 * Math.exp(-3 * since) * Math.sin(since * 12) };
+}
 function groovyCard(ctx, t, o, a) {
   const lines = o.lines && o.lines.length ? o.lines.map(lineObj) : [];
   const title = (lines[0] && lines[0].text) || 'Chill Capybara';
@@ -3381,11 +3896,15 @@ function groovyCard(ctx, t, o, a) {
   const bg = o.bg || '#1E0F2A';
   ctx.save();
   // background
-  ctx.fillStyle = bg;
-  ctx.fillRect(-600, -600, 2480, 1920);
   const HZ = 488, SX = 640;
-  ctx.fillStyle = rg(ctx, SX, HZ - 40, 40, 900, [[0, '#5A2458'], [0.45, '#3A1846'], [1, bg]]);
-  ctx.fillRect(-600, -600, 2480, 1920);
+  const rise = ease.outCubic(clamp(t / 1.5));
+  const R0 = G_R0, sy = HZ + (1 - rise) * (R0 + 30);
+  if (o.cache === false) {
+    ctx.fillStyle = bg;
+    ctx.fillRect(-600, -600, 2480, 1920);
+    ctx.fillStyle = rg(ctx, SX, HZ - 40, 40, 900, [[0, '#5A2458'], [0.45, '#3A1846'], [1, bg]]);
+    ctx.fillRect(-600, -600, 2480, 1920);
+  } else groovyBackdrop(ctx, bg, SX, HZ, rise >= 1);
   // slow sunburst rays
   ctx.save();
   ctx.translate(SX, HZ);
@@ -3401,28 +3920,24 @@ function groovyCard(ctx, t, o, a) {
   }
   ctx.restore();
   // sun rising behind the horizon (70s striped)
-  const rise = ease.outCubic(clamp(t / 1.5));
-  const R0 = 196, sy = HZ + (1 - rise) * (R0 + 30);
+  if (o.cache === false || rise < 1) groovySunGlow(ctx, SX, sy, HZ, rise);
   ctx.save();
   ctx.beginPath();
   ctx.rect(-600, -600, 2480, HZ + 600);
   ctx.clip();
-  glow(ctx, SX, sy, R0 * 1.9, R0 * 1.5, '#FF8A5A', 0.35 * rise, 'screen');
-  ctx.beginPath();
-  ctx.arc(SX, sy, R0, 0, TAU);
-  ctx.clip();
   const sunFill = lg(ctx, 0, sy - R0, 0, HZ, [[0, '#FFE88A'], [0.45, '#FFB04E'], [0.8, '#FF7458'], [1, '#E8506E']]);
   ctx.fillStyle = sunFill;
   // stripes: gaps grow towards the horizon, and scroll down slowly
-  let yy = sy - R0;
   const gapStart = HZ - 120;
-  ctx.fillRect(SX - R0, yy, R0 * 2, gapStart - yy);
+  const bands = [[sy - R0, gapStart]];
   const scroll = (t * 6) % 22;
   for (let i = 0; i < 8; i++) {
     const ya = gapStart + i * 22 + scroll - 22;
     const gap = 2 + i * 1.6;
-    ctx.fillRect(SX - R0, Math.max(ya, gapStart), R0 * 2, 22 - gap - Math.max(0, gapStart - ya));
+    bands.push([Math.max(ya, gapStart), ya + 22 - gap]);
   }
+  sunBandsPath(ctx, SX, sy, R0, bands);
+  ctx.fill();
   ctx.restore();
   // horizon line
   ctx.fillStyle = lg(ctx, 120, 0, 1160, 0, [[0, 'rgba(255,214,160,0)'], [0.5, 'rgba(255,214,160,0.9)'], [1, 'rgba(255,214,160,0)']]);
@@ -3458,19 +3973,23 @@ function groovyCard(ctx, t, o, a) {
     ctx.lineWidth = 2;
     ctx.stroke();
   }
-  const drop = clamp((t - 1.25) / 0.9);
-  if (drop > 0) {
+  // the orange arcs in from off-frame right, always below the title, lands on the capybara's head
+  // (impact t = 2.0), then two small bounces (max rebound 20) with squash keyed to each contact
+  const op = orangeHop(t);
+  if (op) {
     const R = 23;
-    const oy = lerp(-200, HZ - 111 * cs - R + 2, ease.outBounce(drop));
-    const squash = drop > 0.34 && drop < 0.5 ? 0.88 : 1;
+    const Lx = cx0 + 100 * cs, Ly = HZ - 111 * cs - R + 2;
+    const x = op.u < 1 ? lerp(1430, Lx, op.u) : Lx;
+    const y = op.u < 1 ? lerp(332, Ly, op.u) - 4 * 61 * op.u * (1 - op.u) : Ly - op.b;
     ctx.save();
-    ctx.translate(cx0 + 100 * cs, oy + (1 - squash) * R);
-    ctx.scale(1 / squash, squash);
-    drawOrangeFruit(ctx, 0, 0, R, 0.15, true);
+    ctx.translate(x, y + R);
+    ctx.scale(1 + op.sq * 0.85, 1 - op.sq);
+    ctx.translate(0, -R);
+    drawOrangeFruit(ctx, 0, 0, R, op.rot, true);
     ctx.restore();
   }
   // title: per-letter pop-in with a gentle wave afterwards
-  const fontSize = o.size || 108;
+  const fontSize = clamp(fin(o.size, 108) || 108, 8, 400);
   ctx.font = `400 ${fontSize}px Shrikhand`;
   let total = ctx.measureText(title).width;
   let fs = fontSize;
@@ -3487,40 +4006,28 @@ function groovyCard(ctx, t, o, a) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
   ctx.lineJoin = 'round';
-  const depth = Math.max(4, fs * 0.07);
+  const mt = ctx.getTransform();
+  const dev = Math.min(8, Math.max(0.25, Math.round(Math.sqrt(Math.abs(mt.a * mt.d - mt.b * mt.c)) * 1.15 * 8) / 8));
   pos.forEach((p, i) => {
     if (p.ch === ' ') return;
     const k = clamp((t - 0.35 - i * 0.055) / 0.5);
     if (k <= 0) return;
     const sc = ease.outBack(k, 2.2);
     const wave = Math.sin(t * 2.2 - i * 0.45) * 3 * smoothstep(1.5, 2.5, t);
+    // extruded 3D shadow + outline + gradient + gloss, pre-rendered (see groovyLetter)
+    const g = groovyLetter(p.ch, fs, p.w, dev);
     ctx.save();
     ctx.translate(p.x + p.w / 2, baseY + wave - (1 - k) * 30);
     ctx.scale(sc, sc);
     ctx.rotate((1 - k) * -0.3);
     ctx.globalAlpha = clamp(k * 3);
-    // extruded 3D shadow
-    for (let d = depth; d >= 1; d -= 1) {
-      ctx.fillStyle = d === depth ? '#14081C' : mix('#7A2A5A', '#C2406A', 1 - d / depth);
-      ctx.fillText(p.ch, -p.w / 2 + d * 0.7, d);
-    }
-    ctx.strokeStyle = '#2A0F33';
-    ctx.lineWidth = fs * 0.075;
-    ctx.strokeText(p.ch, -p.w / 2, 0);
-    ctx.fillStyle = groovyTitleFill(ctx, -fs * 0.78, fs * 0.05);
-    ctx.fillText(p.ch, -p.w / 2, 0);
-    // glossy highlight stripe
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(-p.w, -fs * 0.62, p.w * 2, fs * 0.09);
-    ctx.clip();
-    ctx.fillStyle = 'rgba(255,255,240,0.55)';
-    ctx.fillText(p.ch, -p.w / 2, 0);
-    ctx.restore();
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'medium';
+    ctx.drawImage(g.cv, g.x0, g.y0, g.w, g.h);
     ctx.restore();
   });
   // subtitle
-  const ks = clamp((t - 2.0) / 0.7);
+  const ks = clamp((t - 2.3) / 0.7);
   if (ks > 0 && sub) {
     ctx.save();
     ctx.globalAlpha = ease.outCubic(ks);
@@ -3554,11 +4061,15 @@ function groovyCard(ctx, t, o, a) {
     ctx.restore();
   }
 }
-function drawTitleCard(ctx, t = 0, o = {}) {
-  const a = cardAlpha(t, o);
+function drawTitleCard(ctx, t, o) {
+  t = fin(t, 0);
+  o = optsOf(o);
+  if (!finiteCtx(ctx)) return;
+  const so = { ...o, size: fin(o.size, undefined) };
+  const a = cardAlpha(t, so);
   ctx.save();
-  if ((o.style || 'woody') === 'groovy') groovyCard(ctx, t, o, a);
-  else woodyCard(ctx, t, o, a);
+  if ((so.style || 'woody') === 'groovy') groovyCard(ctx, t, so, a);
+  else woodyCard(ctx, t, so, a);
   ctx.restore();
 }
 
@@ -3756,12 +4267,20 @@ function bannerCaption(ctx, t, o) {
   }
   ctx.restore();
 }
-function drawCaption(ctx, t = 0, o = {}) {
-  const inT = o.inT || 0, outT = o.outT == null ? Infinity : o.outT;
+function drawCaption(ctx, t, o) {
+  t = fin(t, 0);
+  o = optsOf(o);
+  if (!finiteCtx(ctx)) return;
+  const inT = fin(o.inT, 0), outT = numOr(o.outT, Infinity);
   if (t < inT || t > outT + 0.75) return;
+  const so = {
+    ...o, inT, outT,
+    text: o.text == null || o.text === '' ? 'THREE WEEKS LATER' : String(o.text),
+    x: fin(o.x, undefined), y: fin(o.y, undefined), scale: clamp(fin(o.scale, 1), 0.05, 10) || 1,
+  };
   ctx.save();
-  if ((o.style || 'plank') === 'banner') bannerCaption(ctx, t, o);
-  else plankCaption(ctx, t, o);
+  if ((so.style || 'plank') === 'banner') bannerCaption(ctx, t, so);
+  else plankCaption(ctx, t, so);
   ctx.restore();
 }
 
@@ -3877,6 +4396,64 @@ function tryChars() {
   try { return require('./characters'); } catch (e) { return null; }
 }
 
+const CARDS = {
+  s02_title: { lines: ['CHILL CAPYBARA'] },
+  s02_credit: { lines: [{ text: 'with', size: 36 }, { text: 'MOUNT SNOOZE', size: 62 }, { text: 'as itself (dormant)', size: 40 }] },
+  s10_end: { lines: ['CHILL CAPYBARA', { text: 'THE END', size: 40, at: 0.9, fade: 0.4 }] },
+  s10_volcano: { lines: [{ text: 'MOUNT SNOOZE', size: 62 }, { text: 'appeared as itself', size: 40 }, { text: '(no longer dormant)', size: 40 }] },
+  s10_fish: { lines: [{ text: 'No fish were harmed in the making of this film.', size: 44 }, { text: 'They left early.', size: 44, at: 1.2, fade: 0.35 }] },
+  s10_fish_auto: { lines: [{ text: 'No fish were harmed in the making of this film. They left early.', size: 44 }] },
+};
+function officeCast(ctx, t, o = {}) {
+  const C = o.real ? tryChars() : null;
+  let ok = false;
+  if (C && C.drawCapybara && C.drawTortoise) {
+    try {
+      C.drawCapybara(ctx, { who: 'barry', x: OFFICE.couch.x, y: OFFICE.couch.y, pose: 'lie', t, mood: 'worried' });
+      C.drawTortoise(ctx, { x: OFFICE.chair.x, y: OFFICE.chair.y, flip: true, t, write: 0.3 });
+      ok = true;
+    } catch (e) { /* sibling WIP */ }
+  }
+  if (!ok) {
+    placeholderCapy(ctx, OFFICE.couch.x, OFFICE.couch.y, false, 'Barry', '#9A6A45');
+    placeholderTortoise(ctx, OFFICE.chair.x, OFFICE.chair.y, 'Shelley');
+  }
+}
+// lab stand-in for the s08 raft: the same raft options and seating as the scene kit (Sunny left,
+// Barry centre in his helmet, Doreen right facing him) so framings are judged on the real layout
+function riverCastFn(t, real) {
+  const C = real ? tryChars() : null;
+  let P = null;
+  if (real) { try { P = require('./props'); } catch (e) { /* sibling WIP */ } }
+  const r = RIVER.raftPos;
+  return (c) => {
+    const ro = { x: r.x, y: r.y, t, scale: 0.95, bob: 1, wake: 0.35, dir: -1, wind: 0.6, flagText: 'S.S. TOLD YOU SO' };
+    if (P && P.drawRaft) P.drawRaft(c, ro);
+    else labRaft(c, r.x, r.y, t);
+    if (!(C && C.drawCapybara)) return;
+    try {
+      const RA = P && P.raftAnchors ? P.raftAnchors(ro) : null;
+      const wl = RA ? RA.waterline : r.y, ang = (RA && RA.angle) || 0;
+      for (const [who, sx, sc, flip, mood, acc] of [['sunny', -126, 0.55, false, 'sad', {}], ['barry', 6, 0.58, false, 'deadpan', { helmet: true, soot: 0.35 }], ['doreen', 128, 0.56, true, 'sad', { juice: 0.4 }]]) {
+        const lx = sx * ro.scale, ly = -42 * ro.scale;
+        const x = r.x + lx * Math.cos(ang) - ly * Math.sin(ang), y = wl + lx * Math.sin(ang) + ly * Math.cos(ang);
+        const g = C.capyAnchors ? C.capyAnchors({ who, x: 0, y: 0, scale: sc, pose: 'sit', t, flip: false }).ground.y : 0;
+        C.drawCapybara(c, { who, x, y: y - g, scale: sc, pose: 'sit', t, flip, rot: ang, mood, accessories: acc });
+      }
+    } catch (e) { /* sibling WIP */ }
+  };
+}
+function riverScene(ctx, t, o = {}, cast) {
+  drawRiverSunset(ctx, t, o);
+  const r = RIVER.raftPos;
+  drawRiverReflection(ctx, t, { y: r.y, x0: r.x - 320, x1: r.x + 320, depth: 150, drawSource: true }, cast);
+  drawRiverFront(ctx, t, o);
+}
+function grid(ctx, items, cols, draw) {
+  const rows = Math.ceil(items.length / cols), pw = 1280 / cols, ph = 720 / rows;
+  items.forEach((it, i) => labPanel(ctx, (i % cols) * pw, Math.floor(i / cols) * ph, pw, ph, it.label, () => draw(it, i)));
+}
+
 const lab = {
   office(ctx, t) {
     drawTherapyOffice(ctx, t, { hourglass: 0.6 });
@@ -3884,14 +4461,13 @@ const lab = {
   },
   office_cast(ctx, t) {
     drawTherapyOffice(ctx, t, {});
-    placeholderCapy(ctx, OFFICE.couch.x, OFFICE.couch.y, false, 'couch (Barry, lie)', '#9A6A45');
-    placeholderTortoise(ctx, OFFICE.chair.x, OFFICE.chair.y, 'chair (Shelley)');
+    officeCast(ctx, t, { real: false });
     drawTherapyOfficeFront(ctx, t, {});
     ctx.save();
     ctx.fillStyle = '#fff';
     ctx.strokeStyle = '#000';
     ctx.font = '700 13px Fredoka';
-    for (const k of ['window', 'diploma', 'candle', 'lamp', 'table', 'oranges', 'hourglass', 'alcove', 'fern']) {
+    for (const k of ['window', 'crater', 'shelleyHead', 'diploma', 'candle', 'lamp', 'table', 'oranges', 'hourglass', 'alcove', 'fern']) {
       const p = OFFICE[k];
       circle(ctx, p.x, p.y, 4);
       ctx.fill();
@@ -3902,84 +4478,124 @@ const lab = {
     ctx.restore();
   },
   office_framings(ctx, t) {
-    const shots = [
-      ['barry_couch: zoom 2 on couch', { x: 400, y: 470, zoom: 2 }],
-      ['shelley_cu: zoom 2 on chair', { x: 930, y: 420, zoom: 2 }],
-      ['office_wide: zoom 0.9', { x: 640, y: 360, zoom: 0.9 }],
-      ['window: zoom 2.6', { x: 930, y: 300, zoom: 2.6 }],
-    ];
-    shots.forEach(([label, cam], i) => {
-      labPanel(ctx, (i % 2) * 640, Math.floor(i / 2) * 360, 640, 360, label, () => {
-        withCamera(ctx, cam, () => {
-          drawTherapyOffice(ctx, t, { puff: i === 3 ? 0.4 : 0, volcanoSmoke: 0.5, hourglass: 0.3 });
-          placeholderCapy(ctx, OFFICE.couch.x, OFFICE.couch.y, false, 'Barry', '#9A6A45');
-          placeholderTortoise(ctx, OFFICE.chair.x, OFFICE.chair.y, 'Shelley');
-          drawTherapyOfficeFront(ctx, t, {});
-        });
-      });
-    });
+    const F = OFFICE.framings;
+    grid(ctx, [
+      { label: 'barry_couch ' + JSON.stringify(F.barry_couch), cam: F.barry_couch, o: {} },
+      { label: 'shelley_cu ' + JSON.stringify(F.shelley_cu), cam: F.shelley_cu, o: {} },
+      { label: 'office_wide (zoom 0.9 shown)', cam: { x: 640, y: 360, zoom: 0.9 }, o: {} },
+      { label: 'window ' + JSON.stringify(F.window) + ' puff .55', cam: F.window, o: { puff: 0.55 } },
+    ], 2, (it) => withCamera(ctx, it.cam, () => {
+      drawTherapyOffice(ctx, t, it.o);
+      officeCast(ctx, t, { real: true });
+      drawTherapyOfficeFront(ctx, t, it.o);
+    }));
+  },
+  office_window(ctx, t) {
+    const items = [];
+    for (let i = 0; i < 8; i++) items.push({ label: 'puff ' + (i / 7).toFixed(2), o: { puff: i / 7 }, cam: OFFICE.framings.window });
+    for (const v of [0, 0.35, 0.6, 1]) items.push({ label: 'volcanoSmoke ' + v + ' (wide)', o: { volcanoSmoke: v }, cam: { x: 820, y: 300, zoom: 1.6 } });
+    grid(ctx, items, 4, (it) => withCamera(ctx, it.cam, () => {
+      drawTherapyOffice(ctx, t, it.o);
+      officeCast(ctx, t, { real: true });
+      drawTherapyOfficeFront(ctx, t, it.o);
+    }));
+  },
+  office_live(ctx, t) {
+    drawTherapyOffice(ctx, t, { hourglass: 0.5 });
+    officeCast(ctx, t, { real: true });
+    drawTherapyOfficeFront(ctx, t, {});
   },
   river(ctx, t) {
-    drawRiverSunset(ctx, t, { ash: 0.5 });
-    // placeholder raft at the anchor
-    const r = RIVER.raftPos;
-    ctx.save();
-    roundRect(ctx, r.x - 165, r.y - 22, 330, 30, 8);
-    ctx.fillStyle = rgba('#9A6A45', 0.8);
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.restore();
-    drawRiverFront(ctx, t, { ash: 0.5 });
+    riverScene(ctx, t, { ash: 0.5 }, riverCastFn(t, false));
   },
   river_framings(ctx, t) {
-    const shots = [
-      ['raft_wide: zoom 1', { x: 640, y: 360, zoom: 1 }],
-      ['barry_cu: zoom 2 on raft', { x: 600, y: 440, zoom: 2 }],
-      ['wide: zoom 0.9', { x: 640, y: 360, zoom: 0.9 }],
-      ['volcano: zoom 2.5', { x: 360, y: 290, zoom: 2.5 }],
+    const F = RIVER.framings;
+    const cast = riverCastFn(t, true);
+    // a tight close-up on Barry (eye ≈ 646,420), widened just enough to hold the smoking volcano
+    const tight = riverFrameVolcano({ x: 662, y: 430, zoom: 4 }, [{ x0: 610, y0: 378, x1: 712, y1: 452 }]);
+    const r1 = (c) => ({ ...c, x: Math.round(c.x), y: Math.round(c.y), zoom: +c.zoom.toFixed(2) });
+    grid(ctx, [
+      { label: 'raft_wide ' + JSON.stringify(F.raft_wide), cam: F.raft_wide },
+      { label: 'barry_cu ' + JSON.stringify(F.barry_cu), cam: F.barry_cu },
+      { label: 'riverFrameVolcano(z4 CU, Barry head) = ' + JSON.stringify(r1(tight)), cam: tight },
+      { label: 'volcano ' + JSON.stringify(F.volcano), cam: F.volcano },
+    ], 2, (it) => withCamera(ctx, it.cam, () => riverScene(ctx, t, { ash: 0.4 }, cast)));
+  },
+  // the REAL s08 stages from the scene kit (lazy, optional): kit framings vs this module's
+  river_kit(ctx, t) {
+    let K = null, tl = null;
+    try { K = require('./kit'); const { Timeline } = require('./timeline'); tl = new Timeline(); } catch (e) { K = null; }
+    if (!K || !tl || !tl.byScene.s08_aftermath) { drawRiverSunset(ctx, t, {}); return; }
+    const sc = tl.byScene.s08_aftermath;
+    const S = (tt) => tl.sceneTime('s08_aftermath', sc.start + tt);
+    const items = [
+      { label: 'kit raft_wide', tt: 4.5, cfg: { cam: { name: 'raft_wide' } } },
+      { label: 'kit barry_cu (as is)', tt: 1, cfg: { cam: { name: 'barry_cu' } } },
+      { label: 'RIVER.framings.barry_cu', tt: 1, cfg: { camera: { ...RIVER.framings.barry_cu } } },
     ];
-    shots.forEach(([label, cam], i) => {
-      labPanel(ctx, (i % 2) * 640, Math.floor(i / 2) * 360, 640, 360, label, () => {
-        withCamera(ctx, cam, () => {
-          drawRiverSunset(ctx, t, { ash: 0.5 });
-          const r = RIVER.raftPos;
-          roundRect(ctx, r.x - 165, r.y - 22, 330, 30, 8);
-          ctx.fillStyle = rgba('#9A6A45', 0.85);
-          ctx.fill();
-          drawRiverFront(ctx, t, { ash: 0.5 });
-        });
-      });
-    });
+    const C = RIVER.volcanoCU.barryFacingRight;
+    items.push({ label: 'RIVER.volcanoCU.barryFacingRight (o.volcano cheat)', tt: 1, cfg: { camera: { ...C.cam }, env: { volcano: C.volcano } } });
+    grid(ctx, items, 2, (it) => { const s0 = S(it.tt); K.drawRaftStage(ctx, s0.t, s0, it.cfg); });
+  },
+  office_kit(ctx, t) {
+    let K = null, tl = null;
+    try { K = require('./kit'); const { Timeline } = require('./timeline'); tl = new Timeline(); } catch (e) { K = null; }
+    if (!K || !tl || !tl.byScene.s05_therapy) { drawTherapyOffice(ctx, t, {}); return; }
+    const sc = tl.byScene.s05_therapy;
+    const S = (tt) => tl.sceneTime('s05_therapy', sc.start + tt);
+    grid(ctx, [
+      { label: 'kit window: window_puff +0.9s', tt: 24.2, cfg: { cam: { name: 'window' } } },
+      { label: 'kit window: shelley_turns +0.2s (neck −1)', tt: 26.3, cfg: { cam: { name: 'window' }, shelley: { neck: -1, look: { x: -1, y: -1 } } } },
+      { label: 'kit window: shelley_turns +0.9s', tt: 27.0, cfg: { cam: { name: 'window' }, shelley: { neck: -1, look: { x: -1, y: -1 } } } },
+      { label: 'OFFICE.framings.window: turns +1.4s', tt: 27.5, cfg: { camera: { ...OFFICE.framings.window }, shelley: { neck: -1, look: { x: -1, y: -1 } } } },
+    ], 2, (it) => { const s0 = S(it.tt); K.drawOfficeStage(ctx, s0.t, s0, it.cfg); });
   },
   river_live(ctx, t) {
-    const C = tryChars();
-    let P = null;
-    try { P = require('./props'); } catch (e) { /* sibling WIP */ }
+    riverScene(ctx, t, { ash: 0.4, grade: 1 }, riverCastFn(t, true));
+  },
+  river_reflection(ctx, t) {
+    // solid-colour test block on the raft anchor: the reflection must be strongest right under the
+    // waterline and fade smoothly with depth (no bands, no rectangle from the front strip)
     const r = RIVER.raftPos;
-    const deck = r.y - 16;
-    const cast = (c) => {
-      if (P && P.drawRaft) P.drawRaft(c, { x: r.x, y: r.y, t, flagText: 'S.S. TOLD YOU SO' });
-      else labRaft(c, r.x, r.y, t);
-      if (C && C.drawCapybara) {
-        try {
-          C.drawCapybara(c, { who: 'doreen', x: r.x - 105, y: deck - 52, pose: 'sit', t, mood: 'sad', scale: 0.82 });
-          C.drawCapybara(c, { who: 'barry', x: r.x + 10, y: deck - 50, pose: 'stand', t, mood: 'smug', scale: 0.82, accessories: { helmet: true } });
-          C.drawCapybara(c, { who: 'sunny', x: r.x + 120, y: deck - 54, pose: 'sit', t, mood: 'sad', scale: 0.86, flip: true });
-        } catch (e) { /* sibling WIP */ }
-      }
-    };
-    drawRiverSunset(ctx, t, { ash: 0.4 });
-    drawRiverReflection(ctx, t, { y: r.y + 4, x0: r.x - 300, x1: r.x + 300, depth: 140 }, cast);
-    cast(ctx);
-    drawRiverFront(ctx, t, { ash: 0.4, grade: 1 });
+    const block = (c) => { c.fillStyle = '#2050F0'; c.fillRect(r.x - 150, r.y - 120, 300, 128); c.fillStyle = '#F0D020'; c.fillRect(r.x - 150, r.y - 120, 300, 18); };
+    grid(ctx, [
+      { label: 'test block z1', cam: { x: 640, y: 420, zoom: 1 } },
+      { label: 'test block z2', cam: { x: 640, y: 540, zoom: 2 } },
+      { label: 'test block z3 (close-up)', cam: { x: 640, y: 540, zoom: 3 } },
+      { label: 'real cast z2', cam: { x: 600, y: 470, zoom: 2 }, real: true },
+    ], 2, (it) => withCamera(ctx, it.cam, () => riverScene(ctx, t, { ash: 0 }, it.real ? riverCastFn(t, true) : block)));
+  },
+  river_sun(ctx, t) {
+    const cast = riverCastFn(t, true);
+    grid(ctx, [
+      { label: 'default sun (clear of the cast)', o: {} },
+      { label: "sun:{x:645,y:356} — behind Barry ('Am I chill?')", o: { sun: { x: 645, y: 356 } }, cam: RIVER.framings.barry_cu },
+      { label: 'sunset 0.5', o: { sunset: 0.5 } },
+      { label: 'sunset 1 + smoke 0.4, ash 1', o: { sunset: 1, smoke: 0.4, ash: 1 } },
+    ], 2, (it) => withCamera(ctx, it.cam || { x: 640, y: 360, zoom: 1 }, () => riverScene(ctx, t, it.o, cast)));
   },
   titles(ctx, t) {
     labPanel(ctx, 0, 0, 640, 360, 'woody: CHILL CAPYBARA', () => drawTitleCard(ctx, t, { style: 'woody' }));
-    labPanel(ctx, 640, 0, 640, 360, 'woody: credit card (2 lines)', () => drawTitleCard(ctx, t, { style: 'woody', lines: [{ text: 'with', size: 30 }, { text: 'MOUNT SNOOZE', size: 56 }, { text: 'as itself (dormant)', size: 30 }] }));
-    labPanel(ctx, 0, 360, 640, 360, 'groovy t=1.0', () => drawTitleCard(ctx, 1.0, { style: 'groovy' }));
+    labPanel(ctx, 640, 0, 640, 360, 'woody: s02 credit', () => drawTitleCard(ctx, t, CARDS.s02_credit));
+    labPanel(ctx, 0, 360, 640, 360, 'groovy t=1.65 (orange in flight)', () => drawTitleCard(ctx, 1.65, { style: 'groovy' }));
     labPanel(ctx, 640, 360, 640, 360, 'groovy t=4 (settled)', () => drawTitleCard(ctx, 4 + t, { style: 'groovy' }));
+  },
+  titles_script(ctx, t) {
+    // the exact s02 / s10 card texts from script.py (t+2 so per-line reveals have happened)
+    grid(ctx, [
+      { label: 's02 title_card', c: CARDS.s02_title, t: 1 },
+      { label: 's02 title_credit', c: CARDS.s02_credit, t: 1 },
+      { label: "s10 end_card t=0.5 ('THE END' not yet)", c: CARDS.s10_end, t: 0.5 },
+      { label: 's10 end_card t=2', c: CARDS.s10_end, t: 2 },
+      { label: 's10 end_credit_volcano', c: CARDS.s10_volcano, t: 1 },
+      { label: 's10 end_credit_fish (at:1.2 reveal) t=2', c: CARDS.s10_fish, t: 2 },
+      { label: 'fish card as ONE string (auto-wrap)', c: CARDS.s10_fish_auto, t: 1 },
+      { label: 'MOUNT SNOOZE… as ONE string', c: { lines: [{ text: 'MOUNT SNOOZE appeared as itself (no longer dormant)', size: 46 }] }, t: 1 },
+      { label: 'layered: bg:false over the river', c: { lines: ['THE END'], bg: false, fadeIn: 0.5 }, t: 1, under: true },
+    ], 3, (it) => {
+      if (it.under) drawRiverSunset(ctx, t, {});
+      drawTitleCard(ctx, it.t + t, it.c);
+    });
   },
   titles_groovy(ctx, t) {
     drawTitleCard(ctx, t, { style: 'groovy', dur: 8, fadeOut: 1 });
@@ -3989,29 +4605,39 @@ const lab = {
     drawCaption(ctx, t, { style: 'plank', text: 'THREE WEEKS LATER', inT: 0, outT: 3 });
     drawCaption(ctx, t, { style: 'banner', text: 'THREE WEEKS LATER', inT: 0, outT: 3, y: 560 });
   },
-  office_live(ctx, t) {
-    const C = tryChars();
-    drawTherapyOffice(ctx, t, { hourglass: 0.5 });
-    if (C && C.drawCapybara) {
-      try { C.drawCapybara(ctx, { who: 'barry', x: OFFICE.couch.x, y: OFFICE.couch.y, pose: 'lie', t, mood: 'worried' }); } catch (e) { /* sibling WIP */ }
-    } else placeholderCapy(ctx, OFFICE.couch.x, OFFICE.couch.y, false, 'Barry', '#9A6A45');
-    if (C && C.drawTortoise) {
-      try { C.drawTortoise(ctx, { x: OFFICE.chair.x, y: OFFICE.chair.y, flip: true, t, write: 0.3 }); } catch (e) { /* sibling WIP */ }
-    } else placeholderTortoise(ctx, OFFICE.chair.x, OFFICE.chair.y, 'Shelley');
-    drawTherapyOfficeFront(ctx, t, {});
-  },
 };
+
+// Build the static-layer tiles for the named framings ahead of time (optional; otherwise the
+// first frame at each new zoom level pays ≈0.1–0.3 s once). outScale = output px per design unit
+// (1.5 for 1920x1080, 0.5 for 640x360 previews).
+function prewarm(which = 'all', outScale = 1.5) {
+  const sc = fin(outScale, 1.5);
+  const cw = Math.round(1280 * sc), ch = Math.round(720 * sc);
+  const jobs = [];
+  if (which === 'all' || which === 'office') for (const f of Object.values(OFFICE.framings)) jobs.push(['office', officeStatic, f]);
+  if (which === 'all' || which === 'river') {
+    const sun = sunOf({});
+    const vol = volcOf({});
+    for (const f of Object.values(RIVER.framings)) jobs.push(['river|' + sun.x + ',' + sun.y + '|' + vol.x + ',' + vol.y, (c) => riverStatic(c, sun, vol), f]);
+  }
+  for (const [key, fn, f] of jobs) {
+    const z = f.zoom * sc;
+    const B = tileBlock({ a: z, b: 0, c: 0, d: z, e: cw / 2 - f.x * z, f: ch / 2 - f.y * z }, cw, ch);
+    if (B) buildTiles(key, B.L, B.c0, B.c1, B.r0, B.r1, fn);
+  }
+}
 
 module.exports = {
   _envOtherPrivate: {
     drawCached, officeStatic, officeWindowStatic, officeWindowLive, officeTable, officeDust, drawSnoozeCone, blobsPath,
-    riverStatic, riverSkyStatic, riverStars, riverSunDisc, riverClouds, riverSmoke, riverCraterGlow,
+    riverSmokePuffs, riverStatic, riverSkyStatic, riverStars, riverSunDisc, riverClouds, riverSmoke, riverCraterGlow,
     riverVolcanoStatic, riverFarStatic, waterStatic, waterLive, riverBankReflections, riverBanksStatic,
     riverPalms, riverBirds, riverLilies, raftShadow, riverAsh, riverForeground, riverGrade,
-    bankFill, palm, CROWNS, leftEdge, rightEdge, edgeAt, edgeClip, sunOf, horizonTop, waterColorAt,
+    bankFill, bankPath, palm, CROWNS, leftEdge, rightEdge, edgeAt, edgeClip, sunOf, horizonTop, waterColorAt,
   },
   drawTherapyOffice, drawTherapyOfficeFront, OFFICE,
-  drawRiverSunset, drawRiverFront, drawRiverReflection, RIVER,
+  drawRiverSunset, drawRiverFront, drawRiverReflection, riverFrameVolcano, RIVER,
   drawTitleCard, drawCaption,
+  prewarm,
   lab,
 };
