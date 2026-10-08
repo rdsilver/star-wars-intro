@@ -36,6 +36,7 @@ MODEL_DIR = os.environ.get(
 SR = 48000
 FPS = 24
 DEFAULT_GAP = 0.30
+STEMS_DIR = None
 MOODS = {"neutral", "worried", "panic", "chill", "happy", "smug", "deadpan", "shock", "sad", "sleepy"}
 
 sys.path.insert(0, HERE)
@@ -326,11 +327,17 @@ def mix(tl, clips):
                 a[-f:] *= np.linspace(1, 0, f, dtype=np.float32)[:, None]
                 add_at(amb_bus, s["start"], a, 0.5)
 
-    out = dialog + music_bus * 0.55 + sfx_bus * 0.8 + amb_bus * 0.35
+    stems = dict(dialog=dialog, music=music_bus * 0.55, sfx=sfx_bus * 0.8, ambience=amb_bus * 0.35)
+    out = stems["dialog"] + stems["music"] + stems["sfx"] + stems["ambience"]
     # gentle soft limiter, then peak-normalise
     out = np.tanh(out * 1.1) / np.tanh(1.1)
     peak = float(np.abs(out).max()) or 1.0
     out *= 0.89 / peak
+    if STEMS_DIR:
+        os.makedirs(STEMS_DIR, exist_ok=True)
+        g = 0.89 / peak  # same gain as the master (pre-limiter levels)
+        for k, v in stems.items():
+            sf.write(os.path.join(STEMS_DIR, k + ".wav"), (v * g)[: int(tl["duration"] * SR)], SR, subtype="FLOAT")
     return out[: int(tl["duration"] * SR)]
 
 
@@ -340,7 +347,11 @@ def main():
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--script", help="path to an alternative script .py (default src/script.py)")
     ap.add_argument("--out", help="timeline output path (default build/timeline.json)")
+    ap.add_argument("--stems", action="store_true", help="also write build/stems/{dialog,music,sfx,ambience}.wav")
     args = ap.parse_args()
+    global STEMS_DIR
+    if args.stems:
+        STEMS_DIR = os.path.join(BUILD, "stems")
     os.makedirs(BUILD, exist_ok=True)
     script = load_script(args.script)
     tl, clips = build_timeline(script, report=True)

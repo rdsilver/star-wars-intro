@@ -36,7 +36,7 @@ const SUBS = !flag('--nosubs');
 const sceneCache = {};
 function sceneModule(id) {
   if (id in sceneCache) return sceneCache[id];
-  const p = path.join(__dirname, 'scenes', id + '.js');
+  const p = path.join(process.env.SCENES_DIR || path.join(__dirname, 'scenes'), id + '.js');
   let mod = null;
   if (fs.existsSync(p)) mod = require(p);
   sceneCache[id] = mod;
