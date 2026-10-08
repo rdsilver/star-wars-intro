@@ -1458,70 +1458,59 @@ const GLINTS = (() => {
 // water body, rocks, the sign) is rasterised into tiles and blitted. Tiles are a pure function of
 // constant inputs: (layer, variant, light corner, pixel-scale level, tile index), so frames stay
 // deterministic in any render order. Each tile is rendered on its own with a fixed transform.
-//  * Levels: a geometric ladder (×1.04) around the 1080p zoom-1 scale (1.5 px/unit), so the device
-//    scale is always within 2% of a level → the blit uses nearest-neighbour onto device-pixel-snapped
-//    rects (fast, crisp, seamless). With a rotated camera (shake) it falls back to bilinear.
-//  * Light corners: the eruption light (0 or 1) and, for the evening, dusk in steps of 1/8. Between
-//    corners the tiles are cross-faded per tile (A, then B with alpha w), which is seam-free.
-const TPX = 512, TGUT = 2, LADDER = 1.04;
+//  * Levels: a geometric ladder (x1.08) around the 1080p zoom-1 scale (1.5 px/unit); a frame uses the
+//    nearest level (within ±3.9% of the device scale). Blits are BILINEAR onto device-pixel-snapped
+//    destination rects whose source rect is the exact (fractional) pre-image, so the background
+//    moves sub-pixel exactly like the live layers and adjacent tiles never seam. Only a pixel-exact
+//    frame (device scale on a level, translation on the pixel grid — e.g. a held zoom-1 wide) uses the
+//    cheaper nearest-neighbour blit, which is then identical. Rotated frames (camera shake) blit
+//    bilinear tiles with a 1-pixel overlap. A level change during a push is a sub-pixel AA change only
+//    (measured mean frame diff 1.7 at the switch vs 1.3 for an ordinary push step), so no cross-fade.
+//  * Light corners: the eruption light (0 or 1) and, for the evening, dusk keys [0 .15 .3 .5 .75 1].
+//    Between corners the tiles are cross-faded directly in the frame (A, then B with alpha w) —
+//    no blend canvases are ever built.
+//  * Memory: @napi-rs/canvas never frees a canvas that has been passed to drawImage, so tile canvases
+//    are POOLED: a fixed number of identical 516x516 canvases (SPRING_CACHE_MB, default 420 MB per
+//    process) is allocated on demand and recycled (LRU) — never garbage-collected. Nothing else in
+//    this module creates canvases except the tiny constant glow sprites (one per colour, kept).
+const TPX = 512, TGUT = 2, TSZ = TPX + 2 * TGUT, LADDER = 1.08;
 const TILE_BUDGET = (+process.env.SPRING_CACHE_MB || 420) * 1048576;
-const _tiles = new Map();
-let _tileBytes = 0;
-function levelOf(ds) { const k = Math.round(Math.log(ds / 1.5) / Math.log(LADDER)); return { k, L: 1.5 * Math.pow(LADDER, k) }; }
-const TSTAT = { builds: 0, evicts: 0 };
-function tileStore(key, cv) {
-  TSTAT.builds++;
-  _tiles.set(key, cv);
-  _tileBytes += cv.width * cv.height * 4;
-  while (_tileBytes > TILE_BUDGET && _tiles.size > 1) {
-    const [k, v] = _tiles.entries().next().value;
-    _tiles.delete(k);
-    _tileBytes -= v.width * v.height * 4;
-    TSTAT.evicts++;
-  }
+const MAX_TILES = Math.max(180, Math.floor(TILE_BUDGET / (TSZ * TSZ * 4)));
+const _tiles = new Map();        // key → canvas, in LRU order
+const _pool = [];                // free canvases (recycled, never released)
+const TSTAT = { builds: 0, evicts: 0, allocated: 0, maxTiles: MAX_TILES };
+function levelOf(ds) { const q = Math.log(ds / 1.5) / Math.log(LADDER); const k = Math.round(q); return { k, L: 1.5 * Math.pow(LADDER, k), q }; }
+function takeCanvas() {
+  if (_pool.length) return _pool.pop();
+  if (TSTAT.allocated < MAX_TILES) { TSTAT.allocated++; return createCanvas(TSZ, TSZ); }
+  const [k, cv] = _tiles.entries().next().value;   // recycle the least recently used tile
+  _tiles.delete(k);
+  TSTAT.evicts++;
+  return cv;
 }
+// drop every cached tile back into the pool (memory stays allocated; used by tests)
+function flushTiles() { for (const cv of _tiles.values()) _pool.push(cv); _tiles.clear(); }
 // layer = {id, rects: [[x0, y0, x1, y1]...] (disjoint content bounds, world units), draw(g, P, variant)}
-// corners = [{key, P, a}] (a = progressive alpha: 1 for the first). variant: string (part of key).
 function cornerTile(layer, variant, c, k, L, i, j) {
   const key = layer.id + '|' + variant + '|' + c.key + '|' + k + '|' + i + '|' + j;
   let cv = _tiles.get(key);
   if (cv) { _tiles.delete(key); _tiles.set(key, cv); return cv; }
-  cv = createCanvas(TPX + 2 * TGUT, TPX + 2 * TGUT);
+  cv = takeCanvas();
   const g = cv.getContext('2d');
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.globalAlpha = 1; g.globalCompositeOperation = 'source-over';
+  g.clearRect(0, 0, TSZ, TSZ);
+  g.save();
   g.setTransform(L, 0, 0, L, TGUT - i * TPX, TGUT - j * TPX);
   layer.draw(g, c.P, variant);
-  tileStore(key, cv);
+  g.restore();
+  TSTAT.builds++;
+  _tiles.set(key, cv);
   return cv;
 }
-// the tile for a frame: a corner tile, or a cached pixel-exact cross-fade of several corners
-function frameTile(layer, variant, corners, k, L, i, j) {
-  if (corners.length === 1) return cornerTile(layer, variant, corners[0], k, L, i, j);
-  const key = layer.id + '|' + variant + '|' + k + '|' + i + '|' + j + '|' + corners.map((c) => c.key + ':' + c.a).join(',');
-  let cv = _tiles.get(key);
-  if (cv) { _tiles.delete(key); _tiles.set(key, cv); return cv; }
-  cv = createCanvas(TPX + 2 * TGUT, TPX + 2 * TGUT);
-  const g = cv.getContext('2d');
-  for (const c of corners) { g.globalAlpha = c.a; g.drawImage(cornerTile(layer, variant, c, k, L, i, j), 0, 0); }
-  tileStore(key, cv);
-  return cv;
-}
-function drawLayer(ctx, layer, corners, variant = '') {
-  const m = ctx.getTransform();
-  const det = m.a * m.d - m.b * m.c;
-  if (!(Math.abs(det) > 1e-9)) return;
-  const ds = Math.sqrt(Math.abs(det));
-  const { k, L } = levelOf(ds);
-  const tw = TPX / L;
-  const rot = Math.abs(m.b) > 1e-7 || Math.abs(m.c) > 1e-7 || m.a < 0 || m.d < 0;
-  const V = viewRect(ctx);
-  // nearest-neighbour when the level matches the device scale; also under the tiny rotations of a
-  // camera shake (|rot| < 1.7°: jaggies are invisible in a shaking frame, and it halves the cost)
-  const nn = !layer.smooth && Math.abs(ds / L - 1) < 0.022 && Math.abs(Math.atan2(m.b, m.a)) < 0.03;
-  ctx.save();
-  if (!rot) ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.imageSmoothingEnabled = !nn;
-  ctx.imageSmoothingQuality = 'low';
-  const e = 1 / L;
+// blit one level of a layer (all its light corners, cross-faded) with an overall alpha
+function blitLevel(ctx, layer, corners, variant, m, k, L, alpha, V, nn, rot) {
+  const tw = TPX / L, e = 1 / L;
   for (const R of layer.rects) {
     const x0 = Math.max(R[0], V.x0), y0 = Math.max(R[1], V.y0), x1 = Math.min(R[2], V.x1), y1 = Math.min(R[3], V.y1);
     if (x1 <= x0 || y1 <= y0) continue;
@@ -1531,102 +1520,77 @@ function drawLayer(ctx, layer, corners, variant = '') {
         // only the part of the tile inside this rect (and the view) is blitted
         const sx0 = Math.max(wx0, R[0], V.x0), sy0 = Math.max(wy0, R[1], V.y0), sx1 = Math.min(wx0 + tw, R[2], V.x1), sy1 = Math.min(wy0 + tw, R[3], V.y1);
         if (sx1 <= sx0 || sy1 <= sy0) continue;
-        const direct = corners.direct;
-        const tilesToDraw = direct ? corners.map((c) => [cornerTile(layer, variant, c, k, L, i, j), c.a]) : [[frameTile(layer, variant, corners, k, L, i, j), 1]];
-        for (const [cv, alpha] of tilesToDraw) {
-        ctx.globalAlpha = alpha;
-        if (!rot) {
-          // device-pixel-snapped destination; the source rect is the exact pre-image of it
-          const X0 = Math.round(m.a * sx0 + m.e), Y0 = Math.round(m.d * sy0 + m.f);
-          const X1 = Math.round(m.a * sx1 + m.e), Y1 = Math.round(m.d * sy1 + m.f);
-          if (X1 <= X0 || Y1 <= Y0) continue;
-          const ux0 = ((X0 - m.e) / m.a - wx0) * L + TGUT, uy0 = ((Y0 - m.f) / m.d - wy0) * L + TGUT;
-          const ux1 = ((X1 - m.e) / m.a - wx0) * L + TGUT, uy1 = ((Y1 - m.f) / m.d - wy0) * L + TGUT;
-          ctx.drawImage(cv, ux0, uy0, ux1 - ux0, uy1 - uy0, X0, Y0, X1 - X0, Y1 - Y0);
-        } else {
-          const ax0 = Math.max(wx0 - e, sx0 - e), ay0 = Math.max(wy0 - e, sy0 - e), ax1 = Math.min(wx0 + tw + e, sx1 + e), ay1 = Math.min(wy0 + tw + e, sy1 + e);
-          ctx.drawImage(cv, (ax0 - wx0) * L + TGUT, (ay0 - wy0) * L + TGUT, (ax1 - ax0) * L, (ay1 - ay0) * L, ax0, ay0, ax1 - ax0, ay1 - ay0);
-        }
+        for (let ci = 0; ci < corners.length; ci++) {
+          const c = corners[ci];
+          const cv = cornerTile(layer, variant, c, k, L, i, j);
+          ctx.globalAlpha = (ci === 0 ? 1 : c.a) * alpha;
+          if (!rot) {
+            // device-pixel-snapped destination; the source rect is the exact pre-image of it
+            const X0 = Math.round(m.a * sx0 + m.e), Y0 = Math.round(m.d * sy0 + m.f);
+            const X1 = Math.round(m.a * sx1 + m.e), Y1 = Math.round(m.d * sy1 + m.f);
+            if (X1 <= X0 || Y1 <= Y0) continue;
+            const ux0 = ((X0 - m.e) / m.a - wx0) * L + TGUT, uy0 = ((Y0 - m.f) / m.d - wy0) * L + TGUT;
+            const ux1 = ((X1 - m.e) / m.a - wx0) * L + TGUT, uy1 = ((Y1 - m.f) / m.d - wy0) * L + TGUT;
+            ctx.drawImage(cv, ux0, uy0, ux1 - ux0, uy1 - uy0, X0, Y0, X1 - X0, Y1 - Y0);
+          } else {
+            const ax0 = Math.max(wx0 - e, sx0 - e), ay0 = Math.max(wy0 - e, sy0 - e), ax1 = Math.min(wx0 + tw + e, sx1 + e), ay1 = Math.min(wy0 + tw + e, sy1 + e);
+            ctx.drawImage(cv, (ax0 - wx0) * L + TGUT, (ay0 - wy0) * L + TGUT, (ax1 - ax0) * L, (ay1 - ay0) * L, ax0, ay0, ax1 - ax0, ay1 - ay0);
+          }
         }
       }
     }
   }
-  ctx.restore();
 }
-// SPRITES: one canvas per (sprite, variant, light, level) covering spr.rect; drawn under the current
-// transform (any rotation / sub-pixel offset, bilinear). For rigidly swaying elements.
-function spriteCanvas(spr, variant, c, k, L) {
-  const key = 'S' + spr.id + '|' + variant + '|' + c.key + '|' + k;
-  let cv = _tiles.get(key);
-  if (cv) { _tiles.delete(key); _tiles.set(key, cv); return cv; }
-  const r = spr.rect;
-  cv = createCanvas(Math.ceil((r[2] - r[0]) * L) + 2 * TGUT, Math.ceil((r[3] - r[1]) * L) + 2 * TGUT);
-  const g = cv.getContext('2d');
-  g.setTransform(L, 0, 0, L, TGUT - r[0] * L, TGUT - r[1] * L);
-  spr.draw(g, c.P, variant);
-  tileStore(key, cv);
-  return cv;
-}
-function drawSprite(ctx, spr, corners, variant = '') {
-  const V = viewRect(ctx), r = spr.rect;
-  if (!vis(V, r[0], r[1], r[2], r[3])) return;
+function drawLayer(ctx, layer, corners, variant = '') {
   const m = ctx.getTransform();
-  const { k, L } = levelOf(Math.sqrt(Math.abs(m.a * m.d - m.b * m.c)));
-  let cv;
-  if (corners.direct) {
-    ctx.save();
-    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'low';
-    for (const c of corners) {
-      const s1 = spriteCanvas(spr, variant, c, k, L);
-      ctx.globalAlpha = c.a;
-      ctx.drawImage(s1, r[0] - TGUT / L, r[1] - TGUT / L, s1.width / L, s1.height / L);
-    }
-    ctx.restore();
-    return;
-  }
-  if (corners.length === 1) cv = spriteCanvas(spr, variant, corners[0], k, L);
-  else {
-    const key = 'S' + spr.id + '|' + variant + '|' + k + '|' + corners.map((c) => c.key + ':' + c.a).join(',');
-    cv = _tiles.get(key);
-    if (cv) { _tiles.delete(key); _tiles.set(key, cv); } else {
-      const base = spriteCanvas(spr, variant, corners[0], k, L);
-      cv = createCanvas(base.width, base.height);
-      const g = cv.getContext('2d');
-      for (const c of corners) { g.globalAlpha = c.a; g.drawImage(spriteCanvas(spr, variant, c, k, L), 0, 0); }
-      tileStore(key, cv);
-    }
-  }
+  const det = m.a * m.d - m.b * m.c;
+  if (!(Math.abs(det) > 1e-9)) return;
+  const ds = Math.sqrt(Math.abs(det));
+  const { k, L } = levelOf(ds);
+  const rot = Math.abs(m.b) > 1e-7 || Math.abs(m.c) > 1e-7 || m.a < 0 || m.d < 0;
+  const V = viewRect(ctx);
+  // pixel-exact frame → nearest-neighbour (identical result, ~2x cheaper)
+  const fr = (v) => Math.abs(v - Math.round(v));
+  const nn = !rot && Math.abs(ds / L - 1) < 4e-4 && fr(m.e) < 0.02 && fr(m.f) < 0.02;
   ctx.save();
-  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'low';
-  ctx.drawImage(cv, r[0] - TGUT / L, r[1] - TGUT / L, cv.width / L, cv.height / L);
+  if (!rot) ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = !nn;
+  ctx.imageSmoothingQuality = 'low';
+  // (no cross-fade between levels: with bilinear blits a level change is a sub-pixel AA difference —
+  // measured mean frame diff 1.7 at the switch vs 1.3 for an ordinary push step)
+  blitLevel(ctx, layer, corners, variant, m, k, L, 1, V, nn, rot);
   ctx.restore();
 }
-// light corners for a frame: bilinear weights over (dusk step, eruption light 0|1)
-// Dusk corners are 1/20 apart (kit's default evening dusk .15 lands exactly on one); while the
-// eruption light ramps, dusk snaps to the nearest corner so at most two corners cross-fade, and
-// those frames blend directly in the frame (`direct`) instead of building throw-away blend tiles.
-const DUSK_STEPS = 20;
+// light corners for a frame: weights over (dusk key, eruption light 0|1). Dusk keys are uneven so the
+// kit's default evening dusk (.15) lands exactly on one; while the eruption light ramps, dusk snaps
+// to the nearest key so at most two corners cross-fade. a = progressive alpha (1 for the first).
+const DUSK_KEYS = [0, 0.15, 0.3, 0.5, 0.75, 1];
 function lightCorners(setting, dusk, erupt, skyTint) {
   const EL = Math.round(eruptLight(erupt) * 64) / 64;
-  let ds = setting === 'evening' ? clamp(dusk) * DUSK_STEPS : 0;
-  if (Math.abs(ds - Math.round(ds)) < 0.2 || (EL > 0 && EL < 1)) ds = Math.round(ds);
-  const d0 = Math.floor(ds), d1 = Math.min(DUSK_STEPS, d0 + 1), fd = ds - d0;
+  let d0 = 0, d1 = 0, fd = 0;
+  if (setting === 'evening') {
+    const d = clamp(dusk);
+    let i = 0;
+    while (i < DUSK_KEYS.length - 2 && d > DUSK_KEYS[i + 1]) i++;
+    d0 = i; d1 = i + 1; fd = (d - DUSK_KEYS[i]) / (DUSK_KEYS[i + 1] - DUSK_KEYS[i]);
+    fd = Math.round(fd * 48) / 48;
+    if (fd < 0.02 || (EL > 0 && EL < 1 && fd < 0.5)) fd = 0;
+    else if (fd > 0.98 || (EL > 0 && EL < 1)) fd = 1;
+  }
   const list = [];
-  const add = (dq, el, w) => {
+  const add = (di, el, w) => {
     if (w < 0.004) return;
     const tint = skyTint ? skyTint[0] + Math.round(skyTint[1] * 64) : '';
-    list.push({ key: setting + dq + 'e' + el + tint, P: palette(setting, dq / DUSK_STEPS, el ? 0.6 : 0, skyTint, 0, el), w });
+    const dq = DUSK_KEYS[di];
+    list.push({ key: setting + dq + 'e' + el + tint, P: palette(setting, dq, el ? 0.6 : 0, skyTint, 0, el), w });
   };
-  add(d0, 0, (1 - fd) * (1 - EL)); add(d1, 0, fd * (1 - EL)); add(d0, 1, (1 - fd) * EL); add(d1, 1, fd * EL);
+  add(d0, 0, (1 - fd) * (1 - EL)); if (d1 !== d0) add(d1, 0, fd * (1 - EL));
+  add(d0, 1, (1 - fd) * EL); if (d1 !== d0) add(d1, 1, fd * EL);
   list.sort((a, b) => b.w - a.w);
   let acc = 0;
   for (const c of list) { acc += c.w; c.a = clamp(c.w / acc); }
   list[0].a = 1;
-  // quantise the cross-fade alphas (1/32) so neighbouring frames reuse identical blends
-  for (let i = 1; i < list.length; i++) list[i].a = Math.round(list[i].a * 32) / 32;
-  const out = list.filter((c, i) => i === 0 || c.a > 0);
-  out.direct = EL > 0 && EL < 1 && out.length > 1;
-  return out;
+  return list.filter((c, i) => i === 0 || c.a > 0.004);
 }
 
 // =====================================================================================
@@ -2340,9 +2304,8 @@ function palmCrown(ctx, P, p, t, rumble, tx, ty) {
   ctx.beginPath(); for (let k = 0; k < 3; k++) circleP(ctx, tx - 9 + k * 7, ty + 4 + (k % 2) * 3, 2.3); ctx.fill();
   layer(false);
 }
-// palm: live bending trunk; the crown is a cached sprite that rides the trunk top and rocks with
-// the breeze (corners given) or is drawn live (no corners)
-function drawPalm(ctx, t, P, p, rumble, corners) {
+// palm: live bending trunk + live crown (every frond sways on its own)
+function drawPalm(ctx, t, P, p, rumble) {
   const far = p.far || 0;
   const sw = sway(t, p.seed, 0.022, 0.7, rumble);
   const tx = p.tx + sw * 120, ty = p.ty + Math.abs(sw) * 10;
@@ -2370,16 +2333,7 @@ function drawPalm(ctx, t, P, p, rumble, corners) {
     ctx.quadraticCurveTo(pt[0] + tn[0] * 3, pt[1] + tn[1] * 3, pt[0] - nx * w * 0.95, pt[1] - ny * w * 0.95);
   }
   ctx.stroke();
-  if (!corners) { palmCrown(ctx, P, p, t, rumble, tx, ty); return; }
-  if (!p.spr) {
-    const r = p.len * 1.18;
-    p.spr = { id: 'palm' + p.seed, rect: [p.tx - r, p.ty - p.len * 0.8, p.tx + r, p.ty + p.len * 1.25], draw: (g, PP) => palmCrown(g, PP, p, null, 0, p.tx, p.ty) };
-  }
-  const a = sw * 1.5 + sway(t, p.seed + 5.5, 0.018, 1.3, rumble);
-  ctx.save();
-  ctx.translate(tx, ty); ctx.rotate(a); ctx.translate(-p.tx, -p.ty);
-  drawSprite(ctx, p.spr, corners);
-  ctx.restore();
+  palmCrown(ctx, P, p, t, rumble, tx, ty);
 }
 // palm fronds: [angle, lengthFactor, droop, back?]
 const FRONDS_A = [[-2.75, 1, 0.9, 1], [-2.2, 0.95, 0.6, 1], [-1.65, 0.8, 0.2, 1], [-1.05, 0.9, 0.5, 1], [-0.45, 1, 0.9, 1],
@@ -2392,13 +2346,14 @@ const PALMS = [
   { x: -1160, y: 572, tx: -1230, ty: 322, bend: 36, w0: 20, w1: 11, len: 120, fronds: FRONDS_A, seed: 61, far: 0.06 },
   { x: 1720, y: 520, tx: 1660, ty: 220, bend: 30, w0: 22, w1: 12, len: 132, fronds: FRONDS_A, seed: 71, far: 0.04 },
 ];
-function drawBanana(ctx, P, x, y, s, t, seed, rumble, far, flip = 1) {
-  ctx.fillStyle = P.g('#6E9A4A', far);
-  ctx.beginPath(); ctx.moveTo(x - 6 * s, y); ctx.lineTo(x - 3 * s, y - 70 * s); ctx.lineTo(x + 3 * s, y - 70 * s); ctx.lineTo(x + 6 * s, y); ctx.closePath(); ctx.fill();
+// banana plant geometry (constant): {stem, dark, light, rib} Path2Ds in world units
+function bakeBanana(x, y, s, seed, flip = 1) {
+  const stem = new Path2D();
+  stem.moveTo(x - 6 * s, y); stem.lineTo(x - 3 * s, y - 70 * s); stem.lineTo(x + 3 * s, y - 70 * s); stem.lineTo(x + 6 * s, y); stem.closePath();
   const leaves = [[-2.5, 1, 0.5], [-1.85, 1.1, 0.25], [-1.2, 1.05, 0.25], [-0.6, 0.95, 0.5], [-2.1, 0.8, 0.1], [-1.0, 0.8, 0.1]];
   const dark = new Path2D(), light = new Path2D(), rib = new Path2D();
   leaves.forEach(([a0, lf, dr], i) => {
-    const a = (flip > 0 ? a0 : -PI - a0) + (t == null ? 0 : sway(t, seed + i * 1.3, 0.05, 0.9, rumble));
+    const a = (flip > 0 ? a0 : -PI - a0);
     const L = 95 * s * lf, W = 22 * s;
     const x0 = x, y0 = y - 66 * s;
     const ex = x0 + Math.cos(a) * L, ey = y0 + Math.sin(a) * L + L * dr;
@@ -2408,9 +2363,13 @@ function drawBanana(ctx, P, x, y, s, t, seed, rumble, far, flip = 1) {
     for (const k of [5, 9, 12]) if (lp.A[k]) { const S = lp.S[k + 1]; lp.A[k] = [lerp(S[0], lp.A[k][0], 0.25), lerp(S[1], lp.A[k][1], 0.25)]; }
     addLeaf(dark, light, rib, lp);
   });
-  ctx.fillStyle = P.g('#2E6E44', far); ctx.fill(dark);
-  ctx.fillStyle = P.hl(C.jLight, far, 0.9); ctx.fill(light);
-  ctx.strokeStyle = P.g(C.jPale, far); ctx.lineWidth = 1.5; ctx.stroke(rib);
+  return { stem, dark, light, rib };
+}
+function drawBananaPaths(ctx, P, B, far) {
+  ctx.fillStyle = P.g('#6E9A4A', far); ctx.fill(B.stem);
+  ctx.fillStyle = P.g('#2E6E44', far); ctx.fill(B.dark);
+  ctx.fillStyle = P.hl(C.jLight, far, 0.9); ctx.fill(B.light);
+  ctx.strokeStyle = P.g(C.jPale, far); ctx.lineWidth = 1.5; ctx.stroke(B.rib);
 }
 function drawVines(ctx, t, P, list, rumble, V) {
   const stem = new Path2D(), lv = new Path2D(), lv2 = new Path2D();
@@ -3298,65 +3257,104 @@ function drawBoil(ctx, t, P, o, V) {
     }
   }
 }
+// camera zoom relative to the frame's design scale (1 = the full 1280x720 view), from the transform
+function zoomRel(ctx) {
+  const cw = (ctx.canvas && ctx.canvas.width) || 1920;
+  return devScale(ctx) / (cw / 1280);
+}
+// closed ribbon along a polyline with ROUND ends (appends a subpath); wfn(u) = full width at u
+function roundRibbonP(p, pts, wfn) {
+  const n = pts.length, Lp = [], Rp = [], W = [];
+  let a0 = 0, a1 = 0;
+  for (let i = 0; i < n; i++) {
+    const q = pts[i], a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
+    let dx = b[0] - a[0], dy = b[1] - a[1];
+    const d = Math.hypot(dx, dy) || 1; dx /= d; dy /= d;
+    if (i === 0) a0 = Math.atan2(dy, dx);
+    if (i === n - 1) a1 = Math.atan2(dy, dx);
+    const w = Math.max(0.05, wfn(i / (n - 1)) / 2);
+    W.push(w);
+    Lp.push([q[0] - dy * w, q[1] + dx * w]); Rp.push([q[0] + dy * w, q[1] - dx * w]);
+  }
+  p.moveTo(Lp[0][0], Lp[0][1]);
+  for (let i = 1; i < n; i++) p.lineTo(Lp[i][0], Lp[i][1]);
+  p.arc(pts[n - 1][0], pts[n - 1][1], W[n - 1], a1 + PI / 2, a1 - PI / 2, true);
+  for (let i = n - 2; i >= 0; i--) p.lineTo(Rp[i][0], Rp[i][1]);
+  p.arc(pts[0][0], pts[0][1], W[0], a0 - PI / 2, a0 - 1.5 * PI, true);
+  p.closePath();
+}
+// Rising steam from a strip centred at x, w wide, surface y:
+//  * wisps (the ♨ motif): soft S-curved ribbons with rounded ends, three nested layers (wide+faint →
+//    narrow+denser) so the cross-section is soft; a vertical alpha ramp fades the base in and the tip
+//    out; each wisp's alpha is a smooth envelope over its life (0 at both ends) so nothing ever pops.
+//    In close-ups (camera zoom > 2) the wisps thin and fade so they never become glass shards.
+//  * billows (amount > .35, billows !== false): soft radial-gradient puffs, alpha 0 at both ends.
 function drawSteam(ctx, t, o = {}) {
   const x = o.x ?? 640, y = o.y ?? 520, w = o.w ?? 600, amount = clamp(o.amount ?? 0.5, 0, 2);
   const h = o.h ?? 120, scale = o.scale ?? 1, color = o.color || '#FFFFFF', seed = o.seed ?? 1;
   if (amount <= 0.001) return;
   const [cr, cg, cb] = U.hexToRgb(color);
   const col = (a) => `rgba(${cr},${cg},${cb},${a})`;
-  // soft billows for dense steam: clusters of discs unioned per alpha bucket (cheap, no rings)
+  const zr = zoomRel(ctx);
+  const zw = zr > 2 ? Math.pow(2 / zr, 0.6) : 1, za = 1 - 0.5 * smoothstep(2, 5, zr);
+  ctx.save();
   if (amount > 0.35 && o.billows !== false) {
     const N = Math.min(6, Math.round(((amount - 0.35) * w) / (100 * scale)));
-    const A = 0.1 + 0.1 * Math.min(1, amount - 0.35);
-    const BK = [new Path2D(), new Path2D(), new Path2D()], CORE = [new Path2D(), new Path2D(), new Path2D()];
+    const A = (0.16 + 0.12 * Math.min(1, amount - 0.35)) * za;
     for (let i = 0; i < N; i++) {
       const L = 3 + hash1(seed * 31 + i * 1.7) * 2.4;
       const tt = t / L + hash1(seed * 17 + i * 3.3);
       const cyc = Math.floor(tt), k = tt - cyc;
+      const a = Math.sin(PI * Math.min(1, k * 1.12)) * A;
+      if (a < 0.004) continue;
       const px = x - w / 2 + w * ((i + 0.2 + 0.6 * hash2(i + seed * 7, cyc * 1.31)) / N);
       const yy = y - k * h * scale * (0.7 + 0.6 * hash1(i * 9.7 + seed));
       const xx = px + Math.sin(k * 4 + i) * 9 * scale * k + 10 * k * scale;
-      const r = (24 + 46 * k) * scale;
-      const a = Math.sin(PI * Math.min(1, k * 1.15));
-      if (a < 0.12) continue;
-      const b = a > 0.75 ? 2 : a > 0.4 ? 1 : 0;
-      for (const [dx, dy, rr] of [[0, 0, 1], [-0.7, 0.25, 0.68], [0.72, 0.2, 0.64]]) circleP(BK[b], xx + dx * r, yy + dy * r, rr * r);
-      circleP(CORE[b], xx - r * 0.1, yy - r * 0.12, r * 0.6);
-    }
-    for (let b = 0; b < 3; b++) {
-      const a = A * [0.45, 0.75, 1][b];
-      ctx.fillStyle = col(a); ctx.fill(BK[b]);
-      ctx.fillStyle = col(a * 0.8); ctx.fill(CORE[b]);
+      const r = (26 + 48 * k) * scale;
+      for (const [dx, dy, rr, ak] of [[0, 0, 1, 1], [-0.62, 0.22, 0.72, 0.8], [0.66, 0.18, 0.66, 0.75]]) {
+        const cx = xx + dx * r, cy = yy + dy * r, R = rr * r;
+        const g = ctx.createRadialGradient(cx - R * 0.15, cy - R * 0.2, R * 0.05, cx, cy, R);
+        g.addColorStop(0, col(a * ak)); g.addColorStop(0.55, col(a * ak * 0.55)); g.addColorStop(1, col(0));
+        ctx.fillStyle = g;
+        ctx.beginPath(); circleP(ctx, cx, cy, R); ctx.fill();
+      }
     }
   }
-  // stylised wisps (the ♨ motif): soft S-ribbons that rise, swell, curl over at the top and fade
+  // wisps
   const M = Math.max(1, Math.min(o.maxWisps ?? 12, Math.round((amount * w) / (80 * Math.max(0.7, scale)))));
-  const outer = new Path2D(), inner = new Path2D(), faint = new Path2D();
+  const Am = Math.min(1.25, 0.45 + amount * 0.6) * za;
+  const LAY = [[1, 0.2], [0.6, 0.24], [0.28, 0.3]];
   for (let i = 0; i < M; i++) {
     const L = 3.2 + hash1(seed * 13 + i * 2.9) * 2.4;
     const tt = t / L + hash1(seed * 5 + i * 1.1);
     const cyc = Math.floor(tt), k = tt - cyc;
+    const env = smoothstep(0, 0.24, k) * (1 - smoothstep(0.5, 1, k));
+    if (env < 0.01) continue;
     const px = x - w / 2 + w * ((i + 0.15 + 0.7 * hash2(i * 3 + seed, cyc * 2.7 + 1)) / M);
     const hh = h * scale * (0.6 + 0.4 * hash1(i * 5.3 + cyc));
     const curl = hash1(i * 7.7 + cyc) > 0.5 ? 1 : -1;
     const ph = hash1(i * 2.1 + cyc) * TAU;
-    const lift = k * hh * 0.5, len = hh * (0.3 + 0.5 * Math.min(1, k * 1.8));
+    const lift = k * hh * 0.5, len = hh * (0.35 + 0.5 * Math.min(1, k * 1.6));
     const pts = [];
+    const y0 = y - 3 * scale - lift;
     for (let j = 0; j <= 10; j++) {
       const sj = j / 10;
-      const yy = y - 3 * scale - lift - sj * len;
+      const yy = y0 - sj * len;
       const xx = px + Math.sin(sj * 6.6 + ph + t * 1.1) * 6.5 * scale * (0.5 + sj * 0.8) + curl * Math.pow(sj, 2.5) * 12 * scale * (0.4 + k);
       pts.push([xx, yy]);
     }
-    const a = Math.sin(PI * Math.pow(k, 0.8));
-    const W = (6.5 + 8 * k) * scale;
-    ribbonP(a > 0.5 ? outer : faint, pts, 0, 0, (u) => Math.pow(Math.sin(PI * u), 0.7) * W * 2.2);
-    if (a > 0.3) ribbonP(inner, pts, 0, 0, (u) => Math.pow(Math.sin(PI * Math.min(1, u * 1.08)), 1.1) * W);
+    const W = (6 + 8 * k) * scale * zw;
+    const g = ctx.createLinearGradient(0, y0 + 2 * scale, 0, y0 - len - W * 0.5);
+    g.addColorStop(0, col(0)); g.addColorStop(0.24, col(1)); g.addColorStop(0.62, col(0.8)); g.addColorStop(1, col(0));
+    ctx.fillStyle = g;
+    for (const [wf, af] of LAY) {
+      ctx.globalAlpha = clamp(af * Am * env);
+      ctx.beginPath();
+      roundRibbonP(ctx, pts, (u) => W * wf * (0.42 + 0.58 * Math.pow(Math.sin(PI * Math.min(1, 0.06 + u * 0.98)), 0.75)));
+      ctx.fill();
+    }
   }
-  const Am = Math.min(1.25, 0.45 + amount * 0.6);
-  ctx.fillStyle = col(0.09 * Am); ctx.fill(faint);
-  ctx.fillStyle = col(0.14 * Am); ctx.fill(outer);
-  ctx.fillStyle = col(0.2 * Am); ctx.fill(inner);
+  ctx.restore();
 }
 // {x, y, w, h, amount, scale, seed, color, pool (only on open water), domeR: [min, max], domeSpacing}
 function drawBubbles(ctx, t, o = {}) {
@@ -4026,24 +4024,15 @@ const L_UPPER = {
 const BANANAS = [
   { x: 86, y: 486, s: 0.9, seed: 5, flip: 1 }, { x: -760, y: 566, s: 0.85, seed: 15, flip: -1 }, { x: 1262, y: 458, s: 1.05, seed: 9, flip: -1 },
   { x: -360, y: 548, s: 0.8, seed: 19, flip: 1 }, { x: -1340, y: 576, s: 0.95, seed: 23, flip: -1 }, { x: 1600, y: 470, s: 0.95, seed: 29, flip: 1 },
-].map((b) => Object.assign(b, {
-  spr: { id: 'ban' + b.seed, rect: [b.x - 130 * b.s, b.y - 186 * b.s, b.x + 130 * b.s, b.y + 4], draw: (g, P) => drawBanana(g, P, b.x, b.y, b.s, null, b.seed, 0, 0.04, b.flip) },
-}));
-function drawBananaSprite(ctx, t, corners, b, rumble) {
+].map((b) => Object.assign(b, { paths: bakeBanana(b.x, b.y, b.s, b.seed, b.flip), rect: [b.x - 130 * b.s, b.y - 186 * b.s, b.x + 130 * b.s, b.y + 4] }));
+function drawBananaLive(ctx, t, P, b, rumble, V) {
+  if (V && !vis(V, b.rect[0], b.rect[1], b.rect[2], b.rect[3])) return;
   const a = sway(t, b.seed, 0.028, 0.9, rumble);
   ctx.save();
   ctx.translate(b.x, b.y); ctx.rotate(a); ctx.translate(-b.x, -b.y);
-  drawSprite(ctx, b.spr, corners);
+  drawBananaPaths(ctx, P, b.paths, 0.04);
   ctx.restore();
 }
-// front ferns / big leaves: one sprite per fern (they sway by a sideways offset, as before)
-const FRONT_SPRITES = FRONT_FERN_LIST.map((f, i) => ({
-  id: 'ff' + i, group: i % 2, rect: [f.x - f.len * 1.15, f.y - f.len * 1.2, f.x + f.len * 1.15, f.y + f.len * 0.6],
-  draw: (g, P) => drawFernSet(g, null, P, bakeFerns([f], 1), 0, {}, 11),
-})).concat(FRONT_HEART_LIST.map((h, i) => ({
-  id: 'fh' + i, group: 2, rect: [h.x - 3.6 * h.s, h.y - 3.6 * h.s, h.x + 3.6 * h.s, h.y + 1.4 * h.s],
-  draw: (g, P) => drawHeartSet(g, null, P, bakeHearts([h]), 0, {}, 12),
-})));
 // near layer while erupting: the jungle wall (in front of the lava rivers) + everything near
 const L_LOWER = {
   id: 'sp-lo',
@@ -4116,11 +4105,11 @@ function drawSpring(ctx, t, o, setting) {
   if (vis(V, 1050, 0, 1500, 490)) drawPalm(ctx, t, P, PALMS[1], op.rumble);
   if (V.x0 < 420 && V.y0 < 220) drawCanopy(ctx, t, P, CANOPY_L, 0, op);
   if (V.y0 < 400) drawVines(ctx, t, P, VINES, op.rumble, V);
-  drawBananaSprite(ctx, t, corners, BANANAS[0], op.rumble);
-  drawBananaSprite(ctx, t, corners, BANANAS[1], op.rumble);
+  drawBananaLive(ctx, t, P, BANANAS[0], op.rumble, V);
+  drawBananaLive(ctx, t, P, BANANAS[1], op.rumble, V);
   if (vis(V, 300, 60, 640, 470)) drawPalm(ctx, t, P, PALMS[0], op.rumble);
   for (let i = 2; i < PALMS.length; i++) { const p = PALMS[i]; if (vis(V, Math.min(p.x, p.tx) - p.len * 1.2, p.ty - p.len, Math.max(p.x, p.tx) + p.len * 1.2, p.y)) drawPalm(ctx, t, P, p, op.rumble); }
-  for (let i = 2; i < BANANAS.length; i++) drawBananaSprite(ctx, t, corners, BANANAS[i], op.rumble);
+  for (let i = 2; i < BANANAS.length; i++) drawBananaLive(ctx, t, P, BANANAS[i], op.rumble, V);
   if (op.sign && vis(V, 1030, 200, 1270, 460)) {
     drawLayer(ctx, L_SIGN, corners);
     if (burning) drawSnoozeSignImpl(ctx, t, P, { x: SPRING.signPos.x, y: SPRING.signPos.y, burn: op.signBurn, overlayOnly: true });
@@ -4136,7 +4125,7 @@ function drawSpring(ctx, t, o, setting) {
   if (vis(V, 230, 300, 1130, 490)) drawSteam(ctx, t, { x: 680, y: 480, w: 900, amount: 0.3 + heat * 0.9, h: 120, scale: 0.75, color: P.steam, seed: 3, billows: bil, maxWisps: mw });
   if (vis(V, 180, 360, 1180, 570)) drawSteam(ctx, t, { x: 680, y: 566, w: 1000, amount: 0.2 + heat * 0.9, h: 150, scale: 1.0, color: P.steam, seed: 5, billows: bil, maxWisps: mw });
   if (heat > 0.3 && vis(V, 180, 400, 1180, 670)) drawSteam(ctx, t, { x: 680, y: 666, w: 1000, amount: (heat - 0.3) * 1.2, h: 170, scale: 1.3, color: P.steam, seed: 7, billows: bil, maxWisps: heat > 0.6 ? 5 : 8 });
-  if (V.y1 > 560) drawFrontBanks(ctx, t, P, op, V, corners);
+  if (V.y1 > 560) drawFrontBanks(ctx, t, P, op, V);
   if (setting === 'evening') drawFireflies(ctx, t, smoothstep(0.25, 0.8, op.dusk) * (1 - P.E));
   ctx.restore();
 }
@@ -4147,12 +4136,9 @@ function drawBankDetails(ctx, P) {
   ctx.fillStyle = P.g('#FFB02E'); ctx.fill(FLOWERS.centres);
 }
 // front-corner ferns and big leaves (the front rocks are part of the cached lower layer)
-function drawFrontBanks(ctx, t, P, o, V, corners) {
+function drawFrontBanks(ctx, t, P, o, V) {
   if (V && !(V.x0 < 300 || V.x1 > 1150)) return;
-  if (!corners) { drawFernSet(ctx, t, P, FRONT_FERNS, 0, o, 11); drawHeartSet(ctx, t, P, FRONT_HEARTS, 0, o, 12); return; }
-  const sxs = [0, 1, 2].map((gi) => (gi < 2 ? sway(t, 11 + gi * 2.3, 1.2, 0.9, 0) + (o.rumble ? noise1(t * 22 + gi * 5 + 11) * o.rumble * 2.2 : 0)
-    : sway(t, 12, 1, 0.8, 0) + (o.rumble ? noise1(t * 21 + 12) * o.rumble * 2 : 0)));
-  for (const spr of FRONT_SPRITES) { ctx.save(); ctx.translate(sxs[spr.group], 0); drawSprite(ctx, spr, corners); ctx.restore(); }
+  drawFernSet(ctx, t, P, FRONT_FERNS, 0, o, 11); drawHeartSet(ctx, t, P, FRONT_HEARTS, 0, o, 12);
 }
 function drawSpringDay(ctx, t, o) { drawSpring(ctx, t, o, 'day'); }
 function drawSpringEvening(ctx, t, o) { drawSpring(ctx, t, o, 'evening'); }
@@ -4615,12 +4601,12 @@ function drawNewSpring(ctx, t, o) {
   // live: bamboo (behind the sign), the sign, willow curtain, cattails
   if (vis(V, 1140, -330, 1450, 456)) {
     const a = sway(t, 31, 0.012, 0.5, op.rumble);
-    ctx.save(); ctx.translate(1290, 452); ctx.rotate(a); ctx.translate(-1290, -452); drawSprite(ctx, N_BAMBOO, corners); ctx.restore();
+    ctx.save(); ctx.translate(1290, 452); ctx.rotate(a); ctx.translate(-1290, -452); N_BAMBOO.draw(ctx, P); ctx.restore();
   }
   if (op.sign && vis(V, 1030, 200, 1270, 460)) drawLayer(ctx, N_SIGN, corners);
   if (vis(V, -320, 120, 300, 480)) {
     const sx = sway(t, 17, 2.4, 0.5, op.rumble);
-    ctx.save(); ctx.translate(sx, 0); drawSprite(ctx, N_STRANDS, corners); ctx.restore();
+    ctx.save(); ctx.translate(sx, 0); N_STRANDS.draw(ctx, P); ctx.restore();
   }
   if (V.y1 > 450) drawWaterLive(ctx, t, P, op, V);
   if (vis(V, 1140, 500, 1260, 600)) drawSpoutWater(ctx, t, P);
@@ -4653,7 +4639,7 @@ function drawNewSpring(ctx, t, o) {
   if (vis(V, 180, 360, 1180, 570)) drawSteam(ctx, t, { x: 680, y: 566, w: 1000, amount: 0.1 + heat * 0.9, h: 150, scale: 1.0, color: P.steam, seed: 5, maxWisps: 8 });
   if (vis(V, -200, 500, 80, 724)) {
     const sx = sway(t, 23, 2, 0.7, op.rumble);
-    ctx.save(); ctx.translate(-60, 720); ctx.rotate(sx * 0.01); ctx.translate(60, -720); drawSprite(ctx, N_CATTAILS, corners); ctx.restore();
+    ctx.save(); ctx.translate(-60, 720); ctx.rotate(sx * 0.01); ctx.translate(60, -720); N_CATTAILS.draw(ctx, P); ctx.restore();
   }
   drawButterflies(ctx, t, P);
   ctx.restore();
@@ -4966,4 +4952,6 @@ module.exports = {
   fallingRocks, drawFallingRocks: guard(drawFallingRocks), drawAsh: guard(drawAsh), drawEmbers: guard(drawEmbers),
   drawSteam: guard(drawSteam), drawBubbles: guard(drawBubbles),
   inPool, freeWater, clampCam, SPRING, NEW_SPRING, lab,
+  // internals for the kit / tests (not part of the stable API)
+  _internals: { palette, TSTAT, flushTiles },
 };
