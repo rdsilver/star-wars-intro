@@ -12,20 +12,26 @@
  *
  * PERFORMANCE MODEL
  *   Static scenery (sky, far hills, Mount Snooze, jungle wall, ground, trunks, water body, rocks,
- *   the sign, bananas, front ferns) is rasterised once into tiles / sprites and blitted. The cache
- *   is a pure function of constant inputs (layer, variant, light corner, pixel-scale level, tile),
- *   so frames are identical whatever order they render in. Pixel-scale levels form a x1.04 ladder.
- *   Blits are nearest-neighbour onto device-pixel-snapped rects (also under a shake's small
- *   rotation, up to ~1.7 deg; bilinear beyond). Lighting is quantised into "corners": o.dusk in
- *   1/20 steps x eruption light (eruptLight = smoothstep(.08, .42, erupt), so held erupt >= .42
- *   uses one corner). Fractional corners are cached blends (alpha quantised to 1/32); while the
- *   light is ramping the two corners are drawn interleaved instead of rebuilding blends.
- *   Budget: SPRING_CACHE_MB env (default 420 MB per process, LRU). The first frame of a new
- *   framing / level builds its tiles (~0.15-0.35 s at 1080p); then, 1080p CPU ms, flushed:
- *     calm day ~17-20 | + trio front water + overlay ~22 | evening ~22 | new spring ~19
- *     close-up z2.2 ~16 | volcano z2 ~13 | boil 1.0 ~39 | erupt .45 ~45 | erupt + rocks ~51
- *     lava finale ~57 | wide z0.8 erupt + shake ~51 | frames during an eruption-light ramp ~68
- *   (climax frames are raster-bound on large translucent plume / lava / steam shapes.)
+ *   the sign) is rasterised once into 512 px tiles and blitted; bananas, palms, ferns, vines, clouds,
+ *   water life, steam, the eruption and the lava are drawn live. The tile cache is a pure function of
+ *   constant inputs (layer, variant, light corner, pixel-scale level, tile), so frames are identical
+ *   whatever order they render in. Pixel-scale levels form a x1.08 ladder. Blits: nearest-neighbour
+ *   when the frame is pixel-exact (same result) or under a camera shake's small rotation (< 2 deg);
+ *   bilinear from the exact fractional pre-image otherwise (pushes / sub-pixel drifts move smoothly).
+ *   Lighting is quantised into "corners": o.dusk keys [0 .15 .3 .5 .75 1] x eruption light 0|1
+ *   (eruptLight = smoothstep(.08, .42, erupt)). A dusk-only cross-fade blits a cached blend tile
+ *   (alpha in 1/32 steps, so slow dusk ramps rebuild rarely); while the eruption light ramps the two
+ *   corners are blitted directly.
+ *   MEMORY: @napi-rs/canvas 1.0.10 never frees (a) a canvas once passed to drawImage and (b) ANY
+ *   Path2D object (~0.7 KB + its geometry each, even after gc). So tile canvases are pooled (a fixed
+ *   number of 516x516 canvases, SPRING_CACHE_MB env, default 420 MB per process, recycled LRU), the
+ *   only other canvases are a few 96x96 glow sprites (one per colour, kept), constant geometry is
+ *   built once into module-level Path2Ds, and every per-frame path is a plain-JS PRec replayed into
+ *   the context (fillP / strokeP / clipP). Measured: a 60 s s07-like sequence repeated 3x plateaus
+ *   at ~tile budget + ~230 MB RSS (was +0.5 MB per frame, unbounded).
+ *   Cost (1080p, env only, loaded 4-core box): calm day/evening ~20 ms | close-ups ~25-35 | trio
+ *   z1.45 ~25 | boil 1 ~45 | eruption ~75-100 (raster-bound: plume, lava shelf, boil, steam,
+ *   overlay). The first frame of a new framing / level builds its tiles (~0.15-0.35 s).
  *
  * LAYERING (per frame, inside the scene's withCamera):
  *   1. drawSpringDay / drawSpringEvening / drawNewSpring    everything BEHIND the swimmers
@@ -46,26 +52,45 @@
  *                                    into droplet crowns and spits, heavy billows)
  *   rumble       0..1 (default 0)    shaking leaves/palms/grove, distant scenery trembles, falling dust
  *                                    & leaves, ripple rings on the water (camera shake = the scene's)
- *   erupt        0..1 (default 0)    0 dormant | .03-.2 crater heats up (one smooth radial glow, hot
- *                                    throat, glowing fissures) + thick dark smoke column | .18-.6
- *                                    explosive plume that mushrooms into a canopy whose fire-lit
- *                                    underside hangs at y≈20..160 (reads at zoom 1), lava fountain in
- *                                    front of it (fat parabolic streams breaking into blobs, bombs with
- *                                    motion trails), red-orange sky, lightning, an automatic white
- *                                    flash at erupt≈.215; the jungle goes to dark silhouettes rim-lit
- *                                    only on the volcano-facing edges | .58-1 tapered lava rivers
- *                                    (noisy width, braided side channels, crusted edges, drifting crust
- *                                    rafts, bulbous advancing head) down the flanks, running on behind
- *                                    the treeline, lava light on the jungle
+ *   erupt        0..1 (default 0)    0 dormant | .03-.2 the crater heats up (one smooth radial glow,
+ *                                    hot throat, tapered noise-wiggled fissures cracking open down the
+ *                                    gullies) + a thick dark smoke column anchored on the rim (its puffs
+ *                                    rise on a FIXED period, so a ramping erupt never makes them jump)
+ *                                    | .19 THE BLAST: a charcoal cauliflower head grows out of the crater
+ *                                    from nothing (outBack over .045, fire-lit underside) and climbs on a
+ *                                    thickening billowing ash column; .2-.27 the fountain jets grow out
+ *                                    of the throat (fat geyser + tapered side jets with a red skin and a
+ *                                    white-hot core breaking into gobbets, glowing spatter, bombs = dark
+ *                                    tumbling rocks with glowing cracks and fiery trails); .23-.56 the
+ *                                    head spreads into a mushroom canopy (top-lit lobes, rims curling
+ *                                    down, the column feeding it); lightning branches INSIDE the canopy
+ *                                    and lights it from within (.26-.8); red-orange sky; automatic white
+ *                                    flash at erupt≈.215; the jungle darkens and warms, rim-lit (hot
+ *                                    orange) on the volcano-facing edges, trunks lit from the volcano
+ *                                    side, warm bounce light over ground / banks / water | .58-1 lava
+ *                                    rivers down the flanks (fullest at the crater, organic edges, narrow
+ *                                    crust banks, rafts of varied size / rotation, lobed toes), running on
+ *                                    behind the treeline, lava light on the jungle
  *   flash        0..1                override the automatic eruption flash (0 = none)
- *   lava         0..1 (default 0)    0-.26 lava oozes out from under the burning undergrowth at the
- *                                    back-right and curtains over the rim rocks (bright molten core,
- *                                    lumpy crust edges, drips; a 2nd pour by the sign from .12);
- *                                    .2-.4 a steam explosion where each pour hits the water; .24-1 a
- *                                    crust shelf spreads over the pool (irregular Voronoi crust plates,
- *                                    perspective-squashed, glowing seams, crusted levee, orange glow on
- *                                    the water around it, hissing steam + spits along the contact line)
- *   signBurn     0..1 (default 0)    the "No Worries Allowed" sign chars from the bottom up and burns
+ *   lava         0..1 (default 0)    0-.1 glowing channels burn through the undergrowth from the river
+ *                                    ends to the back-right bank (irregular bank fires, some only
+ *                                    smouldering); .06-.26 tongues of lava spill out of the burning
+ *                                    undergrowth over the rim rocks (narrow where they break out, fanning
+ *                                    into a lobed foot, flow streaks, crust patches, drips; a 2nd one by
+ *                                    the sign from .16); .2-.4 a steam explosion where each hits the
+ *                                    water; .24-1 a crust shelf spreads over the pool: dark crust plates
+ *                                    (large near the entry, small toward the front, perspective-squashed)
+ *                                    with thin pulsing seams, a lobed molten front of pahoehoe toes, the
+ *                                    water glowing orange around it, hissing steam + spits along the
+ *                                    contact line. SPRING.lavaOverrun gives the lava value at which each
+ *                                    swim spot is reached (Doreen ≈ .685; Sunny / Barry never);
+ *                                    SPRING.lavaReach / lavaCovers query the shelf. drawWaterFront (and
+ *                                    waterlineRipple given o.lava) never paint water over the shelf.
+ *   signBurn     0..1 (default 0)    the "No Worries Allowed" sign chars from the bottom up (ember
+ *                                    cracks, flames clustered on the char front and licking up the edges
+ *                                    and posts, a smoke column); from .62 the bottom board sags off its
+ *                                    right nail and at .88-.98 falls to the ground; by 1 the top board
+ *                                    is charred and burning along its top
  *   dusk         0..1 (evening)      0 golden hour (sun low between the palm and the volcano) → 1 dusky
  *                                    pink/purple. Foliage stays green; warmth is in rims/top light and
  *                                    a ~20% warm multiply grade; shadows go cool
@@ -106,11 +131,14 @@
  *                                 (0.72), o.clip (default true: clipped to open water — pool + river,
  *                                 never the rim rocks, grass or roots). Soft-edged translucent water +
  *                                 waterline highlight, contact shade, refraction bands, front ripples.
+ *                                 With o.lava the water is clipped out of the lava shelf and tinted orange
+ *                                 next to it.
  *   drawSwimmers(ctx, t, list, o) list: [{x, y, scale?, w?, depth?, ripple?, draw(ctx)}] — depth-sorted
  *                                 back ripple → draw() → front water for each (see LAYERING)
  *   waterlineRipple(ctx, x, y, w, t, {amp=1, speed=1, part='front'|'back'|'both', color, clip=true})
  *                                 rings spreading from a body of width w floating at waterline y
- *                                 (clipped to open water unless clip:false)
+ *                                 (clipped to open water unless clip:false; o.lava: also clipped out of
+ *                                 the lava shelf)
  *   drawSpringOverlay(ctx, t, o)  see LAYERING 3. o.grade 0..1 (default 0) multiplies a setting grade.
  *   drawForegroundFoliage(ctx, t, o)  SCREEN-SPACE framing leaves (call outside withCamera).
  *                                 o: sides 'both'|'left'|'right', top bool (default false), amount 0..1,
@@ -125,7 +153,9 @@
  *                                 first (1-hang) of its life (independent of size), then HANGS over the
  *                                 crater swelling slowly and drifting `drift` units sideways, and fades
  *                                 over the last 28%. A size-1.4 puff fits kit's volcano framing {860,236}
- *                                 z1.9 (see SPRING.volcanoCam for roomier ones).
+ *                                 z1.9 (see SPRING.volcanoCam for roomier ones). stem > 1 widens and
+ *                                 lengthens the tail that keeps it attached to the vent; dust (0..1) kicks
+ *                                 up a ring of dust around the vent at the pop.
  *   drawSnoozeSign(ctx, t, o)     the wooden sign alone: {x, y (ground under the posts), scale, burn,
  *                                 lines:[big, small], check:bool, setting, dusk, erupt}
  *   drawBarryRock(ctx, t, o)      Barry's rock alone (pass barryRock:false to the background and call
@@ -158,7 +188,12 @@
  *                                 domeSpacing}) bubbles in a band centred (x,y); amount > .55 adds
  *                                 boiling domes that burst into droplet crowns + spits; pool:true = only
  *                                 on open water
- *   drawFlames(ctx, t, [{x, y, h, w, seed}], {glow})  batched cartoon flames (base at x,y)
+ *   drawFlames(ctx, t, [{x, y, h, w, seed, lean}], {glow})  batched cartoon flames (base at x,y): each
+ *                                 its own size, lean, flicker, tongue count and warmth; soft glow sprite
+ *   SPRING.lavaReach(lava, t=0)   → polygons [[x,y]...] (world) of the lava shelf at o.lava = lava
+ *   SPRING.lavaCovers(x, y, lava, margin=0)  → true if (x, y) is on (or within margin of) the shelf
+ *   SPRING.lavaOverrun            {sunny, barry, doreen, extras: [...], barryRock, thermometerSpot}: the
+ *                                 o.lava value at which each is first reached (margin 30; 1.01 = never)
  *   inPool(x, y)                  true if (x,y) is on the water (pool or outflow river)
  *   freeWater(x, y, margin=0)     true if (x,y) is OPEN water at least `margin` from the rim rocks
  *   clampCam(cam, world=SPRING.world)  camera {x,y,zoom,shake} clamped so the view stays painted
@@ -3951,7 +3986,7 @@ function drawSteam(ctx, t, o = {}) {
   // wisps
   const M = Math.max(1, Math.min(o.maxWisps ?? 12, Math.round((amount * w) / (80 * Math.max(0.7, scale)))));
   const Am = Math.min(1.25, 0.45 + amount * 0.6) * za;
-  const LAY = [[1, 0.27], [0.42, 0.36]];
+  const LAY = [[1, 0.2], [0.42, 0.34]];
   for (let i = 0; i < M; i++) {
     const L = 3.2 + hash1(seed * 13 + i * 2.9) * 2.4;
     const tt = t / L + hash1(seed * 5 + i * 1.1);
@@ -3971,7 +4006,7 @@ function drawSteam(ctx, t, o = {}) {
       const xx = px + Math.sin(sj * 6.6 + ph + t * 1.1) * 6.5 * scale * (0.5 + sj * 0.8) + curl * Math.pow(sj, 2.5) * 12 * scale * (0.4 + k);
       pts.push([xx, yy]);
     }
-    const W = (6 + 8 * k) * scale * zw;
+    const W = (9 + 12 * k) * scale * zw;
     const g = ctx.createLinearGradient(0, y0 + 2 * scale, 0, y0 - len - W * 0.5);
     g.addColorStop(0, col(0)); g.addColorStop(0.24, col(1)); g.addColorStop(0.62, col(0.8)); g.addColorStop(1, col(0));
     ctx.fillStyle = g;

@@ -56,6 +56,7 @@ const RULES = { setting: 'new_spring', x: NS.rulesSignSpot.x - 20 };
 const RULES_X0 = K.rulesSignAnchors(RULES).left.x;
 const RAFT_FLAG_X1 = 232;     // the moored raft's banner tail (S.S. TOLD YOU SO) never reaches past this x
 const GRADE = 'new';
+const HOLD_ROT = 0.6;          // the orange's angle while it sits in Barry's paw
 
 // ─────────────────────────────────────────────────────────────── timing (memoised per timeline)
 const MEMO = new WeakMap();
@@ -118,6 +119,11 @@ function timing(S) {
   const g = K.castOpts(S2, 'sunny', { accessories: { orange: false } });
   const a = K.castAnchors(g);
   m.hang = { x: a.headTop.x, y: a.headTop.y, rot: fin(a.headTop.angle, 0), scale: 0.75 * posv(g.scale, 1) };
+  // where the orange sits in his paw the instant he lets go (the floating orange starts there)
+  const S3 = S.tl.sceneTime(S.id, S.scene.start + m.sw.release - 1 / 96);
+  const bo = K.castOpts(S3, 'barry', barryCfg(S3, m, S3.t, K.shot(S3)));
+  const ba = K.castAnchors(bo), bs = posv(ba.scale, 0.94);
+  m.releasePt = { x: ba.paw.x + 4 * bs, y: ba.paw.y - 15 * bs, r: 16 * bs };
   MEMO.set(S.tl, m);
   return m;
 }
@@ -204,7 +210,7 @@ function barryCfg(S, m, t, sh) {
     if (t >= W.catch && t < W.release) {
       o.hold = (c, p) => {
         const s = posv(p.scale, 1);
-        CAP.drawCapyOrange(c, { x: p.x + 4 * s, y: p.y - 15 * s, r: 16 * s, t: S.T, rot: 0.6, tint: o.tint });
+        CAP.drawCapyOrange(c, { x: p.x + 4 * s, y: p.y - 15 * s, r: 16 * s, t: S.T, rot: HOLD_ROT, tint: o.tint });
       };
     }
     // the helmet lands: a small settle
@@ -266,6 +272,7 @@ function sunnyCfg(S, m, t, sh) {
   // "Gerald. Pleased to meet you." — eyes locked on the vulture overhead; one reflexive, polite little nod
   if (m.gL1 && t >= m.touch + 0.5 && t < m.gL1.le + 0.3) {
     o.look = { x: 0.15, y: -1 };
+    o.blink = false;          // (his slow, sleepy blink would read as calm — he is staring at it)
     o.tiltAdd = -5 * bump(t, m.wPleased + 0.05, 0.5);
   }
   // "Barry... there's a vulture on my head." — to Barry, then the eyes roll up at "vulture"
@@ -284,7 +291,7 @@ function doreenCfg(S, m, t, sh) {
   const o = { rest: 'worried' };
   const chartLook = { x: CHART.x, y: CHART.y - 52 };
   // studies the chart; a glance at Sunny's thermometer; looks at Barry for "Who's touching...?"
-  if (t < m.roles + 0.45) { o.lookAt = chartLook; o.tiltAdd = -5; }
+  if (t < m.roles + 0.45) { o.lookAt = chartLook; o.tiltAdd = -5 + 2.5 * Math.sin(t * 2.2); }   // reading it, line by line
   else if (t < m.wWho - 0.2 && t >= m.roles + 0.45) { /* kit: glances at Sunny */ }
   else if (t < m.land + 0.6) { o.lookAt = 'barry'; }
   else if (t < m.touch + 1.4) { o.lookAt = 'gerald'; }
@@ -480,19 +487,28 @@ function drawRollingOrange(c, st, m, t) {
     x = lerp(p1.x, p2.x, k) + 6 * Math.sin(PI * k);
     y = lerp(p1.y, p2.y, ease.inQuad(k));
   }
-  const rot = 0.2 + (Math.hypot(x - p0.x, y - p0.y) / r);
+  // one roll forward: from the worn orange's angle (= the head's) to the in-paw angle (HOLD_ROT) + a turn
+  const kr = u < ka ? 0.62 * ease.inQuad(u / ka) : 0.62 + 0.38 * (u - ka) / (1 - ka);
+  const rot0 = fin(A.orange.angle, 0);
+  const rot = lerp(rot0, HOLD_ROT + TAU, kr);
   CAP.drawCapyOrange(c, { x, y, r: lerp(r, 16 * s, u), t: st.T, rot, tint: st.cast.barry.opts.tint, rim: st.cast.barry.opts.rim });
 }
 // the floating orange (after he lets go)
 function floatOrangeAt(m, t) {
   const u = t - m.sw.release;
   if (u < 0) return null;
-  // set down in front of his chest, drifts slowly forward + right, rocked by the bolt's wake
-  const x = 784 + 22 * (1 - Math.exp(-u * 0.35)) + 1.2 * Math.sin(u * 0.9);
+  // let go exactly where the paw held it (m.releasePt), it bobs once, then drifts slowly forward +
+  // right; the bolt's wake rocks it
+  const R = m.releasePt;
+  // (it drifts off his snout, out and a little back toward his rock: clear of every face by the time
+  // the camera comes back to him)
+  const d = 1 - Math.exp(-u * 0.6);
+  const x = R.x + 42 * d + 1.2 * Math.sin(u * 0.9);
+  const back = 10 * d;
   const wake = t > m.zip0 ? 5 * Math.sin((t - m.zip0) * 8) * Math.exp(-(t - m.zip0) * 1.8) : 0;
-  const settle = -4 * Math.exp(-u * 5) * Math.cos(u * 14);
-  const wy = 612;
-  return { x, wy, y: wy - 12 + settle + 1.4 * Math.sin(u * 2.3) + wake, rot: 0.9 + 0.12 * Math.sin(u * 0.7) + 0.3 * (1 - Math.exp(-u * 2)) };
+  const settle = 4 * Math.sin(u * 13) * Math.exp(-u * 5);
+  const wy = R.y + R.r * 0.72 - back;
+  return { x, wy, r: R.r * (1 - 0.04 * d), y: R.y - back + settle + 1.4 * Math.sin(u * 2.3) + wake, rot: HOLD_ROT + 0.12 * Math.sin(u * 0.7) + 0.3 * (1 - Math.exp(-u * 2)) };
 }
 // the helmet: on the rock → nudged → one lazy flip up onto his head (then the rig draws it)
 function drawFlyingHelmet(c, st, m, t) {
@@ -505,7 +521,7 @@ function drawFlyingHelmet(c, st, m, t) {
   const ax = A.helmet.x, ay = A.helmet.y;
   const x = lerp(HELMET_REST.x, ax, k);
   const y = lerp(HELMET_REST.y, ay, k) - 40 * Math.sin(PI * Math.min(1, u * 1.04));
-  const rot = lerp(HELMET_REST.rot, fin(A.helmet.angle, 0) - 0.22 - TAU, ease.inOutSine(u));
+  const rot = lerp(HELMET_REST.rot, fin(A.helmet.angle, 0) - TAU, ease.inOutSine(u));
   P.drawHelmet(c, { x, y, scale: lerp(HELMET_REST.scale, posv(A.helmet.scale, 1.05), k), rot, strap: true, grade: GRADE });
 }
 
@@ -591,7 +607,7 @@ function framings(m) {
       return { ...b, zoom: z, x: clamp(b.x + 62, x0, Math.max(x0, x1)), y: eyeY + (360 - 418) / z };
     },
     // the kit's group frame a touch tighter: the rules sign whole on the right, SNOOZE SPRINGS 2 out
-    trio: (I) => { const b = K.trioFrame(I, { zoom: 1.6 }); return { ...b, x: 636 }; },
+    trio: (I) => { const b = K.trioFrame(I, { zoom: 1.6, waterlineY: 588 }); return { ...b, x: 636 }; },
     barry_cu: (I) => {
       const base = F.barry_cu(I);
       if (!base) return base;
@@ -635,7 +651,7 @@ module.exports = {
     // the rolling orange + the flying helmet: in front of Barry
     items.push({ x: 650, y: 600.6, draw: (c, st) => { drawRollingOrange(c, st, m, t); drawFlyingHelmet(c, st, m, t); } });
     const fo = floatOrangeAt(m, t);
-    if (fo) items.push({ x: fo.x, y: fo.wy, draw: (c, st) => { if (inView(st.cam, fo.x - 20, fo.y - 20, fo.x + 20, fo.wy + 10)) P.drawOrange(c, { x: fo.x, y: fo.y, r: 15, t: S.T, rot: fo.rot, seed: 3, waterY: fo.wy, grade: GRADE }); } });
+    if (fo) items.push({ x: fo.x, y: 600.8, draw: (c, st) => { if (inView(st.cam, fo.x - 20, fo.y - 20, fo.x + 20, fo.wy + 10)) P.drawOrange(c, { x: fo.x, y: fo.y, r: fo.r, t: S.T, rot: fo.rot, waterY: fo.wy, grade: GRADE }); } });
     // the bolt's spray (back half behind them, front half + puffs in front of everyone)
     if (t >= m.zip0 - 0.02 && t < m.bolt + 2.4) items.push({ x: 360, y: 560, draw: (c, st) => drawBoltFx(c, st, m, t, 'back') });
 
@@ -665,7 +681,7 @@ module.exports = {
           if (vis(CHART.x - 40, CHART.y - 90, CHART.x + 40, CHART.y + 4)) P.drawChart(c, { x: CHART.x, y: CHART.y, scale: CHART.scale, rot: CHART.rot, grade: GRADE });
           // the helmet on its rock
           if (t < m.sw.launch && vis(HELMET_REST.x - 40, HELMET_REST.y - 40, HELMET_REST.x + 40, HELMET_REST.y + 30)) {
-            const nudge = t > m.sw.dip1 - 0.08 ? 0.12 * bump(t, m.sw.dip1 - 0.08, 0.16) : 0;
+            const nudge = 0.12 * bump(t, m.sw.dip1 - 0.16, 0.16);   // a little lift-off rattle, back to rest at the launch
             P.drawHelmet(c, { x: HELMET_REST.x, y: HELMET_REST.y - 3 * nudge, scale: HELMET_REST.scale, rot: HELMET_REST.rot - nudge, strap: true, grade: GRADE });
           }
         },

@@ -331,27 +331,40 @@ async function main() {
     const out = path.resolve(opt('--out', path.join(BUILD, 'chill_capybara.mp4')));
     const [W, H] = parseSize(opt('--size'), [1920, 1080]);
     const workers = +opt('--workers', 4);
+    // Many short segments through a small worker pool: each segment is its own
+    // process, so native memory that @napi-rs/canvas never frees (Path2D,
+    // gradients) is returned to the OS when the segment finishes.
+    const segSecs = +opt('--segment-seconds', 20);
     const total = Math.round(tl.duration * FPS);
     const segDir = path.join(BUILD, 'segments');
+    fs.rmSync(segDir, { recursive: true, force: true });
     fs.mkdirSync(segDir, { recursive: true });
-    const per = Math.ceil(total / workers);
+    const per = Math.max(FPS, Math.round(segSecs * FPS));
     const t0 = Date.now();
-    const jobs = [];
     const files = [];
-    for (let k = 0; k < workers; k++) {
-      const f0 = k * per, f1 = Math.min(total, (k + 1) * per);
-      if (f1 <= f0) continue;
-      const f = path.join(segDir, `seg_${k}.mp4`);
+    const queue = [];
+    for (let f0 = 0, k = 0; f0 < total; f0 += per, k++) {
+      const f1 = Math.min(total, f0 + per);
+      const f = path.join(segDir, `seg_${String(k).padStart(3, '0')}.mp4`);
       files.push(f);
+      queue.push([k, f0, f1, f]);
+    }
+    let doneSegs = 0;
+    const runOne = ([k, f0, f1, f]) => new Promise((res, rej) => {
       const args = [__filename, '--segment', String(f0), String(f1), f, '--size', `${W}x${H}`, '--timeline', TIMELINE, '--crf', opt('--crf', '18'), '--preset', opt('--preset', 'medium')];
       if (!SUBS) args.push('--nosubs');
-      if (k === 0) args.push('--verbose');
-      jobs.push(new Promise((res, rej) => {
-        const p = spawn(process.execPath, args, { stdio: 'inherit' });
-        p.on('close', (c) => (c === 0 ? res() : rej(new Error(`segment ${k} failed`))));
-      }));
-    }
-    await Promise.all(jobs);
+      const p = spawn(process.execPath, args, { stdio: 'inherit', env: { ...process.env, STRICT: '1' } });
+      p.on('close', (c) => {
+        if (c !== 0) return rej(new Error(`segment ${k} (${f0}-${f1}) failed with exit ${c}`));
+        doneSegs++;
+        process.stderr.write(`  segment ${doneSegs}/${files.length} done (${((Date.now() - t0) / 1000).toFixed(0)}s)\n`);
+        res();
+      });
+    });
+    const pool = Array.from({ length: Math.min(workers, queue.length) }, async () => {
+      while (queue.length) await runOne(queue.shift());
+    });
+    await Promise.all(pool);
     const list = path.join(segDir, 'list.txt');
     fs.writeFileSync(list, files.map((f) => `file '${f}'`).join('\n'));
     const audio = path.join(BUILD, 'audio.wav');
