@@ -2,7 +2,8 @@
 // Scene animators build on this; it wraps the asset libraries (capybara, critters, props,
 // env_spring, env_other) into one-liners. Everything is a PURE function of (S, t, cfg): no state
 // between frames, seeded noise only; per-scene schedules (moods, gazes, turns) are memoised per
-// timeline + scene and never depend on render order (safe for --final workers).
+// timeline + scene with EVERY input in the key (a function rest is recomputed, never hashed), so
+// they never depend on render order (safe for --final workers).
 //
 //   const K = require('../lib/kit');              // from src/scenes/<id>.js
 //   module.exports = { render(ctx, t, S) {
@@ -18,12 +19,13 @@
 //   Draw order (all inside the camera except 'screen'):
 //     env background (drawSpringDay/Evening/NewSpring with cfg.env)
 //     → Gerald when his layer is 'behind' (perched on the rules sign: the board covers his tail)
-//     → hooks.behind(ctx, st)                 signs, raft, props on the banks
+//     → hooks.behind(ctx, st)                 signs, props on the banks
 //     → DEPTH-SORTED swimmers/items (by waterline y, far → near). For each one in the water:
 //         back ripple (env palette colour) → draw → its own translucent front water (a nearer head
 //         is never covered by the water of one further back). Gerald is drawn right after his
 //         host, his feet exactly on the host's DRAWN head top (turns / takes included); he takes
-//         half of the host's squash himself.
+//         half of the host's squash himself. cfg.raft (below) is ONE item of this sort: raft back →
+//         hooks.onRaft → seated passengers (z order) → raft front → Gerald on its mast / banner.
 //     → hooks.afterCast(ctx, st)              in front of everyone (flying oranges, splats…)
 //     → drawSpringOverlay (front steam veil, ash, embers, rumble dust, eruption flash)
 //     → hooks.afterWater(ctx, st)             above every water/steam layer
@@ -34,10 +36,27 @@
 //     env       {volcanoSmoke, waterHeat, rumble, erupt, lava, dusk, signBurn, puffs, ...} or
 //               fn(S) → obj. rumble defaults to K.rumbleLevel(S) (from rumble/explosion sfx).
 //     cast      { barry: {...}, sunny: {...}, doreen: {...} } per-character castOpts extras (any
-//               drawCapybara option + kit options, see CAST). false = not in the scene,
-//               {hidden: true} = not drawn this frame. Positions default to SPRING.swimSpots
-//               (the same spots in new_spring); x/y/scale/pose override per frame.
-//               inWater (default pose==='swim') → ripples + front water.
+//               drawCapybara option + kit options, see CAST). false = not drawn, {hidden: true} =
+//               not drawn this frame — NEITHER changes anyone's turn history (that comes from the
+//               scene ROSTER, below). Positions default to SPRING.swimSpots (the same spots in
+//               new_spring); x/y/scale/pose override per frame. inWater (default pose==='swim') →
+//               ripples + front water. Unknown keys (cast: {barri: …}) warn once.
+//     roster    ['barry', 'sunny', 'doreen'] who is in the scene for the turn schedule (default
+//               SCENE_ROSTER[S.id] || all three; s01 / s05: barry only)
+//     raft      true | { x, y (SPRING.raftMoor), dx / dy (offset — the raft_launch), scale (.5), bob,
+//               wake, flip, build, flagText, flagShow, flagPerch (auto from Gerald on 'flag'), depthY
+//               (sort key, default raft y − 160: behind the near bank, so runners on the bank pass in
+//               front of its banner), passengers: { who: true | {seat: 0..3 (props seats) | seatX
+//               (deck-local), scale, flip, pose, x / y (world: a leap in progress), z, + any castOpts
+//               extra (mood, eyes, accessories, hold…)} } }
+//               The MOORED raft drawn by the stage (instead of K.drawMooredRaft in hooks.behind), with
+//               the passengers sitting IN it (ground on the deck's sit line, the front bundle hides their
+//               bottoms) and Gerald's 'mast' / 'flag' perches. A passenger is taken out of the pool
+//               (cast[who] positions are ignored for him; his other cast options still apply). Default
+//               seating (SPRING_RAFT_SEATS, deck-local, all facing LEFT = downriver): Barry −146 at the
+//               front, Doreen −36, Sunny +128 at the stern (the mast behind Doreen's back, clear of
+//               Sunny's snout); passenger scale = RAFT_CAST_SCALE × raft scale / 1.1 × 1.15 (≈ .3).
+//               st.raft = {opts, anchors, rest}. See K.escapeRun / K.raftSeatPose for the leap aboard.
 //     extras    false (default) | true / 'back' (EXTRAS.back: 4 dozers along the back of the pool,
 //               clear of the trio) | 'open' (EXTRAS.open — s01: the extras ARE the pool, a bird on
 //               one's head, an orange hat on another; use with cast {sunny: false, doreen: false})
@@ -45,18 +64,22 @@
 //     gerald    null/false | GERALD cfg (below)
 //     items     [{ y, x, draw(ctx, st), water: false | true | {w, depth} }] custom depth-sorted
 //               drawables (a floating orange, the thermometer in the water, a splash)
-//     hooks     { behind, afterCast, afterWater, screen }  fn(ctx, st)
+//     hooks     { behind, onRaft (cfg.raft: between its back layer and the passengers), afterCast,
+//               afterWater, screen }  fn(ctx, st)
 //     framings  {name: framing} merged over SPRING_FRAMINGS;  camera: cam obj | fn(S, st)
 //               (bypasses the rig; still clamped to the painted world, cam.shake made smooth)
-//     cam       cameraFor opts (moves, shake, shakeGain, push, drift, name, fallback, trioFrom)
+//     cam       cameraFor opts (moves, shake, shakeGain, shakeMixGain, push, drift, name, fallback,
+//               trioFrom, escapeFrom)
 //     overlay   true | false | {extra overlay opts};  foliage 'auto' | true | false | number |
 //               {sides, amount, top};  waterOpacity
 //     light     false | {tint:{color, amount}, rim}  (default per setting / eruption, K.lightFor)
 //   }
 //   st = { S, t, T, setting, kind, A (SPRING / NEW_SPRING), env, cam, layout,
 //          cast: {who: {opts, anchors (squashed, = what is drawn), extra}},
-//          gerald: {opts, anchors, host, layer, mode, perch, perchHead} | null, extras: [{opts}],
-//          culled: [...], toScreen(p), toWorld(p) }   (office: + st.shelley; river: + st.raft)
+//          gerald: {opts, anchors, host, layer, mode, perch, perchHead, perchKind ('host' | 'rules' |
+//          'mast' | 'flag' | 'free' | 'ghost' | 'released' | null in flight), released} | null,
+//          gcfg (the gerald cfg), extras: [{opts}], raft (cfg.raft | river) | null,
+//          culled: [...], toScreen(p), toWorld(p) }   (office: + st.shelley)
 //   EXAMPLE
 //     K.drawSpringStage(ctx, t, S, {
 //       env: { volcanoSmoke: 0.5 },
@@ -67,20 +90,30 @@
 // GERALD cfg (all stages) — `on` is where he is perched at rest:
 //     on: 'barry' | 'sunny' | 'doreen'   on that head (rot = head angle, scale .75 × host, faces
 //                                     with the host). A HIDDEN / cast:false host leaves him where
-//                                     its head would be at its default spot (s09: left hanging
-//                                     in mid-air when Sunny bolts) — add pose:'fly' to flap.
+//                                     its head would be at its default spot — add pose:'fly' to flap.
+//     release: t | 'cue+0.1' | {t, at: {x, y, rot?, scale?, flip?}}   from that time his perch is
+//                                     FROZEN where the host's head was at that instant (the host at
+//                                     its default spot with the scene's non-positional options; at
+//                                     overrides): the host can bolt / move / hide without dragging
+//                                     him along — no teleport. He then sorts at the host's depth.
+//                                     s09 RECIPE (everyone_bolts):
+//       gerald: { on: 'sunny', land: { beat: 'gerald_lands_sunny' }, release: 'everyone_bolts',
+//                 ...(S.t > bolt + 1.2 ? { pose: 'fly', wing: 1 } : {}) },   // looks down, then flaps
+//       cast: { sunny: { x: 360 - 900 * zip, flip: zip > 0, hidden: zip >= 1 }, doreen: {...} }
 //     on: 'rules'                     spring: top edge of the standard SPRING RULES sign (setting-
 //                                     aware, scale .6, layer 'behind'; dx nudges along the edge,
 //                                     sign: {...} for a non-standard sign)
-//     on: 'mast' | 'flag'             raft: the mast top / sitting on the banner. 'flag' drives
-//                                     props' flagPerch, so his weight bunches the banner to "S.S."
+//     on: 'mast' | 'flag'             a raft (river stage, or the spring stage's cfg.raft): the mast
+//                                     top / sitting on the banner (drawn inside the raft sandwich).
+//                                     'flag' drives props' flagPerch: his weight bunches it to "S.S."
 //     on: {x, y, scale, flip, rot}    free perch anywhere (or x/y/scale directly in the cfg);
 //                                     depthY = where he sorts among the swimmers (default front)
 //     on: castOpts object             on that exact (standalone) capybara
 //   choreography (critters' continuous geraldLanding / geraldTakeoff / geraldHop rigs):
 //     land:    {t0 | beat, dur, from: {x, y} (world) | {dx, dy} (critters-relative), touch}
 //              glide → flare → braking flaps → touch-down → absorb → fold. The TOUCH-DOWN syncs to
-//              a 'land'/'thud' sfx inside the beat (else t0 + dur − .42; touch: time|false to
+//              a 'land'/'thud' sfx inside the beat, else the end of a 'flaps_land' approach (+1.5 s,
+//              K.TOUCH_SFX), else t0 + dur − .42 (touch: time|false to
 //              override); the approach starts ≥ 1 s before it. He arrives facing his travel
 //              direction and, if the perch faces the other way, does a quick on-the-spot turn
 //              (x-squash) after settling. dur defaults to the cue's dur at t0, else 1.6.
@@ -122,18 +155,26 @@
 //   path, so the raft + cast are rendered ONCE per frame (items with reflect:true are mirrored).
 //   cfg.raft: props.drawRaft overrides {x, y, scale (1.1), bob (1), wake, dir (+1: drifting RIGHT,
 //   away from the volcano), flagText, flagShow, flagPerch (auto from gerald 'flag'; false = off)}.
-//   BLOCKING (K.RAFT_SEATS, deck-local): Sunny −158 stern (faces right), Doreen −30 amidships
-//   (faces left, toward Sunny), Barry +84 at the bow facing AHEAD — the mast rises between Doreen's
-//   and Barry's backs, never out of a head. cfg.cast[who].seatX / pose ('sit') / scale (.55–.58)
-//   / flip override. Auto-turns are OFF on the raft (turn: true opts in); Barry answers people
-//   behind him with his eyes. Defaults: soot .35 on everyone (cfg.soot), Doreen's juice .4
-//   (cfg.juice), Barry's helmet. Off-screen passengers are culled (st.culled).
+//   BLOCKING (K.RAFT_SEATS, deck-local raft units): everyone faces the BOW (right, the drift) in a
+//   row — Sunny −150 at the stern, Doreen −46 (her snout clear of the mast and out of Barry's river
+//   close-up), Barry +84 at the bow with open water ahead; the mast rises between Doreen's snout and
+//   Barry's back, never out of a head. cfg.cast[who].seatX (keyable) / pose ('sit') / scale
+//   (.55–.58) / flip / z (draw order on the deck: sunny 0, doreen 1, barry 2) override. Auto-turns
+//   are OFF on the raft (turn: true opts in); Barry answers people behind him with his eyes.
+//   Defaults: soot .35 on everyone (cfg.soot), Doreen's juice .4 (cfg.juice), Barry's helmet, and NO
+//   oranges on Sunny / Doreen (continuity: Sunny's went in the boil, Doreen's was juiced in s07; a
+//   cast accessories.orange overrides). s08 doreen_orange: see SCENE_DEFAULTS.
+//   Off-screen passengers are culled (st.culled).
+//   raftAnchors COORDINATE SPACES (props): sitY / seatY / scale are DECK-LOCAL raft units (× scale,
+//   from the waterline); deck / sits / seats / mastTop / flag / flagPerch / waterline are WORLD.
+//   K.raftPoint(raftOpts, raftAnchors, lx, ly) maps a deck-local point to world (bob + roll).
 //   Framings: RIVER_FRAMINGS.  st.raft = {opts, anchors, rest (bob-free anchors)}.
 //   EXAMPLE  K.drawRaftStage(ctx, t, S, { gerald: cover ? { on: 'flag', hop: {...from: 'mast'} } : { on: 'mast' },
 //              cast: { barry: { accessories: { orange: orangeOn } } } });
 //
 // ═════════════════════════════════════════════════════════════════════════════ CAST
-// castOpts(S, who, extra) → drawCapybara options for 'barry'|'sunny'|'doreen'|'extra' NOW:
+// castOpts(S, who, extra) → drawCapybara options for 'barry'|'sunny'|'doreen'|'extra' NOW (any other
+//   name throws — Gerald is K.geraldOpts, Dr. Shelley K.shelleyOpts):
 //   talk     S.talk(who) × extra.talkGain                      (extra.talk overrides)
 //   mood     the active line's mood, eased in over .22 s starting .1 s before the voice, held
 //            .7 s after the line, then eased (.6 s) to the resting mood. Continuous everywhere (a
@@ -158,16 +199,26 @@
 //            squash-and-stretch turn swinging through the rig's 3/4 head (headTurn bump masks the
 //            mirror flip) + a .16 s overshoot. RULES: a turn never starts < .35 s before a cut,
 //            never spans one and never starts < .12 s after one — it moves .2 s into the new shot
-//            (or happens AT the cut, unsquashed, if that shot is too short); it is SKIPPED when
-//            he is calm (his line's mood, or his mood when addressed, is chill/sleepy) unless
-//            extra.turn === 'always'. Sides come from the DEFAULT blocking (moving someone never
-//            rewrites the history → no instant flips); extra.turnSides:'live' uses live x.
+//            (or happens AT the cut, unsquashed, if that shot is too short); a turn is never played
+//            inside ANOTHER character's close-up (*_cu: he'd swing his head / Gerald into the edge of
+//            their frame) — deferred to the next cut; when a deferred turn lands, the LATEST intent
+//            wins. It is SKIPPED when he is calm (his line's mood, or his mood when addressed, is
+//            chill/sleepy) unless extra.turn === 'always'. Sides come from the scene ROSTER at its
+//            DEFAULT blocking (swimSpots / raft seats) — hiding, dropping (false) or moving someone
+//            never rewrites the history → no instant flips; extra.turnSides:'live' uses live x.
 //            Others keep their blocking (Sunny → right, Doreen → left). A scene that MOVES a
 //            capybara (runs, re-blocks) passes flip (fixed facing) or extra.facing =
 //            [[t | 'cue', 'left'|'right'], ...] (keyed squash turns); extra.turn: false/true.
 //   toCamera Barry's 'barry_to_camera' cue/beat (s01, s05) → headTurn via turnToCamera (wins over
 //            a facing turn).
 //   squash   extra.squash = {sx, sy, dy} (e.g. a K.take) multiplies into the turn squash.
+//   reach    extra.reach = {to: 'barry' | 'sunny' | 'doreen' (that head top) | {x, y} (world), k: 0..1
+//            (pawUp; keyable), dx, dy (−2)}: raises the near front paw toward that point (the rig
+//            clamps it to the arm's reach, ~82 rig units from the shoulder: the paw then POINTS at
+//            it). Uses K.pawLocal(o, p): the rig-local pawAt for a world point.
+//   KEYED numbers: seatX, pawUp, tiltAdd, headTilt, eyes, z, x, y, scale, rot, talkGain, walkPhase
+//            (and reach.k) may be [[t | 'cue+0.3', value], ...] — eased (inOutSine) between keys,
+//            held outside (K.keyedNum(S, keys, t?)).
 //   light    per-setting tint/rim (golden hour → lava glow with env.erupt, sunset, lamp);
 //            extra.tint / extra.rim override.
 //   + any drawCapybara option in extra wins (pose, eyes, pawUp, scale, x, y, ...); accessories
@@ -179,19 +230,32 @@
 // SCENE_DEFAULTS (merged UNDER each cast entry; whatever the scene passes wins):
 //   s07_eruption  barry rest worried → 'barry_orange+1.6' chill (the 12 seconds) → 'barry_eyes_open+0.3' worried
 //   s08_aftermath barry rest deadpan → 'doreen_orange+0.6' chill; no eye-rolls ("Welcome to chill, bro.")
-//   s09_epilogue  barry rest chill, no eye-rolls (no addressed turns while blissed out);
-//                 sunny + doreen rest worried
+//                 doreen (doreen_orange, 1.4 s): scoots −46 → −30 (+.4 s), raises her paw toward
+//                 Barry's helmet top (reach k 0 → 1 by +.55, held to +.8, down by +1.25), scoots back
+//                 by the end. Her reach can't span the gap, so the ORANGE is the scene's: in her paw
+//                 (hold) until ~+.6 → K.lob onto Barry's helmet (~.4 s) → accessories.orange + a
+//                 K.wobble on his tiltAdd ("It wobbles. It stays."):
+//       const D = K.beat(S, 'doreen_orange'), tRel = D.t0 + 0.6, tLand = tRel + 0.4;
+//       cast: { barry: { accessories: { orange: S.t >= tLand }, tiltAdd: K.wobble(S.t, tLand, { amp: 6, freq: 2.6 }) },
+//               doreen: S.t >= D.t0 && S.t < tRel ? { hold: (c, paw) => P.drawOrange(c, { x: paw.x, y: paw.y - 6 * paw.scale, r: 9 }) } : {} },
+//       hooks: { afterCast: (c, st) => { if (S.t < tRel || S.t >= tLand) return;
+//         const a = st.cast.doreen.anchors.paw, b = K.castAnchors(st.cast.barry.opts).headTop;
+//         const p = K.lob(S.t, tRel, tLand - tRel, a, { x: b.x, y: b.y - 8 }); P.drawOrange(c, { x: p.x, y: p.y, r: 9, rot: p.rot }); } }
+//   s09_epilogue  barry rest chill, no eye-rolls, NO auto-turns ('No reason.' is delivered smug and
+//                 still — no squash turn + pan on the punchline); sunny + doreen rest worried
 // drawCast(ctx, o)          drawCapybara + the kit squash/turn/take (NaN-guarded).
 // castAnchors(o)            capyAnchors exactly where drawCast draws them (squash about the
 //                           origin, then dy·scale·sy): K.castAnchors(st.cast.barry.opts).paw.
 // squashPoint(o, p)         one rig point → where drawCast draws it.
-// geraldOpts(S, extra)      drawVulture options: talk, mood (held / rest 'smug'), look at the
-//   speaker or his addressee (down at the host when the host speaks). extra.on = 'barry' | a
-//   castOpts object → perched on that head; any vulture option in extra wins.
-// shelleyOpts(S, extra)     drawTortoise options: in the chair (OFFICE.chair, flip), talk, mood,
+// geraldOpts(S, extra)      drawVulture options: talk, mood (held / rest 'smug'; a weight-map BLEND
+//   while two moods cross-fade, like the capybaras), look at the speaker or his addressee (down at
+//   the host when the host speaks). extra.on = 'barry' | a castOpts object → perched on that head
+//   (stage perches like 'rules' / 'mast' only exist in a stage's cfg.gerald); any vulture option wins.
+// shelleyOpts(S, extra)     drawTortoise options: in the chair (OFFICE.chair, flip), talk, mood (blended),
 //   look at whoever speaks (Barry; up at Gerald when Gerald speaks), write = beat progress of
 //   'shelley_writes' (undefined before it). extra wins (neck, look, note, notepad...).
 // landTiming(S, land) → {t0, dur, touch, end}   the resolved landing schedule (see GERALD).
+// keyTime(S, 12.5 | '12.5' | 'cue+0.3' | 'cue@end') → scene-local seconds (numeric strings accepted).
 // turnEnv(t, t0, fromFlip, toFlip, dur=.26) → {flip, sx, lift, active}   quick on-the-spot turn
 //   (x-squash through ~.2, flip at the middle). EXAMPLE: withSquash(ctx, o.x, o.y, e.sx, 1, draw).
 // geraldFlight(t, f) → {x, y, pose, pose2, poseMix, legs, wing, fold, flip, rot, u}  LOW-LEVEL arc
@@ -205,9 +269,11 @@
 //   is continuous (profile in-betweens 0–.47, a quick .47–.53 dissolve, then the 3/4 head), so
 //   the .5 s turn reads as a turn with one smear frame; sx/sy = a small squash pop at the swap.
 // moodAt(S, who, rest?, t?) → {weights, name}     gazeAt(S, who, L, me, mood, o) → {x, y, target}
-// facingAt(S, who, L, cc, t?) → {flip, face (−1..1 smoothed), sx, sy, turning, headTurn, k}
+// facingAt(S, who, L, cc, t?) → {flip, face (−1..1 smoothed), sx, sy, turning, headTurn, k, lastTurn,
+//   turns [{t, from, to, instant}], start}
 // buildLayout(S, cfg) → L = {setting, kind, chars: {who: {x, y, home, scale, flip, face, eye,
-//   eyeSmooth, headTop, headTopSmooth, rest (raft), cc...}}, gerald: {host, head}, points, raft}.
+//   eyeSmooth, headTop, headTopSmooth, rest (raft), passenger (spring raft), lastTurn, turnList, cc...}},
+//   homes (the roster's default spots), gerald: {host, head}, points, raft}.
 //   Anchor offsets are BOB-FREE (mean over the idle cycle): cameras built on them never float.
 // lightFor(setting, env) → {tint, rim} | null
 //
@@ -219,10 +285,16 @@
 //   * hard cuts on S.cam() changes; every held shot gets a subtle push (+0.6 %/s wide, +0.9 %/s
 //     close, capped +6 %) and a slow float that alternates direction per shot. push:0 / drift:0.
 //   * moves: {to: {x,y,zoom} | 'base' | fn(I), from?, at? (time or 'cue+0.2') | delay? (s after
-//     the cut), dur? (default: to the next cut), ease: 'inOutCubic'} — one or an array, applied
-//     in order. opts.moves = {shotName: move | [moves]}.
-//   * shake: amplitude (screen px) from the scene's sfx (SHAKE_SFX: rumble_small 5, rumble_big 13,
-//     explosion 22, boil, bonk, thud, land, hammer, big_splash, splat, glass_pop) × opts.shakeGain;
+//     the cut), dur? (default: to the next cut), ease: 'inOutCubic', instance? (n-th occurrence of
+//     the shot name, 0-based), shot? (scene shot index)} — one or an array, applied in order.
+//     opts.moves = {shotName: move | [moves]}. An `at`-timed move plays ONLY in the instance of that
+//     shot name that contains `at` (from .25 s before its cut; or one still under way at the cut,
+//     with an explicit dur) — never in later shots of a recurring name (barry_cu, trio...). A move
+//     without `at` (delay from the cut) plays in every instance unless instance / shot pin it.
+//   * shake: amplitude (screen px) from the scene's sfx (SHAKE_SFX, keyed to the CURRENT sfx.py names:
+//     rumble_small 5, rumble_big 13, rumble_distant 1.6, explosion 22, eruption_bed 2.2 (24 s), boil,
+//     bonk, thud, land, hammer, knock, big_splash, splat, glass_pop; any other '*rumble*' → 4) ×
+//     opts.shakeGain. NOT scaled by the mix gain (opts.shakeMixGain: true restores × (.5 + .5·gain)).
 //     opts.shake: false | number | fn(S) adds; framing.shake adds. Rendered as a smooth 2-octave
 //     rumble (K.shakeOffset: value noise at 7 Hz + 1.5 Hz, consecutive frames correlated; rotation
 //     ≤ 0.8°) folded into x/y/rot — cam.shake is 0, the amplitude is cam.shakeAmp.
@@ -230,7 +302,8 @@
 //     (zoom ≥ 1.5) in the spring stay inside WORLD_CLOSE (finished art: y ≥ −150, x ≤ 1450).
 //   * unknown names → opts.fallback | 'wide' | 'trio' + a one-time console warning.
 //   opts.name forces a framing; opts.setting / opts.kind pick world bounds; opts.trioFrom
-//   'default' (the swimSpots) | 'live' (live, visible, in-pool swimmers); opts.trioWho [names].
+//   'default' (the swimSpots) | 'live' (live, visible, in-pool swimmers); opts.trioWho [names];
+//   opts.escapeFrom 'cues' (default) | 'live'.
 //   EXAMPLE  K.drawSpringStage(ctx, t, S, { cam: { moves: { signs: { at: 'sunny_sign_planted',
 //              dur: 0.6, to: { x: 230, y: 447, zoom: 2.7 } } }, shakeGain: 1.4 } });
 // SPRING_FRAMINGS
@@ -238,17 +311,26 @@
 //   extras (pan along the extras' row; pair with extras:'open') · wide ·
 //   trio (fits the DEFAULT swimSpots, waterline at screen y 610: never re-fits when someone moves,
 //   bolts or hides; opts.trioFrom:'live' to follow) · two_shot_sunny / two_shot_doreen ·
-//   barry_cu / sunny_cu / doreen_cu (faces, scale-normalised, face-smoothed; wider + lower when
-//   Gerald sits on that head) · gerald_cu (his PERCH — landing target / take-off perch / the
-//   hop's perch for this shot — never the flight: he flies in/out of a locked frame) ·
-//   volcano (holds the 'orange_rolls' beat: tilts from the grove down to the back-right of the
-//   pool + the SNOOZE SPRINGS board; else the crater with sky for sneeze puffs; pulls back as
-//   env.erupt grows) · fish (left rim + river outlet) · thermometer (SPRING.thermometerSpot, z4.4)
+//   barry_cu / sunny_cu / doreen_cu (faces, scale-normalised; wider + lower when Gerald is on that
+//   head at any time in the SHOT — from his resolved schedule: landing / take-off / hop / release
+//   times, not the bare config; a turn inside the shot re-frames only half-way, gently — faceFrame)
+//   · gerald_cu (his PERCH — landing target / take-off perch / the hop's perch for this shot —
+//   never the flight: he flies in/out of a locked frame) ·
+//   volcano (holds the 'orange_rolls' beat: tilts from the grove (every head below the frame) down
+//   to the back-right of the pool with the trio's heads FULLY in frame; else the crater with sky for
+//   sneeze puffs; the eruption pull-back eases over 2 s from the 'eruption' cue (env.erupt only
+//   without the cue). Seeded from env's SPRING.volcanoCam sneeze → erupting, bottom edge kept above
+//   y 405 (no cropped heads); new_spring: NEW_SPRING.hillCam) · hill (NEW_SPRING.hillCam) ·
+//   fish (the left rim + river outlet along SPRING.fishHop; Sunny only as a back at the right edge)
+//   · thermometer (the INSERT: the instrument centred at z5.2, the two faces cropped at the edges)
 //   · signs (the EXIT row at z2.4, Sunny's face lower right, above the subtitles) · rules (the
 //   rules sign + Barry's head below it, both above the subtitles; new_spring aware) · raft (the
-//   moored raft) · helmet (a medium on Barry) · escape (rides the runners — cast out of the water
-//   — along the bank to the raft) · sign (spring: the SNOOZE SPRINGS board + Doreen below it;
-//   new_spring: SNOOZE SPRINGS 2 + the rules sign beside it).
+//   moored raft) · helmet (a medium on Barry) · escape (KEYED TO THE CUES: rides the lead runner's
+//   scripted K.escapeRun path from run_to_raft, eases onto the moored raft around board_raft and
+//   pans gently left over raft_launch — hiding / seating the runners never moves it; without a
+//   run_to_raft cue, or with cfg.cam.escapeFrom: 'live', it rides the live runners — for a hand-made
+//   run that does not follow K.escapeRun's pace) · sign (spring: the SNOOZE SPRINGS board + Doreen
+//   below it; new_spring: SNOOZE SPRINGS 2 + the rules sign beside it).
 // OFFICE_FRAMINGS  office_wide, barry_couch, shelley_cu, window (Shelley + the porthole behind
 //   him, the whole puff gag), gerald_cu.
 // RIVER_FRAMINGS   raft_wide · barry_cu (z4 on Barry at the bow, open water ahead; Mount Snooze
@@ -256,9 +338,12 @@
 //   framed on his bob-free seat) · sunny_cu · doreen_cu · gerald_flag (mast top + banner + Gerald
 //   only; the passengers' heads stay below the frame) · gerald_cu · fish · volcano (distant Mount
 //   Snooze, cast below the frame) · wide.
-// faceFrame(L, who, {zoom, eyeY=330, k=.75, dx, norm=.8}) → close-up framing on who's face: eye at
-//   screen y eyeY, camera k of the way body → eye, zoom given for scale 1 and divided by
-//   scale^norm. EXAMPLE: framings: { barry_cu: (I) => K.faceFrame(I.L, 'barry', { zoom: 3.2, eyeY: 320 }) }
+// faceFrame(L, who, {zoom, eyeY=330, k=.75, dx, norm=.8, follow=.5, panDur=1.6}) → close-up framing
+//   on who's face: eye at screen y eyeY, camera k of the way body → eye, zoom given for scale 1 and
+//   divided by scale^norm. A turn INSIDE the current shot re-frames only `follow` of the way, with an
+//   inOutSine over panDur from the turn's start (≈ 4–7 px/frame on a z3 close-up — no whip pan);
+//   a shot that starts after the turn is framed for the new side. Continuous across several turns.
+//   EXAMPLE: framings: { barry_cu: (I) => K.faceFrame(I.L, 'barry', { zoom: 3.2, eyeY: 320 }) }
 // trioFrame(I, {who, zoom, waterlineY}) → the group framing (see trio).
 // toScreen(cam, p) / toWorld(cam, p)   world ⇄ 1280x720 screen (st.toScreen(p) in hooks).
 // clampCam(cam, kind, marginPx) · shakeOffset(T, amp) → {x, y, rot}
@@ -270,19 +355,22 @@
 // take(t, t0, o) → {sx, sy, dy, k, phase}   cartoon take: anticipation squash before t0
 //   (o.anticipation .1 s), stretch with overshoot (o.stretch .12 s), damped settle (o.settle
 //   .45 s); o.amount 1, o.lift 1. EXAMPLE: cast: { barry: { squash: K.take(S.t, K.sfxTimes(S,
-//   'record_scratch')[0]) } }   (a missing t0 returns the identity)
+//   'record_scratch')[0]) } }   (a missing t0 returns the identity and warns once; o.quiet)
+// lob(t, t0, dur, from, to, {h, spin}) → {x, y, k, rot, before, active, done}   a gentle parabolic
+//   toss between two world points (s08: the orange from Doreen's paw onto Barry's helmet).
 // popIn(t, t0, dur=.3, overshoot=1.7) → 0 → ~1.1 → 1 scale;  popOut(t, t0, dur=.25) → 1 (swells
 //   a touch) → 0.  EXAMPLE: K.drawRulesSign(c, st.T, { pop: K.ramp(S.t, S.cue('rules_sign'), 1) })
 // wobble(t, t0, {amp=.12, freq=3, decay=4}) → damped oscillation (radians) for a hit sign/orange
 // withSquash(ctx, px, py, sx, sy, fn)   scale about a pivot, run fn, restore.
 // shakeEnv(t, t0, dur, attack=.04) → 0..1;  sfxShake(S, table=SHAKE_SFX, {t}) → px amplitude now
-// rumbleLevel(S, t?) → 0..1 env rumble from rumble_small/rumble_big/explosion/boil sfx (the spring
-//   stage feeds it to env.rumble unless you set one).
-// sfxTimes(S, 'pop' | ['pop','splash'] | /bonk/) → sorted scene-local times (offsets included).
+// rumbleLevel(S, t?) → 0..1 env rumble (RUMBLE_SFX: rumble_small .7, rumble_big 1, rumble_distant .3,
+//   explosion 1, eruption_bed .3, boil .35; other '*rumble*' .5) — the spring stage feeds it to
+//   env.rumble unless you set one.
+// sfxTimes(S, 'pop' | ['pop','splash'] | /bonk/) → sorted scene-local times (offsets included). A name
+//   that does not occur in the scene WARNS once, listing the scene's sfx (o.warn: false to silence).
 //   EXAMPLE: shake a prop on each hammer hit: K.wobble(S.t, K.sfxTimes(S, 'hammer').filter((h) => h <= S.t).pop() ?? -9)
 // beat(S, name, dur?) → {t0, dur, t1, u (= t − t0), k (0..1), active, before, after}  (throws on
 //   typos, like S.cue).  EXAMPLE: const b = K.beat(S, 'fish_leave'); if (b.active) ...
-// keyTime(S, 12.5 | 'cue+0.3' | 'cue@end') → scene-local seconds
 // ramp(t, t0, dur, ease='inOutCubic') → 0..1;  bump(t, t0, dur) → 0→1→0 (sin²);
 //   fadeWindow(t, t0, t1, fadeIn=.2, fadeOut=.2) → 0..1 plateau;  stepKeys(t, [[t, v]...], def)
 // shot(S, at?) → {name, index, t0, t1, dur, t (since the cut), k}
@@ -290,9 +378,24 @@
 //   lastLineBefore(S, who, t);  wordTime(S, line, 'bro', n=0) → when that word is spoken.
 // pathAt(pts, k) → {x, y, angle, dir, len, dist}   point at arc-length fraction k along [{x,y}...]
 // gaitPhase(dist, {who, scale, pose:'run'|'walk'}) → walkPhase that keeps the feet planted.
-//   EXAMPLE: const p = K.pathAt(SPRING.escapePath, k), sc = SPRING.depthScale(p.y) * 0.85;
-//            cast: { sunny: { x: p.x, y: p.y - 30, scale: sc, pose: 'run', inWater: false, flip: true,
-//                    walkPhase: K.gaitPhase(p.dist, { who: 'sunny', scale: sc }) } }
+// escapeRun(S, who, o) → castOpts extras for the s07 escape NOW: from run_to_raft each runner leaves
+//   his swim spot, runs SPRING.escapePath (the points ahead of him; feet on the path, scale
+//   depthScale × o.scale .42, run / stand when not moving) to the bank above the moored raft, then
+//   LEAPS into his raft seat (Barry at board_raft, Doreen +.28 s, Sunny — yanked along — +.56 s;
+//   .5 s, K.lob arc, scale → the seat's). → {x, y, scale, flip, pose, walkPhase, inWater, turn,
+//   aboard, phase: 'swim' | 'run' | 'wait' | 'leap' | 'aboard', runK}. o: raft (the cfg.raft object:
+//   seat + launch offset), keys [[t | 'cue', k 0..1], ...] (path progress override), lane, lag,
+//   leap (time), leapDur, scale, seat. The escape framing rides the same pace.
+//   RECIPE (s07):
+//     const raft = { dx: launch.before ? 0 : -620 * U.ease.inQuad(launch.k), wake: launch.before ? 0 : 1, passengers: {} };
+//     const cast = { barry: {...}, sunny: {...}, doreen: {...} };          // accessories, moods...
+//     if (S.t >= S.cue('run_to_raft')) for (const who of ['barry', 'sunny', 'doreen']) {
+//       const r = K.escapeRun(S, who, { raft, keys: who === 'sunny' ? sunnyStopsAtHisSign : undefined });
+//       if (r.aboard) raft.passengers[who] = { ...r, accessories: cast[who].accessories }; else Object.assign(cast[who], r);
+//     }
+//     K.drawSpringStage(ctx, t, S, { raft, cast, gerald: { on: 'mast' }, ... });   // no drawMooredRaft hook
+// raftSeatPose(S, who, raftCfg, pc) → {x, y, scale, flip, rot, pose, ground}   where the spring stage
+//   seats `who` on cfg.raft (a leap's landing point).  raftPoint(raftOpts, raftAnchors, lx, ly) → world.
 // officePuff(S, o?) → 0..1 window puff now;  officePuffKeys(S, o?) → [[t, v]...];  PUFF_KEYS.
 //
 // ═════════════════════════════════════════════════════════════════════════════ SPRING PROPS
@@ -305,9 +408,12 @@
 //   o.only = ['exit', ...].
 // drawMooredRaft(ctx, t, o) → raftAnchors   the S.S. TOLD YOU SO at SPRING.raftMoor (scale .5);
 //   any drawRaft option (build, x, wake, flagShow...). mooredRaftAnchors(t, o) → same, no draw
-//   (e.g. Gerald's hop target: on: { x: A.deck.x, y: A.deck.y, scale: .5 }).
+//   (e.g. Gerald's hop target: on: { x: A.deck.x, y: A.deck.y, scale: .5 }). For passengers / Gerald
+//   on the mast / the launch, prefer the spring stage's cfg.raft (same raft, same placement).
 // RULES_SIGN, EXIT_SIGNS, MOORED_RAFT, EXTRAS   the standard placements (shared by s01/s06/s07/s09).
-// REST_MOOD, SCENE_DEFAULTS, RAFT_SEATS, SUB_Y (= 600, subtitle strip top, screen px)
+// REST_MOOD, SCENE_DEFAULTS, SCENE_ROSTER, RAFT_SEATS / RAFT_FLIP (river), SPRING_RAFT_SEATS /
+//   SPRING_RAFT_FLIP (moored raft), ESCAPE (escapeRun pace), SHAKE_SFX / RUMBLE_SFX / TOUCH_SFX,
+//   SUB_Y (= 600, subtitle strip top, screen px)
 //
 // PERFORMANCE (1920x1080, wall time per frame incl. Skia's raster flush + readback; interleaved A/B
 //   vs the previous kit on identical frames, shared box at load 1.9–2.9, so medians swing):
@@ -368,10 +474,25 @@ const SCENE_DEFAULTS = {
   // the 12 seconds of chill: orange on, eyes shut → until his eyes open
   s07_eruption: { barry: { rest: [[0, 'worried'], ['barry_orange+1.6', 'chill'], ['barry_eyes_open+0.3', 'worried']] } },
   // vindicated: flat between lines, chill once the orange is on the helmet; no eye-rolls at 'bro'
-  s08_aftermath: { barry: { rest: [[0, 'deadpan'], ['doreen_orange+0.6', 'chill']], reactions: false } },
+  // doreen_orange: Doreen (behind the mast, facing Barry's back) scoots forward a little, raises her
+  // paw toward his helmet top (reach) and scoots back by the end of the beat. Her reach (~36 deck
+  // units) can't span the gap to his helmet top, so the orange itself is the scene's: in her paw
+  // (hold) → a gentle lob onto the helmet (K.lob, ~.4 s from doreen_orange+0.6) → it wobbles, it stays.
+  s08_aftermath: {
+    barry: { rest: [[0, 'deadpan'], ['doreen_orange+0.6', 'chill']], reactions: false },
+    doreen: {
+      seatX: [['doreen_orange', -46], ['doreen_orange+0.4', -30], ['doreen_orange+1.0', -30], ['doreen_orange@end', -46]],
+      reach: { to: 'barry', k: [['doreen_orange+0.1', 0], ['doreen_orange+0.5', 1], ['doreen_orange+0.8', 1], ['doreen_orange+1.2', 0]] },
+    },
+  },
   // roles reversed: blissful Barry, worried Sunny + Doreen
-  s09_epilogue: { barry: { rest: 'chill', reactions: false }, sunny: { rest: 'worried' }, doreen: { rest: 'worried' } },
+  // (and no auto-turns: 'No reason.' is delivered smug and STILL, not on a squash turn)
+  s09_epilogue: { barry: { rest: 'chill', reactions: false, turn: false }, sunny: { rest: 'worried' }, doreen: { rest: 'worried' } },
 };
+// Who is IN each scene (the turn history is built from this roster's DEFAULT blocking, so hiding /
+// moving / dropping someone for a few frames never rewrites anyone's facing). Default: all three
+// capybaras (barry only in the office). cfg.roster overrides.
+const SCENE_ROSTER = { s01_open: ['barry'], s05_therapy: ['barry'] };
 const SIZE = { barry: 0.94, sunny: 1.06, doreen: 0.97, extra: 0.95 };   // rig body size factors
 const PHASE = { barry: 0, sunny: 1.37, doreen: 2.71, extra: 0.5, gerald: 0.77, shelley: 3.3 };
 const SEED = { barry: 1.1, sunny: 2.3, doreen: 3.7, gerald: 4.9, shelley: 6.1, extra: 7.3 };
@@ -410,6 +531,7 @@ function stepKeys(t, keys, def) {
 function keyTime(S, k) {
   if (typeof k === 'number') return fin(k, 0);
   if (typeof k !== 'string') return fin(+k, 0);
+  if (/^\s*[+-]?(\d+\.?\d*|\.\d+)\s*$/.test(k)) return fin(parseFloat(k), 0);    // '12.5
   const m = /^\s*([A-Za-z0-9_]+)\s*(@end)?\s*(?:([+-])\s*([\d.]+))?\s*$/.exec(k);
   if (!m) { warnOnce('keyTime:' + k, `scene ${S.id}: cannot parse time "${k}"`); return 0; }
   let t = S.cue(m[1]);
@@ -440,6 +562,13 @@ function shot(S, at) {
   const t1 = i + 1 < cams.length ? cams[i + 1].t : S.duration;
   const name = i >= 0 ? cams[i].name : cams.length ? cams[0].name : 'default';
   return { name, index: Math.max(0, i), t0, t1, dur: Math.max(1e-3, t1 - t0), t: t - t0, k: clamp((t - t0) / Math.max(1e-3, t1 - t0)) };
+}
+// n-th occurrence (0-based) of this shot's name in the scene
+function shotInstance(S, sh) {
+  const cams = camList(S);
+  let n = 0;
+  for (let k = 0; k < sh.index && k < cams.length; k++) if (cams[k].name === sh.name) n++;
+  return n;
 }
 function sceneLines(S) {
   return memo(S, 'lines', () => S.lines().slice().sort((a, b) => a.ls - b.ls));
@@ -479,12 +608,17 @@ function wordTime(S, line, word, n = 0) {
   }
   return line.ls + frac * dur;
 }
-function sfxTimes(S, name) {
-  const key = 'sfx:' + (name instanceof RegExp ? 're:' + name.source : [].concat(name).join(','));
-  return memo(S, key, () => {
-    const test = name instanceof RegExp ? (n) => name.test(n) : Array.isArray(name) ? (n) => name.includes(n) : (n) => n === name;
+function sfxTimes(S, name, o = {}) {
+  const key = 'sfx:' + (name instanceof RegExp ? 're:' + name.source + '/' + name.flags : [].concat(name).join(','));
+  const r = memo(S, key, () => {
+    const test = name instanceof RegExp ? (n) => { name.lastIndex = 0; return name.test(n); } : Array.isArray(name) ? (n) => name.includes(n) : (n) => n === name;
     return S.tl.sfx.filter((x) => x.scene === S.id && test(x.name)).map((x) => x.time - S.scene.start).sort((a, b) => a - b);
   });
+  if (!r.length && o.warn !== false) {
+    const have = [...new Set(sceneSfx(S).map((e) => e.name))].join(', ') || 'none';
+    warnOnce(`sfxTimes:${S.id}:${key}`, `scene ${S.id}: no sfx matching ${name instanceof RegExp ? name : JSON.stringify(name)} (this scene has: ${have})`);
+  }
+  return r;
 }
 
 // Point at arc-length fraction k (0..1) along a polyline [{x,y}...] → {x, y, angle, dir (+1 → moving
@@ -507,13 +641,80 @@ function gaitPhase(dist, o) {
   return fin(dist, 0) / Math.max(1, a.stride || 100);
 }
 
+// ═════════════════════════════════════════════════════════════════════════════ escape run
+// s07 run_to_raft → board_raft: each runner leaves his swim spot, runs SPRING.escapePath (only the
+// points ahead of him) to the bank above the moored raft, waits there if early, then LEAPS into his
+// raft seat (lanes: Barry first at board_raft, Doreen +.28 s, Sunny — yanked along — +.56 s).
+const ESCAPE = { scale: 0.42, lane: { barry: 0, doreen: 0.28, sunny: 0.56 }, lag: { barry: 0, doreen: 0.15, sunny: 0.1 }, leapDur: 0.5, accel: 0.12 };
+function escapePathFor(A, who) {
+  const ep = A.escapePath;
+  const home = A.swimSpots[who] || ep[0];
+  const pts = [{ x: home.x, y: home.y }];
+  for (const p of ep.slice(0, -1)) if (p.x < home.x - 20) pts.push({ x: p.x, y: p.y });
+  if (pts.length < 2) pts.push({ ...ep[ep.length - 2] });
+  return pts;
+}
+function escapeTimes(S, o = {}) {
+  const run0 = keyTime(S, o.start ?? 'run_to_raft');
+  const board = o.board != null ? keyTime(S, o.board) : S.has('board_raft') ? S.cue('board_raft') : run0 + 4.5;
+  return { run0, board };
+}
+// path progress 0..1 (1 = the bank end) at time t: quick acceleration, then a steady run arriving
+// just before the leap; o.keys = [[t | 'cue', k], ...] overrides (e.g. Sunny stopping at his sign)
+function escapeK(S, who, t, o = {}) {
+  if (Array.isArray(o.keys)) return clamp(keyedNum(S, o.keys, t));
+  const { run0, board } = escapeTimes(S, o);
+  const lane = fin(o.lane, ESCAPE.lane[who] ?? 0), lag = fin(o.lag, ESCAPE.lag[who] ?? 0);
+  const leapT0 = o.leap != null ? keyTime(S, o.leap) : board + lane;
+  const u = clamp((t - run0 - lag) / Math.max(0.3, leapT0 - 0.15 - run0 - lag));
+  const a = ESCAPE.accel;
+  return u < a ? (u * u) / (2 * a * (1 - a / 2)) : (u - a / 2) / (1 - a / 2);
+}
+// → castOpts extras for `who` now: {x, y, scale, flip, pose, walkPhase, inWater: false, turn: false,
+//   aboard, phase: 'swim' | 'run' | 'wait' | 'leap' | 'aboard', runK}. Before run_to_raft: {} (still
+//   swimming). aboard (from the leap on): feed it to cfg.raft.passengers[who] (drawn IN the raft),
+//   else to cfg.cast[who]. o: raft (the cfg.raft object, for the seat), scale (.55 × depthScale),
+//   lane / lag / leap / leapDur / keys / start / board.
+function escapeRun(S, who, o = {}) {
+  const A = springAnchors(o.setting || S.scene.setting);
+  const { run0, board } = escapeTimes(S, o);
+  const t = S.t;
+  if (t < run0) return { phase: 'swim', aboard: false, runK: 0 };
+  const lane = fin(o.lane, ESCAPE.lane[who] ?? 0);
+  const leapT0 = o.leap != null ? keyTime(S, o.leap) : board + lane;
+  const leapDur = Math.max(0.15, fin(o.leapDur, ESCAPE.leapDur));
+  const pts = escapePathFor(A, who);
+  const runScale = fin(o.scale, ESCAPE.scale);
+  const k = escapeK(S, who, Math.min(t, leapT0), o);
+  const p = pathAt(pts, k);
+  const sc = A.depthScale(p.y) * runScale;
+  const gr = (pose, scale) => baseAnchors({ who, scale, pose, accessories: who === 'barry' ? { helmet: true } : null }).groundDY;
+  const wp = gaitPhase(p.dist, { who, scale: sc });
+  if (t < leapT0) {
+    // standing when not moving (arrived early, or held by o.keys — Sunny at his sign)
+    const moving = k < 1 && Math.abs(p.dist - pathAt(pts, escapeK(S, who, t - 0.06, o)).dist) > 0.8;
+    const pose = moving ? 'run' : 'stand';
+    return { x: p.x, y: p.y - gr(pose, sc), scale: sc, flip: p.dir < 0, pose, walkPhase: wp, inWater: false, turn: false, aboard: false, phase: moving ? 'run' : 'wait', runK: k };
+  }
+  const seat = raftSeatPose(S, who, o.raft ?? true, o.seat || {});
+  if (t >= leapT0 + leapDur) return { pose: 'sit', inWater: false, turn: false, aboard: true, phase: 'aboard', runK: 1 };
+  const u = (t - leapT0) / leapDur;
+  const arc = lob(t, leapT0, leapDur, { x: p.x, y: p.y }, seat.ground, { h: 34 });
+  const s2 = lerp(sc, seat.scale, ease.inOutSine(u));
+  const pose = u < 0.82 ? 'run' : 'sit';
+  return { x: arc.x, y: arc.y - gr(pose, s2), scale: s2, flip: seat.flip, pose, walkPhase: wp + 0.35 * u, rot: lerp(-0.12, seat.rot, u), inWater: false, turn: false, aboard: true, phase: 'leap', runK: 1 };
+}
+
 // ═════════════════════════════════════════════════════════════════════════════ gag envelopes
 // Cartoon take: anticipation squash → stretch with overshoot → damped settle.
 function take(t, t0, o = {}) {
   const A = o.anticipation ?? 0.1, St = o.stretch ?? 0.12, Se = o.settle ?? 0.45, amt = o.amount ?? 1;
   const u = t - t0;
   let sy = 1, phase = 'idle';
-  if (!Number.isFinite(u)) return { sx: 1, sy: 1, dy: 0, k: 0, phase };
+  if (!Number.isFinite(u)) {
+    if (!Number.isFinite(t0) && !o.quiet) warnOnce('take:t0', `take(): t0 is ${t0} (a missing sfx / cue?) — no take is played (pass {quiet: true} to silence)`);
+    return { sx: 1, sy: 1, dy: 0, k: 0, phase };
+  }
   if (u >= -A && u < 0) {
     phase = 'anticipate';
     sy = 1 - 0.12 * amt * ease.inOutSine((u + A) / A);
@@ -547,6 +748,25 @@ function wobble(t, t0, o = {}) {
   const amp = o.amp ?? 0.12, f = o.freq ?? 3, d = o.decay ?? 4;
   return amp * Math.sin(u * f * TAU) * Math.exp(-u * d);
 }
+// A gentle lob from `from` to `to` (world points) over [t0, t0 + dur]: a parabola peaking o.h above
+// the higher end (default max(24, .3 × distance)), ease-out-in timing → {x, y, k, rot, before, active,
+// done}. EXAMPLE (s08): the orange leaves Doreen's paw and lands on Barry's helmet top (stackTop).
+function lob(t, t0, dur, from, to, o = {}) {
+  const d = Math.max(1e-3, fin(dur, 0.4));
+  const u = (t - t0) / d;
+  const k = clamp(fin(u, 0));
+  const a = { x: fin(from && from.x, 0), y: fin(from && from.y, 0) }, b = { x: fin(to && to.x, a.x), y: fin(to && to.y, a.y) };
+  const h = fin(o.h, Math.max(24, 0.3 * Math.hypot(b.x - a.x, b.y - a.y)));
+  const top = Math.min(a.y, b.y) - h;
+  // quadratic Bézier through the apex: control point so the curve peaks at `top`
+  const cy = 2 * top - (a.y + b.y) / 2;
+  const kk = ease.inOutSine(k);
+  const v = 1 - kk;
+  return {
+    x: lerp(a.x, b.x, kk), y: v * v * a.y + 2 * v * kk * cy + kk * kk * b.y, k: kk,
+    rot: fin(o.spin, 2.5) * kk, before: !(u >= 0), active: u >= 0 && u < 1, done: u >= 1,
+  };
+}
 function withSquash(ctx, px, py, sx, sy, fn) {
   sx = fin(sx, 1); sy = fin(sy, 1); px = fin(px, 0); py = fin(py, 0);
   if (Math.abs(sx - 1) < 1e-4 && Math.abs(sy - 1) < 1e-4) { fn(); return; }
@@ -558,21 +778,32 @@ function withSquash(ctx, px, py, sx, sy, fn) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════ shake
-// amp = screen px at peak, dur = seconds; gain from the timeline mixes in at 50 %.
+// amp = screen px at peak, dur = seconds. Keyed to the CURRENT sfx names of build/timeline.json /
+// sfx.py; any other name containing 'rumble' falls back to RUMBLE_FALLBACK. The amplitude does NOT
+// follow the mix gain (an audio balance decision must not change the picture) unless
+// opts.shakeMixGain (then × (0.5 + 0.5 · gain), the old behaviour).
 const SHAKE_SFX = {
   rumble_small: { amp: 5, dur: 1.7, attack: 0.15 },
   rumble_big: { amp: 13, dur: 2.0, attack: 0.1 },
+  rumble_distant: { amp: 1.6, dur: 2.4, attack: 0.07 },      // s09: a far hill sneezes — a tremble
   explosion: { amp: 22, dur: 2.6, attack: 0.03 },
+  eruption_bed: { amp: 2.2, dur: 24, attack: 1.2 },          // the 24 s roar under the eruption
   boil: { amp: 2.5, dur: 1.4, attack: 0.3 },
   bonk: { amp: 3, dur: 0.3 },
   thud: { amp: 3, dur: 0.3 },
   land: { amp: 1.5, dur: 0.25 },
   hammer: { amp: 1.6, dur: 0.22 },
+  knock: { amp: 1.2, dur: 0.2 },
   big_splash: { amp: 4, dur: 0.6 },
   splat: { amp: 1.5, dur: 0.2 },
   glass_pop: { amp: 1.5, dur: 0.2 },
 };
-const RUMBLE_SFX = { rumble_small: 0.7, rumble_big: 1, explosion: 1, boil: 0.35 };
+const RUMBLE_FALLBACK = { amp: 4, dur: 2.0, attack: 0.12 };
+// env.rumble level per sfx (shaking leaves, falling dust); other '*rumble*' names → .5
+const RUMBLE_SFX = { rumble_small: 0.7, rumble_big: 1, rumble_distant: 0.3, explosion: 1, eruption_bed: 0.3, boil: 0.35 };
+// sfx that mark Gerald's touch-down (landTiming): name → touch offset after the sfx start
+const TOUCH_SFX = { land: 0, thud: 0, flaps_land: 1.5 };
+const shakeDef = (name, table) => table[name] || (table === SHAKE_SFX && /rumble/.test(name) ? RUMBLE_FALLBACK : null);
 const SHAKE_ROT_MAX = 0.014;     // ≈ 0.8°
 function shakeEnv(t, t0, dur, attack = 0.04) {
   const u = t - t0;
@@ -581,23 +812,27 @@ function shakeEnv(t, t0, dur, attack = 0.04) {
   const k = (u - attack) / Math.max(1e-6, dur - attack);
   return (1 - k) * (1 - k);
 }
+function sceneSfx(S) {
+  return memo(S, 'sfxlist', () => S.tl.sfx.filter((x) => x.scene === S.id).map((x) => ({ name: x.name, t: x.time - S.scene.start, gain: x.gain == null ? 1 : x.gain })));
+}
 function sfxShake(S, table = SHAKE_SFX, opts = {}) {
   const t = opts.t != null ? opts.t : S.t;
-  const list = memo(S, 'sfxlist', () => S.tl.sfx.filter((x) => x.scene === S.id).map((x) => ({ name: x.name, t: x.time - S.scene.start, gain: x.gain == null ? 1 : x.gain })));
   let a = 0;
-  for (const e of list) {
-    const d = table[e.name];
+  for (const e of sceneSfx(S)) {
+    const d = shakeDef(e.name, table || SHAKE_SFX);
     if (!d) continue;
-    a += d.amp * (0.5 + 0.5 * e.gain) * shakeEnv(t, e.t, d.dur, d.attack ?? 0.04);
+    a += d.amp * (opts.shakeMixGain ? 0.5 + 0.5 * e.gain : 1) * shakeEnv(t, e.t, d.dur, d.attack ?? 0.04);
   }
   return a;
 }
 function rumbleLevel(S, t) {
   t = t != null ? t : S.t;
   let r = 0;
-  for (const name in RUMBLE_SFX) {
-    const d = SHAKE_SFX[name];
-    for (const t0 of sfxTimes(S, name)) r = Math.max(r, RUMBLE_SFX[name] * shakeEnv(t, t0, d.dur + 0.4, d.attack ?? 0.1));
+  for (const e of sceneSfx(S)) {
+    const lv = RUMBLE_SFX[e.name] ?? (/rumble/.test(e.name) ? 0.5 : 0);
+    if (!lv) continue;
+    const d = shakeDef(e.name, SHAKE_SFX) || RUMBLE_FALLBACK;
+    r = Math.max(r, lv * shakeEnv(t, e.t, d.dur + 0.4, d.attack ?? 0.1));
   }
   return clamp(r);
 }
@@ -658,9 +893,34 @@ function rippleColor(envShort) {
 // ═════════════════════════════════════════════════════════════════════════════ scene defaults
 function withSceneDefaults(S, who, extra) {
   const d = SCENE_DEFAULTS[S.id] && SCENE_DEFAULTS[S.id][who];
-  if (!d) return extra || {};
+  if (!d) return resolveKeyed(S, extra || {});
   const out = { ...d, ...(extra || {}) };
   for (const k in d) if (extra && extra[k] === undefined && k in extra) out[k] = d[k];
+  return resolveKeyed(S, out);
+}
+// KEYED numbers: these cast options may be given as [[t | 'cue+0.3', value], ...] — eased
+// (inOutSine) between keys, held before the first / after the last. EXAMPLE seatX: [['doreen_orange', -58],
+// ['doreen_orange+0.5', 30]]. reach.k may be keyed too.
+const KEYED_NUM = ['seatX', 'pawUp', 'tiltAdd', 'headTilt', 'eyes', 'z', 'x', 'y', 'scale', 'rot', 'talkGain', 'walkPhase'];
+const isKeyList = (v) => Array.isArray(v) && v.length > 0 && Array.isArray(v[0]) && v[0].length === 2 && typeof v[0][1] === 'number';
+function keyedNum(S, keys, t) {
+  t = t != null ? t : S.t;
+  const K2 = keys.map(([k, v]) => [keyTime(S, k), fin(v, 0)]).sort((a, b) => a[0] - b[0]);
+  if (t <= K2[0][0]) return K2[0][1];
+  for (let i = 1; i < K2.length; i++) {
+    if (t < K2[i][0]) {
+      const [t0, v0] = K2[i - 1], [t1, v1] = K2[i];
+      return lerp(v0, v1, ease.inOutSine(clamp((t - t0) / Math.max(1e-6, t1 - t0))));
+    }
+  }
+  return K2[K2.length - 1][1];
+}
+function resolveKeyed(S, o) {
+  let out = o;
+  for (const k of KEYED_NUM) {
+    if (isKeyList(o[k])) { if (out === o) out = { ...o }; out[k] = keyedNum(S, o[k]); }
+  }
+  if (o.reach && typeof o.reach === 'object' && isKeyList(o.reach.k)) { if (out === o) out = { ...o }; out.reach = { ...o.reach, k: keyedNum(S, o.reach.k) }; }
   return out;
 }
 function defaultRest(S, who) {
@@ -703,11 +963,58 @@ function raftPoint(ro, RA, lx, ly) {
   const x = lx * f * s, y = ly * s;
   return { x: ro.x + x * Math.cos(a) - y * Math.sin(a), y: RA.waterline + x * Math.sin(a) + y * Math.cos(a) };
 }
-// deck-local seats (raft units, raft scale 1.1): Sunny at the stern facing Doreen, Doreen amidships
-// facing Sunny, Barry at the bow facing AHEAD — the mast rises between Doreen's back and Barry's, so it
-// never grows out of anyone's head, and a Barry close-up has open water in front of him.
-const RAFT_SEATS = { sunny: -158, doreen: -30, barry: 84 };
-const RAFT_FLIP = { sunny: false, doreen: true, barry: false };
+// ── the moored raft on the SPRING stage (cfg.raft — s07 board_raft / raft_launch). Passengers sit
+// IN it (back → passengers → front), all facing LEFT (downriver, the launch direction): Barry at the
+// front, Doreen behind him (the mast behind her back), Sunny at the stern (his snout clear of the mast).
+const SPRING_RAFT_SEATS = { barry: -146, doreen: -36, sunny: 128 };
+const SPRING_RAFT_FLIP = { barry: true, doreen: true, sunny: true };
+const SPRING_RAFT_CAST = 1.15;       // passenger scale = RAFT_CAST_SCALE × raft scale / 1.1 × this
+const PROPS_RAFT_SEATS = [-128, -44, 44, 126];   // = props RAFT.seats (deck-local) for {seat: i}
+function springRaftOpts(S, rc) {
+  const c = rc && typeof rc === 'object' ? rc : {};
+  const r = { x: SP.raftMoor.x, y: SP.raftMoor.y, t: S.T, ...MOORED_RAFT, ...finiteOpts(c) };
+  for (const k of ['passengers', 'depthY', 'dx', 'dy']) delete r[k];
+  r.x = clamp(fin(r.x, SP.raftMoor.x) + fin(c.dx, 0), -XY_LIM, XY_LIM);
+  r.y = clamp(fin(r.y, SP.raftMoor.y) + fin(c.dy, 0), -XY_LIM, XY_LIM);
+  r.scale = clamp(posv(r.scale, MOORED_RAFT.scale, 0.05), 0.05, 8);
+  return r;
+}
+const stripPos = (cc) => {
+  const r = { ...cc };
+  for (const k of ['x', 'y', 'scale', 'flip', 'pose', 'rot', 'walkPhase', 'inWater', 'hidden', 'seatX', 'seat']) delete r[k];
+  return r;
+};
+// a passenger's seat pose on raft R = {opts, anchors, rest} (layout raft) → layout base. pc: seat (props
+// seat index 0..3) | seatX (deck-local), scale, flip, pose ('sit'), accessories; spring: moored-raft
+// seating (SPRING_RAFT_*), else the river's (RAFT_*).
+function raftSeatBase(who, R, pc = {}, spring = false) {
+  const ro = R.opts, RA = R.anchors, RA0 = R.rest || R.anchors;
+  const pose = pc.pose || 'sit';
+  const sc = clamp(posv(pc.scale, spring ? RAFT_CAST_SCALE[who] * ro.scale / 1.1 * SPRING_RAFT_CAST : RAFT_CAST_SCALE[who], 0.02), 0.02, 8);
+  let seatX = pc.seatX;
+  if (seatX == null && pc.seat != null && PROPS_RAFT_SEATS[pc.seat] != null) seatX = PROPS_RAFT_SEATS[pc.seat];
+  seatX = fin(seatX, (spring ? SPRING_RAFT_SEATS : RAFT_SEATS)[who] ?? 0);
+  const helmet = !!(pc.accessories && pc.accessories.helmet) || (!spring && who === 'barry' && !(pc.accessories && pc.accessories.helmet === false));
+  const g = baseAnchors({ who, scale: sc, pose, accessories: helmet ? { helmet: true } : null }).groundDY;
+  const seat = raftPoint(ro, RA, seatX, RA.sitY ?? -24), seat0 = raftPoint(ro, RA0, seatX, RA0.sitY ?? -24);
+  const flip = spring ? (SPRING_RAFT_FLIP[who] !== !!ro.flip) : RAFT_FLIP[who];
+  return { x: seat.x, y: seat.y - g, rest: { x: seat0.x, y: seat0.y - g }, scale: sc, flip, pose, rot: RA.angle, inWater: false, turn: false, accessories: helmet ? { helmet: true } : {} };
+}
+// World pose of `who` sitting on the spring stage's moored raft (cfg.raft, same options) — e.g. the
+// landing point of a leap onto it: {x, y (drawCast origin), scale, flip, rot, pose, ground}.
+function raftSeatPose(S, who, raftCfg = true, pc = {}) {
+  const ro = springRaftOpts(S, raftCfg);
+  const R = { opts: ro, anchors: PROPS.raftAnchors(ro), rest: PROPS.raftAnchors({ ...ro, bob: 0, rock: 0 }) };
+  const b = raftSeatBase(who, R, pc, true);
+  return { x: b.x, y: b.y, scale: b.scale, flip: pc.flip != null ? !!pc.flip : b.flip, rot: b.rot, pose: b.pose, ground: { x: b.x, y: b.y + baseAnchors({ who, scale: b.scale, pose: b.pose, accessories: b.accessories }).groundDY } };
+}
+// deck-local seats (raft units, raft scale 1.1): everyone faces the BOW (right, the drift direction) in
+// a row — Sunny at the stern, Doreen behind the mast (her snout clear of it and out of Barry's river
+// close-up), Barry at the bow with open water ahead; the mast rises between Doreen's snout and
+// Barry's back, never out of a head. (s08 doreen_orange slides Doreen up behind Barry: SCENE_DEFAULTS.)
+const RAFT_SEATS = { sunny: -150, doreen: -46, barry: 84 };
+const RAFT_FLIP = { sunny: false, doreen: false, barry: false };
+const RAFT_Z = { sunny: 0, doreen: 1, barry: 2 };     // draw order on the deck (cast z overrides)
 const RAFT_CAST_SCALE = { sunny: 0.55, barry: 0.58, doreen: 0.56 };
 
 function castCfgOf(S, cfg, who) { return withSceneDefaults(S, who, (cfg.cast && cfg.cast[who]) || {}); }
@@ -717,10 +1024,11 @@ function buildLayout(S, cfg = {}) {
   const T = S.T;
   const L = { S, setting, kind, chars: {}, points: {}, gerald: null, raft: null, T };
   const castCfg = cfg.cast || {};
+  for (const k in castCfg) if (!CAPY_CAST.includes(k)) warnOnce(`castkey:${S.id}:${k}`, `scene ${S.id}: cfg.cast.${k} is not a cast member (barry | sunny | doreen) — ignored${k === 'gerald' ? ' (Gerald is cfg.gerald)' : ''}`);
   const want = (who) => castCfg[who] !== false && !(castCfg[who] && castCfg[who].hidden);
-  const add = (who, base) => {
+  const add = (who, base, ccIn) => {
     const over = {};
-    const cc = castCfgOf(S, cfg, who);
+    const cc = ccIn || castCfgOf(S, cfg, who);
     for (const k of POS_KEYS) if (cc[k] !== undefined) over[k] = cc[k];
     const acc = { ...(base.accessories || {}), ...(cc.accessories || {}) };
     const c = { who, ...base, ...over, accessories: acc };
@@ -731,11 +1039,26 @@ function buildLayout(S, cfg = {}) {
     c.cc = cc;
     Object.assign(c, baseAnchors(c));
     L.chars[who] = c;
+    return c;
   };
   if (kind === 'spring') {
     const A = springAnchors(setting);
+    // cfg.raft: the moored raft (s06 / s07) as part of the stage; passengers sit IN it
+    const rc = cfg.raft;
+    if (rc) {
+      const ro = springRaftOpts(S, rc);
+      L.raft = { opts: ro, anchors: PROPS.raftAnchors(ro), rest: PROPS.raftAnchors({ ...ro, bob: 0, rock: 0 }), spring: true };
+    }
+    const pass = (rc && typeof rc === 'object' && rc.passengers) || {};
     for (const who of CAPY_CAST) {
       if (!want(who)) continue;
+      if (L.raft && pass[who]) {
+        const pc = pass[who] === true ? {} : resolveKeyed(S, pass[who]);
+        const cc = { ...stripPos(castCfgOf(S, cfg, who)), ...pc };
+        const c = add(who, raftSeatBase(who, L.raft, cc, true), cc);
+        c.passenger = true;
+        continue;
+      }
       const sp = A.swimSpots[who];
       add(who, { x: sp.x, y: sp.y, scale: sp.scale, flip: !!sp.flip, pose: 'swim', inWater: true, turn: who === 'barry' });
     }
@@ -768,11 +1091,12 @@ function buildLayout(S, cfg = {}) {
   } else {
     for (const who of CAPY_CAST) if (castCfg[who]) add(who, { x: 640, y: 600, scale: 1, flip: false, pose: 'swim', inWater: false, turn: false });
   }
+  L.homes = rosterHomes(S, cfg, L);
   // facing (turns) needs everyone's base positions
   for (const who in L.chars) {
     const c = L.chars[who];
     const f = facingAt(S, who, L, c.cc);
-    c.flip = f.flip; c.face = f.face; c.sx = f.sx; c.sy = f.sy; c.turning = f.turning; c.turnHT = f.headTurn; c.turnK = f.k;
+    c.flip = f.flip; c.face = f.face; c.sx = f.sx; c.sy = f.sy; c.turning = f.turning; c.turnHT = f.headTurn; c.turnK = f.k; c.lastTurn = f.lastTurn; c.turnList = f.turns || null; c.turnStart = f.start;
     const fx = c.flip ? -1 : 1;
     c.eye = { x: c.x + fx * c.eyeDX, y: c.y + c.eyeDY };
     c.headTop = { x: c.x + fx * c.topDX, y: c.y + c.topDY };
@@ -792,7 +1116,7 @@ function buildLayout(S, cfg = {}) {
       L.gerald = { host, head: { x: h.headTop.x + (h.flip ? -1 : 1) * 4 * h.scale, y: h.headTop.y - 78 * h.scale * 0.75 } };
     } else if (g.x != null) {
       L.gerald = { host: null, head: { x: g.x, y: g.y - 80 * (g.scale ?? 0.75) } };
-    } else if (kind === 'river' && L.raft) {
+    } else if (L.raft && (kind === 'river' || g.on === 'mast' || g.on === 'flag')) {
       const p = L.raft.anchors.mastTop;
       L.gerald = { host: null, head: { x: p.x, y: p.y - 60 } };
     }
@@ -811,19 +1135,52 @@ function pickPos(o) {
 // Uses the DEFAULT blocking (home spots), so moving someone mid-scene never rewrites the turn
 // history (no instant flips); cc.turnSides === 'live' uses the live positions instead.
 function sideSig(L, me, live) {
-  const P = (c) => (live ? c : c.home || c);
+  if (live) {
+    return CAPY_CAST.map((w) => {
+      const o = L.chars[w];
+      if (!o || w === me.who) return '-';
+      if (Math.abs(o.x - me.x) < 20) return '0';
+      return o.x < me.x ? 'L' : 'R';
+    }).join('');
+  }
+  // the scene's roster at its DEFAULT blocking: independent of who is drawn / hidden / moved now
+  const H = L.homes || {};
+  const mh = H[me.who] || me.home || me;
   return CAPY_CAST.map((w) => {
-    const o = L.chars[w];
+    const o = H[w];
     if (!o || w === me.who) return '-';
-    const ox = P(o).x, mx = P(me).x;
-    if (Math.abs(ox - mx) < 20) return '0';
-    return ox < mx ? 'L' : 'R';
+    if (Math.abs(o.x - mh.x) < 20) return '0';
+    return o.x < mh.x ? 'L' : 'R';
   }).join('');
 }
+// default (home) positions of the scene's roster for this setting — not affected by cfg.cast
+// (hidden / false / moved): swimSpots in the spring, the default raft seats on the river
+function rosterOf(S, cfg = {}) {
+  const r = Array.isArray(cfg.roster) ? cfg.roster : SCENE_ROSTER[S.id] || CAPY_CAST;
+  return CAPY_CAST.filter((w) => r.includes(w));
+}
+function rosterHomes(S, cfg, L) {
+  const out = {};
+  const roster = rosterOf(S, cfg);
+  if (L.kind === 'spring') {
+    const A = springAnchors(L.setting);
+    for (const w of roster) if (A.swimSpots[w]) out[w] = { x: A.swimSpots[w].x, y: A.swimSpots[w].y };
+  } else if (L.kind === 'river' && L.raft) {
+    for (const w of roster) out[w] = raftPoint(L.raft.opts, L.raft.rest, RAFT_SEATS[w], L.raft.rest.sitY ?? -24);
+  } else if (L.kind === 'office') {
+    if (roster.includes('barry')) out.barry = { x: EO.OFFICE.couch.x, y: EO.OFFICE.couch.y };
+  } else {
+    for (const w in L.chars) out[w] = { ...L.chars[w].home };
+  }
+  return out;
+}
+// memo signature of a rest spec; null = not memoisable (a function: closures with different
+// captured values share their source text, so they are recomputed instead of hashed)
 function restSig(rest) {
   if (rest === undefined) return 'd';
-  if (typeof rest === 'function') return 'f' + hashStr(String(rest));
-  try { return 'j' + JSON.stringify(rest); } catch (e) { return 'x'; }
+  if (typeof rest === 'function') return null;
+  if (Array.isArray(rest) && rest.some((k) => !Array.isArray(k) || typeof k[0] === 'function' || typeof k[1] === 'function')) return null;
+  try { return 'j' + JSON.stringify(rest); } catch (e) { return null; }
 }
 const isCalm = (m) => m === 'chill' || m === 'sleepy';
 // Barry's turn schedule for this scene + blocking: [{t, from, to, instant}]. Pure (memoised per
@@ -832,8 +1189,12 @@ function facingTurns(S, who, L, cc) {
   const me = L.chars[who];
   const sides = sideSig(L, me, cc.turnSides === 'live');
   const mode = cc.turn === 'always' ? 'always' : 'auto';
-  const key = `turns:${who}:${sides}:${me.baseFlip}:${L.kind}:${restSig(cc.rest)}:${mode}`;
-  return memo(S, key, () => {
+  // EVERY input of the schedule is in the key (sides, start facing, rest, mode, reactions — the
+  // eye-rolls defer addressed turns); an un-hashable rest (a function) is recomputed every call
+  const rs = restSig(cc.rest);
+  const key = `turns:${who}:${sides}:${me.baseFlip}:${L.kind}:${rs}:${mode}:${cc.reactions === false ? 'nr' : 'r'}:${cc.turnSides === 'live' ? 'live' : 'home'}`;
+  return rs == null ? computeTurns() : memo(S, key, computeTurns);
+  function computeTurns() {
     const sideOf = (other) => { const ch = sides[CAPY_CAST.indexOf(other)]; return ch === 'L' ? true : ch === 'R' ? false : null; };
     const rolls = cc.reactions === false ? [] : reactionList(S, who).filter((r) => r.kind === 'eyeroll');
     const ev = [];
@@ -855,28 +1216,28 @@ function facingTurns(S, who, L, cc) {
     ev.sort((a, b) => a.t - b.t);
     let start = me.baseFlip;
     let state = start;
-    let turns = [];
+    const evs = [];
     for (const e of ev) {
-      if (e.flip === state) continue;
-      if (e.t < 0.4 && !turns.length) { start = e.flip; state = e.flip; continue; }   // settled at the head of the scene
-      turns.push({ t: e.t, to: e.flip });
-      state = e.flip;
+      if (!evs.length && e.t < 0.4) { start = e.flip; state = e.flip; continue; }   // settled at the head of the scene
+      evs.push(e);
     }
-    // never across / right on a cut: a turn starting < .35 s before a cut, overlapping it, or < .12 s
-    // after it is moved .2 s into the new shot (or, in a shot too short for it, happens AT the cut)
-    const cuts = cutTimes(S);
-    for (const tr of turns) {
-      for (let i = 0; i < cuts.length; i++) {
-        const tc = cuts[i];
-        if ((tr.t > tc - 0.35 && tr.t < tc + 0.12) || (tr.t < tc && tr.t + TURN_SPAN > tc)) {
-          const next = i + 1 < cuts.length ? cuts[i + 1] : S.duration;
-          if (tc + 0.2 + TURN_SPAN < next - 0.05) tr.t = tc + 0.2;
-          else { tr.t = tc; tr.instant = true; }
-          break;
-        }
-      }
+    // PLACEMENT: never across / right on a cut — a turn starting < .35 s before a cut, overlapping it,
+    // or < .12 s after it is moved .2 s into the new shot (or, in a shot too short for it, happens AT
+    // the cut); never inside ANOTHER character's close-up (he would swing his head / Gerald into the
+    // edge of their frame): deferred to that shot's end (then .2 s into the next shot).
+    for (const e of evs) { const p = placeTurn(S, who, e.t); e.p = p ? p.t : Infinity; e.instant = p ? p.instant : false; }
+    // the facing after each placed time = the LATEST intent (original time) placed by then, so a
+    // deferred turn never overrides a newer one
+    const order = evs.slice().sort((a, b) => a.p - b.p || a.t - b.t);
+    const turns = [];
+    let best = null;
+    for (let i = 0; i < order.length; i++) {
+      const e = order[i];
+      if (!(e.p < Infinity)) break;
+      if (!best || e.t >= best.t) best = e;
+      if (i + 1 < order.length && order[i + 1].p === e.p) continue;    // finish the group first
+      turns.push({ t: e.p, to: best.flip, instant: e.instant });
     }
-    turns.sort((a, b) => a.t - b.t);
     const out = [];
     state = start;
     for (const tr of turns) {
@@ -888,7 +1249,30 @@ function facingTurns(S, who, L, cc) {
       state = tr.to;
     }
     return { start, turns: out };
-  });
+  }
+}
+// where a turn wanted at t actually starts: {t, instant} | null (never: deferred past the scene end)
+const isOtherCU = (name, who) => typeof name === 'string' && /_cu$/.test(name) && name !== who + '_cu';
+function placeTurn(S, who, t0) {
+  const cuts = cutTimes(S);
+  let t = t0, instant = false;
+  for (let g = 0; g < 8; g++) {
+    instant = false;
+    for (let i = 0; i < cuts.length; i++) {
+      const tc = cuts[i];
+      if ((t > tc - 0.35 && t < tc + 0.12) || (t < tc && t + TURN_SPAN > tc)) {
+        const next = i + 1 < cuts.length ? cuts[i + 1] : S.duration;
+        if (tc + 0.2 + TURN_SPAN < next - 0.05) t = tc + 0.2;
+        else { t = tc; instant = true; }
+        break;
+      }
+    }
+    const sh = shot(S, t + 1e-4);
+    if (!isOtherCU(sh.name, who)) return { t, instant };
+    if (sh.t1 >= S.duration - 1e-3) return null;
+    t = sh.t1;
+  }
+  return { t, instant };
 }
 function facingAt(S, who, L, cc = {}, tAt) {
   const me = L.chars[who];
@@ -913,9 +1297,10 @@ function facingAt(S, who, L, cc = {}, tAt) {
     if (!enabled) return still(me.baseFlip);
     ({ turns, start } = facingTurns(S, who, L, cc));
   }
-  let flip = start, face = sgn(start), sx = 1, sy = 1, turning = false, headTurn = 0, k = 0;
+  let flip = start, face = sgn(start), sx = 1, sy = 1, turning = false, headTurn = 0, k = 0, lastTurn = null;
   for (const tr of turns) {
     if (t < tr.t) break;
+    lastTurn = tr;
     if (tr.instant) { flip = tr.to; face = sgn(tr.to); sx = 1; sy = 1; turning = false; headTurn = 0; k = 0; continue; }
     const u = (t - tr.t) / TURN_DUR;
     flip = u < 0.5 ? tr.from : tr.to;
@@ -937,7 +1322,7 @@ function facingAt(S, who, L, cc = {}, tAt) {
       sy = 1 - 0.03 * Math.sin(Math.PI * v);
     }
   }
-  return { flip, face, sx, sy, turning, headTurn, k };
+  return { flip, face, sx, sy, turning, headTurn, k, lastTurn, turns, start };
 }
 
 // ═════════════════════════════════════════════════════════════════════════════ moods
@@ -1142,9 +1527,13 @@ function turnToCamera(S, name = 'barry_to_camera', o = {}) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════ castOpts
-const KIT_KEYS = ['layout', 'rest', 'lookAt', 'talkGain', 'turn', 'turnSides', 'facing', 'tiltAdd', 'reactions', 'setting', 'squash', 'inWater', 'hidden', 'seatX', 'toCamera', 'dart', 'nod', 'water', 'env'];
+const KIT_KEYS = ['layout', 'rest', 'lookAt', 'talkGain', 'turn', 'turnSides', 'facing', 'tiltAdd', 'reactions', 'setting', 'squash', 'inWater', 'hidden', 'seatX', 'toCamera', 'dart', 'nod', 'water', 'env', 'reach', 'z', 'seat', 'roster', 'aboard', 'phase', 'runK'];
 function castOpts(S, who, extraIn = {}) {
   if (who === 'extra') return extraOpts(S, extraIn || {});
+  if (!CAPY_CAST.includes(who)) {
+    throw new Error(`K.castOpts(S, '${who}'): castOpts is for the capybaras ('barry' | 'sunny' | 'doreen' | 'extra')` +
+      (who === 'gerald' ? ' — use K.geraldOpts(S, {...}) for Gerald' : who === 'shelley' ? ' — use K.shelleyOpts(S, {...}) for Dr. Shelley' : ''));
+  }
   const extra = withSceneDefaults(S, who, extraIn || {});
   const L = extra.layout || buildLayout(S, { setting: extra.setting, cast: { [who]: extra } });
   let c = L.chars[who];
@@ -1236,7 +1625,34 @@ function castOpts(S, who, extraIn = {}) {
   if (extra.inWater != null) kit.inWater = !!extra.inWater;
   const r = sanitize(o);
   r.kit = kit;
+  // reach: raise the near front paw toward a WORLD point (or a cast member's head top)
+  if (extra.reach && typeof extra.reach === 'object') {
+    const k = clamp(fin(extra.reach.k ?? 1, 0));
+    const to = extra.reach.to;
+    let p = typeof to === 'string' ? (L.chars[to] ? { ...L.chars[to].headTop } : null) : to && Number.isFinite(to.x) ? { x: to.x, y: to.y } : null;
+    if (p && k > 0.001) {
+      p = { x: p.x + fin(extra.reach.dx, 0), y: p.y + fin(extra.reach.dy, -2) };
+      r.pawUp = k;
+      r.pawAt = pawLocal(r, p);
+    }
+  }
   return r;
+}
+// the rig-LOCAL pawAt that puts the raised paw on world point p (the rig clamps it to the arm's
+// reach, ≈ 82 rig units from the shoulder: the paw then points at p). The kit squash is undone.
+function pawLocal(o, p) {
+  const k = o.kit || {};
+  const sx = fin(k.sx, 1) || 1, sy = fin(k.sy, 1) || 1, dy = fin(k.dy, 0) * (o.scale ?? 1);
+  const q = { x: o.x + (p.x - o.x) / sx, y: o.y + (p.y - o.y) / sy - dy };
+  const base = { ...o, pawUp: 1 };
+  delete base.kit;
+  const P = (x, y) => CAP.capyAnchors({ ...base, pawAt: { x, y } }).paw;
+  const a = P(0, 0), b = P(30, 0), c = P(0, 30);
+  const ux = { x: (b.x - a.x) / 30, y: (b.y - a.y) / 30 }, uy = { x: (c.x - a.x) / 30, y: (c.y - a.y) / 30 };
+  const det = ux.x * uy.y - ux.y * uy.x;
+  if (!(Math.abs(det) > 1e-9)) return undefined;
+  const dx = q.x - a.x, dyy = q.y - a.y;
+  return { x: (dx * uy.y - dyy * uy.x) / det, y: (ux.x * dyy - ux.y * dx) / det };
 }
 function extraOpts(S, e = {}) {
   const i = e.index ?? 0;
@@ -1302,15 +1718,24 @@ function castAnchors(o) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════ Gerald & Shelley
+// a moodAt result as a critter mood option: the BLEND (weight map) while two moods cross-fade, so
+// Gerald / Shelley ease between expressions like the capybaras instead of snapping at 50 %
+function moodOpt(M, def) {
+  const w = M && M.weights;
+  if (!w) return def;
+  const keys = Object.keys(w).filter((k) => w[k] > 1e-3);
+  if (keys.length > 1) { const r = {}; for (const k of keys) r[k] = w[k]; return r; }
+  return keys[0] || M.name || def;
+}
 // Gerald's drawVulture options at a given position (x, y, scale, flip, rot): talk, mood, gaze.
 function geraldAt(S, L, pos, extra = {}, hostWho = null, inFlight = false) {
   const M = moodAt(S, 'gerald', extra.rest);
-  const o = { t: S.T + PHASE.gerald, pose: 'perch', talk: clamp(fin(S.talk('gerald'), 0) * (extra.talkGain ?? 1)), mood: M.name || 'smug', scale: 0.75, ...pos };
+  const o = { t: S.T + PHASE.gerald, pose: 'perch', talk: clamp(fin(S.talk('gerald'), 0) * (extra.talkGain ?? 1)), mood: moodOpt(M, 'smug'), scale: 0.75, ...pos };
   const va = CRIT.vultureAnchors(sanitizeV(o));
   const me = { who: 'gerald', eye: va.eye, flip: !!o.flip };
   const Lg = { ...L, gerald: { host: hostWho, head: va.head } };
   if (!inFlight || extra.look || extra.lookAt) {
-    const g = gazeAt(S, 'gerald', Lg, me, o.mood, extra);
+    const g = gazeAt(S, 'gerald', Lg, me, M.name || 'smug', extra);
     o.look = { x: g.x, y: g.y };
   }
   for (const k in extra) {
@@ -1324,7 +1749,8 @@ function geraldOpts(S, extra = {}) {
   extra = extra || {};
   const L = extra.layout || buildLayout(S, { gerald: typeof extra.on === 'string' ? { on: extra.on } : extra });
   let host = null;
-  if (extra.on) host = typeof extra.on === 'object' ? extra.on : castOpts(S, extra.on, { layout: L });
+  if (typeof extra.on === 'string' && !CAPY_CAST.includes(extra.on)) warnOnce(`geraldOpts:on:${extra.on}`, `K.geraldOpts: on '${extra.on}' is a stage perch — pass it in a stage's cfg.gerald (or give x / y here)`);
+  else if (extra.on) host = typeof extra.on === 'object' ? extra.on : castOpts(S, extra.on, { layout: L });
   const pos = { scale: 0.75 };
   let hostWho = null;
   if (host) {
@@ -1350,7 +1776,7 @@ function shelleyOpts(S, extra = {}) {
   extra = extra || {};
   const L = extra.layout || buildLayout(S, { setting: 'therapy_office' });
   const M = moodAt(S, 'shelley', extra.rest);
-  const o = { x: EO.OFFICE.chair.x, y: EO.OFFICE.chair.y, flip: true, scale: 1, t: S.T + PHASE.shelley, talk: clamp(fin(S.talk('shelley'), 0) * (extra.talkGain ?? 1)), mood: M.name || 'neutral' };
+  const o = { x: EO.OFFICE.chair.x, y: EO.OFFICE.chair.y, flip: true, scale: 1, t: S.T + PHASE.shelley, talk: clamp(fin(S.talk('shelley'), 0) * (extra.talkGain ?? 1)), mood: moodOpt(M, 'neutral') };
   for (const k of ['x', 'y', 'scale', 'flip']) if (extra[k] !== undefined) o[k] = extra[k];
   if (S.has('shelley_writes')) {
     const b = beat(S, 'shelley_writes');
@@ -1358,7 +1784,7 @@ function shelleyOpts(S, extra = {}) {
   }
   const ta = CRIT.tortoiseAnchors(o);
   const me = { who: 'shelley', eye: ta.eye, flip: !!o.flip };
-  const g = gazeAt(S, 'shelley', L, me, o.mood, extra);
+  const g = gazeAt(S, 'shelley', L, me, M.name || 'neutral', extra);
   o.look = { x: g.x, y: g.y };
   for (const k in extra) {
     if (['layout', 'rest', 'lookAt', 'talkGain', 'x', 'y', 'scale', 'flip'].includes(k)) continue;
@@ -1424,8 +1850,32 @@ function faceFrame(L, who, o = {}) {
   if (!c) return null;
   const zoom = Math.min(4.6, (o.zoom ?? 2.8) / Math.pow(Math.max(0.2, c.scale), o.norm ?? 0.8));
   const eyeY = o.eyeY ?? 330, k = o.k ?? 0.75;
-  const f = c.face ?? (c.flip ? -1 : 1);
+  const f = camFace(L, c, o);
   return { x: c.x + f * c.eyeDX * k + (o.dx || 0), y: c.eye.y + (360 - eyeY) / zoom, zoom };
+}
+// The facing a close-up frames for (−1..1). A turn INSIDE the current shot only re-frames part of the
+// way (o.follow, default .5 — the camera mostly holds and lets the face move) with a gentle
+// inOutSine over o.panDur (1.6 s) from the turn's start (≈ 7 px/frame peak on a z3 close-up instead of
+// a whip pan); a shot that starts after the turn is framed for the new side.
+const CU_FOLLOW = 0.5, CU_PAN = 1.6;
+function camFace(L, c, o = {}) {
+  const sgn = (f) => (f ? -1 : 1);
+  const turns = c.turnList;
+  if (!turns || !turns.length || !L || !L.S) return sgn(c.flip);
+  const S = L.S, sh = shot(S), t = S.t;
+  const follow = clamp(fin(o.follow, CU_FOLLOW)), dur = Math.max(0.2, fin(o.panDur, CU_PAN));
+  // facing at the cut (a turn AT the cut belongs to this shot), then each turn of this shot so far
+  // pans from wherever the frame is to `follow` of the way to the new side (continuous)
+  let f = sgn(c.turnStart), seg = null;
+  const val = (sg, tt) => lerp(sg.from, sg.to, ease.inOutSine(clamp((tt - sg.t0) / dur)));
+  for (const tr of turns) {
+    if (tr.t > t) break;
+    if (tr.t < sh.t0 - 1e-6) { f = sgn(tr.to); continue; }
+    const cur = seg ? val(seg, tr.t) : f;
+    if (tr.instant) { seg = null; f = sgn(tr.to); continue; }
+    seg = { t0: tr.t, from: cur, to: lerp(cur, sgn(tr.to), follow) };
+  }
+  return seg ? val(seg, t) : f;
 }
 function resolveFraming(f, I) {
   let r = typeof f === 'function' ? f(I) : f;
@@ -1433,8 +1883,23 @@ function resolveFraming(f, I) {
   if (typeof r === 'string') return null;
   return { ...r };
 }
+// Does move m play in this shot instance? `at`-timed moves belong to the ONE instance of the shot
+// name that contains `at` (from .25 s before its cut; or one already under way at the cut, when an
+// explicit dur carries it across) — never to later instances of a recurring name. m.instance (n-th
+// occurrence of the name, 0-based) / m.shot (scene shot index) pin a move to one instance.
+function moveApplies(m, I) {
+  const sh = I.shot;
+  if (!m) return false;
+  if (m.instance != null && fin(+m.instance, -1) !== sh.instance) return false;
+  if (m.shot != null && fin(+m.shot, -1) !== sh.index) return false;
+  if (m.at == null) return true;
+  const at = keyTime(I.S, m.at);
+  if (at >= sh.t1) return false;
+  return at >= sh.t0 - 0.25 || (m.dur != null && at + fin(+m.dur, 0) > sh.t0);
+}
 function applyMove(cam, m, I, base) {
   const sh = I.shot;
+  if (!moveApplies(m, I)) return cam;
   const at = m.at != null ? keyTime(I.S, m.at) : sh.t0 + (m.delay || 0);
   const dur = m.dur != null ? m.dur : Math.max(0.1, sh.t1 - at);
   const k = easeFn(m.ease)(clamp((I.S.t - at) / Math.max(1e-3, dur)));
@@ -1479,7 +1944,7 @@ function cameraFor(S, framings, opts = {}) {
   const sh = shot(S);
   const name = opts.name || (typeof S.cam === 'function' ? S.cam() : null) || sh.name;
   const kind = opts.kind || kindOf(opts.setting || S.scene.setting);
-  const I = { S, L: opts.layout || null, st: opts.st || null, shot: { ...sh, name }, kind, name, opts };
+  const I = { S, L: opts.layout || null, st: opts.st || null, shot: { ...sh, name, instance: shotInstance(S, sh) }, kind, name, opts };
   let f = framings[name];
   if (!f) {
     const fb = opts.fallback && framings[opts.fallback] ? opts.fallback : framings.wide ? 'wide' : framings.trio ? 'trio' : null;
@@ -1528,10 +1993,32 @@ function userCamera(S, cfg, st, kind) {
 // ─────────────────────────────────────────────────────────────── framings
 const SP = ES.SPRING, NSP = ES.NEW_SPRING;
 // close-up: tighter when the head is bare, a little wider (and lower) when Gerald sits on it
-const cu = (who, bare, withG) => (I) => {
-  const g = I.L && I.L.gerald && I.L.gerald.host === who;
-  return faceFrame(I.L, who, g ? withG : bare);
-};
+// (decided per SHOT from Gerald's resolved schedule — on that head at any time in this shot, landing
+// on it during the shot included — never from the bare config: no loose framing before he arrives)
+const cu = (who, bare, withG) => (I) => faceFrame(I.L, who, geraldOnHeadInShot(I, who) ? withG : bare);
+function geraldOnHeadInShot(I, who) {
+  const st = I.st;
+  if (!st || st.gcfg === undefined) return !!(I.L && I.L.gerald && I.L.gerald.host === who);
+  const g = st.gcfg, S = I.S, sh = I.shot;
+  if (!g || g.hidden) return false;
+  const onIt = g.on === who;
+  if (g.hop) {
+    const H = movTiming(S, g.hop, 0.9);
+    if (g.hop.from != null) {                                  // hops INTO `on` from `from`
+      if (onIt) return H.t0 + H.dur < sh.t1;
+      if (g.hop.from === who) return H.t0 > sh.t0;
+    } else {                                                   // hops OUT of `on` to `to`
+      if (onIt) return H.t0 > sh.t0;
+      if (g.hop.to === who) return H.t0 + H.dur < sh.t1;
+    }
+    return false;
+  }
+  if (!onIt) return false;
+  if (g.release != null) { const r = releaseSpec(S, g.release); if (r && r.t <= sh.t0 + 0.2) return false; }
+  if (g.land) return landTiming(S, g.land).touch < sh.t1 - 0.2;
+  if (g.takeoff) return movTiming(S, g.takeoff, 1.5).t0 > sh.t0 + 0.2;
+  return true;
+}
 // swimmer points for the group framings: the scene's DEFAULT blocking (swimSpots) unless
 // opts.trioFrom === 'live' (then: the live, visible, in-pool swimmers)
 function groupPoints(I, who) {
@@ -1577,34 +2064,66 @@ function geraldFrame(I, zoom = 2.5, eyeY = 250) {
   const f = flip ? -1 : 1;
   return { x: head.x + f * 0.08 * (DW / zoom), y: head.y + 14 + (360 - eyeY) / zoom, zoom };
 }
-// volcano (spring): follows the rolling orange down to the pool when the shot holds 'orange_rolls',
-// frames the crater with sky for the sneeze puffs otherwise, pulls back as env.erupt grows
+// volcano (spring): follows the rolling orange down to the pool when the shot holds 'orange_rolls'
+// (opens on the grove with every head below the frame, ends with the trio's heads FULLY in frame);
+// else the crater with sky for the sneeze puffs. The eruption pull-back is keyed to the 'eruption' cue
+// (eased over 2 s from .15 s after the boom — never a function of a fast env.erupt ramp); scenes
+// without the cue ease on env.erupt. Framings are seeded from env's SPRING.volcanoCam (sneeze →
+// erupting) with the bottom edge kept above HEAD_CLEAR_Y (no cropped heads / oranges at the bottom).
+// new_spring: NEW_SPRING.hillCam (the hill that sneezes).
+const HEAD_CLEAR_Y = 405;
 function volcanoFrame(I) {
-  const e = smoothstep(0.04, 0.35, (I.st && I.st.env && I.st.env.erupt) || 0);
   const S = I.S, sh = I.shot;
+  const setting = I.L ? I.L.setting : S.scene.setting;
+  if (setting === 'new_spring') return { ...(NSP.hillCam || { x: 880, y: 300, zoom: 2.2 }), push: 0.006 };
+  const VC = SP.volcanoCam || {};
+  const clear = (f) => ({ ...f, y: Math.min(f.y, HEAD_CLEAR_Y - 360 / f.zoom) });
+  const pre = clear({ x: 872, y: 196, zoom: 1.6, ...(VC.sneeze || {}) });
+  const post = clear({ x: 860, y: 160, zoom: 1.05, ...(VC.erupting || {}) });
+  let e;
+  if (S.has('eruption')) e = ease.inOutSine(clamp((S.t - S.cue('eruption') - 0.15) / 2.0));
+  else e = smoothstep(0.04, 0.6, (I.st && I.st.env && I.st.env.erupt) || 0);
   if (e <= 0 && S.has('orange_rolls')) {
     const r0 = S.cue('orange_rolls'), rd = Math.max(0.5, S.cueDur('orange_rolls') || 1.8);
     if (r0 < sh.t1 - 0.05 && r0 + rd > sh.t0) {
-      return { x: 815, y: 292, zoom: 1.85, push: 0, drift: 0.5, move: { at: r0 + 0.1, dur: rd + 0.1, to: { x: 925, y: 425, zoom: 1.7 }, ease: 'inOutSine' } };
+      return { x: 815, y: 222, zoom: 1.85, push: 0, drift: 0.5, move: { at: r0, dur: rd + 0.35, to: { x: 900, y: 432, zoom: 1.6 }, ease: 'inOutSine' } };
     }
   }
-  return { x: lerp(872, 860, e), y: lerp(214, 196, e), zoom: lerp(1.65, 1.38, e), push: 0.01 };
+  const c = U.camLerp({ ...pre }, { ...post }, e);
+  return { x: c.x, y: c.y, zoom: c.zoom, push: lerp(0.01, 0.003, e) };
 }
-// escape: rides the runners (live, visible, out-of-the-water cast) along the bank to the raft
+// escape: keyed to the CUES, not to the live cast (hiding / re-seating the runners never moves it):
+// rides the lead runner's scripted path (K.escapeRun pace, SPRING.escapePath) from run_to_raft, eases
+// onto the moored raft around board_raft (2 s from board_raft − 1.2), and pans gently left over raft_launch (110 units,
+// inOutSine) as the raft shoots out of frame. Scenes without a run_to_raft cue: the live runners.
 function escapeFrame(I) {
-  const L = I.L;
-  const run = L ? Object.values(L.chars).filter((c) => c.pose !== 'swim') : [];
-  if (!run.length) return { x: 330, y: 480, zoom: 1.55, foliage: 0.4 };
-  let cx = 0, cy = 0;
-  for (const c of run) { cx += c.x; cy += c.y; }
-  cx /= run.length; cy /= run.length;
-  return { x: clamp(lerp(330, cx, 0.7), 160, 620), y: clamp(cy - 45, 400, 520), zoom: 1.85, foliage: 0.35, push: 0.003 };
+  const S = I.S, L = I.L;
+  if (!S.has('run_to_raft') || (I.opts && I.opts.escapeFrom === 'live')) {
+    const run = L ? Object.values(L.chars).filter((c) => c.pose !== 'swim' && !c.passenger) : [];
+    if (!run.length) return { x: 330, y: 480, zoom: 1.55, foliage: 0.4 };
+    let cx = 0, cy = 0;
+    for (const c of run) { cx += c.x; cy += c.y; }
+    cx /= run.length; cy /= run.length;
+    return { x: clamp(lerp(330, cx, 0.7), 160, 620), y: clamp(cy - 45, 400, 520), zoom: 1.85, foliage: 0.35, push: 0.003 };
+  }
+  const A = springAnchors(L ? L.setting : S.scene.setting);
+  const { board } = escapeTimes(S);
+  const t = S.t;
+  const p = pathAt(escapePathFor(A, 'barry'), escapeK(S, 'barry', t - 0.25));
+  const runCam = { x: clamp(lerp(330, p.x, 0.6), 160, 620), y: clamp(p.y - 45, 400, 520), zoom: 1.85 };
+  // the launch: a gentle pan after the raft (keyed to raft_launch, not to its accelerating x) that
+  // lets it shoot out of frame left
+  const launch = S.has('raft_launch') ? ease.inOutSine(clamp((t - S.cue('raft_launch')) / Math.max(0.5, S.cueDur('raft_launch') || 2.2))) : 0;
+  const raftCam = { x: A.raftMoor.x + 60 - 110 * launch, y: A.raftMoor.y - 75, zoom: 2.3 };
+  const kb = ease.inOutSine(clamp((t - (board - 1.2)) / 2.0));
+  return { ...U.camLerp({ zoom: 1, ...runCam }, { zoom: 1, ...raftCam }, kb), foliage: 0.35, push: 0.003 };
 }
 const SPRING_FRAMINGS = {
   establishing: { x: 660, y: 330, zoom: 0.94, push: 0.008, foliage: 1 },
   establishing_push: { x: 650, y: 350, zoom: 1.0, foliage: 1, push: 0, move: { to: { x: 652, y: 500, zoom: 1.55 }, ease: 'inOutSine' } },
   // slow pan along the extras' row (s01 'Birds perch on it...': pair with extras:'open')
-  extras: { x: 400, y: 486, zoom: 1.95, push: 0.004, foliage: 0.5, move: { to: { x: 900, y: 478, zoom: 2.0 }, ease: 'inOutSine' } },
+  // (linear: the shot is a moving shot cut in and out of — a steady ~8 px/frame instead of a 12 px peak)
+  extras: { x: 400, y: 486, zoom: 1.95, push: 0.004, foliage: 0.5, move: { to: { x: 900, y: 478, zoom: 2.0 }, ease: 'linear' } },
   wide: { x: 640, y: 360, zoom: 1.0, foliage: 1 },
   trio: (I) => trioFrame(I),
   two_shot_sunny: (I) => twoShot(I, 'sunny', 'barry', 10),
@@ -1614,8 +2133,11 @@ const SPRING_FRAMINGS = {
   doreen_cu: cu('doreen', { zoom: 2.95, eyeY: 335 }, { zoom: 2.45, eyeY: 418 }),
   gerald_cu: (I) => geraldFrame(I),
   volcano: volcanoFrame,
-  fish: { x: 250, y: 548, zoom: 2.0 },
-  thermometer: { x: SP.thermometerSpot.x + 4, y: SP.thermometerSpot.y - 40, zoom: 4.4, push: 0.012 },
+  // the left rim + river outlet (SPRING.fishHop); Sunny only as a back at the right edge
+  fish: { x: 100, y: 548, zoom: 2.4 },
+  // the INSERT: the instrument in the middle, the two faces cropped at the edges / top
+  thermometer: { x: SP.thermometerSpot.x + 22, y: SP.thermometerSpot.y - 23, zoom: 5.2, push: 0.01 },
+  hill: (I) => ({ ...((I.L && I.L.setting === 'new_spring' ? NSP.hillCam : null) || { x: 880, y: 300, zoom: 2.2 }), push: 0.006 }),
   // the EXIT row (EXIT · NO, REALLY. THIS WAY. · YES, YOU, SUNNY) on the back-left bank
   signs: { x: 292, y: 445, zoom: 2.4, push: 0.005 },
   // the SPRING RULES sign + Barry's head below it (Gerald's hop target), both above the subtitles
@@ -1653,7 +2175,7 @@ const OFFICE_FRAMINGS = {
 // part of the cached background) to peek over his head-back, smoke rising out of frame. Framed on
 // his REST seat (no raft bob in the camera) and on his facing for this shot; a mid-shot turn pans
 // with the smoothed face. The stage passes cam.base.envVolcano to the background.
-const RIVER_CU = { zoom: 4.0, eyeX: 500, eyeY: 455, vol: { x: -14, y: -80 } };
+const RIVER_CU = { zoom: 4.0, eyeX: 420, eyeY: 455, vol: { x: -14, y: -80 } };
 function riverBarryCU(I) {
   const L = I.L, b = L && L.chars.barry;
   if (!b) return { ...EO.RIVER.framings.barry_cu };
@@ -1664,8 +2186,9 @@ function riverBarryCU(I) {
   const z = RIVER_CU.zoom;
   const eyeY = rest.y + b.eyeDY;
   const eyeRefX = rest.x + sgn * b.eyeDX;
-  const eyeNowX = rest.x + b.face * b.eyeDX;
-  const sx = lerp(DW - RIVER_CU.eyeX, RIVER_CU.eyeX, clamp((b.face + 1) / 2));
+  const cf = camFace(L, b);
+  const eyeNowX = rest.x + cf * b.eyeDX;
+  const sx = lerp(DW - RIVER_CU.eyeX, RIVER_CU.eyeX, clamp((cf + 1) / 2));
   return {
     x: eyeNowX + (640 - sx) / z, y: eyeY + (360 - RIVER_CU.eyeY) / z, zoom: z, push: 0.004,
     envVolcano: { x: Math.round(eyeRefX + sgn * RIVER_CU.vol.x), y: Math.round(eyeY + RIVER_CU.vol.y) },
@@ -1714,7 +2237,7 @@ function castEntry(S, who, extra, cfg, light) {
 }
 
 // ── Gerald on a stage: perches, landing, take-off, hops (critters choreography)
-const GERALD_KIT_KEYS = ['on', 'land', 'takeoff', 'hop', 'hidden', 'preVisible', 'layer', 'sign', 'dx', 'depthY'];
+const GERALD_KIT_KEYS = ['on', 'land', 'takeoff', 'hop', 'hidden', 'preVisible', 'layer', 'sign', 'dx', 'depthY', 'release'];
 function movTiming(S, m, defDur) {
   let t0 = m.t0, dur = m.dur;
   if (m.beat) { if (t0 == null) t0 = S.cue(m.beat); if (dur == null) dur = S.cueDur(m.beat); }
@@ -1729,8 +2252,12 @@ function landTiming(S, land) {
   const m = movTiming(S, land, 1.6);
   let touch = land.touch != null && land.touch !== false ? keyTime(S, land.touch) : null;
   if (touch == null && land.touch !== false) {
-    const c = sfxTimes(S, ['land', 'thud']).filter((x) => x >= m.t0 + 0.3 && x <= m.t0 + m.dur + 0.6);
-    if (c.length) touch = c[0];
+    // a 'land' / 'thud' inside the beat wins; else the end of a 'flaps_land' approach (+1.5 s)
+    for (const names of [['land', 'thud'], ['flaps_land']]) {
+      const c = sceneSfx(S).filter((e) => names.includes(e.name)).map((e) => e.t + TOUCH_SFX[e.name])
+        .filter((x) => x >= m.t0 + 0.3 && x <= m.t0 + m.dur + 0.6).sort((a, b) => a - b);
+      if (c.length) { touch = c[0]; break; }
+    }
   }
   if (touch == null) touch = m.t0 + m.dur - 0.42;
   const cd = Math.max(1.0, touch + 0.42 - m.t0);
@@ -1796,9 +2323,16 @@ function resolveGerald(S, st, gcfgIn) {
   for (const k in gcfg) if (!GERALD_KIT_KEYS.includes(k)) extra[k] = gcfg[k];
   let onSpec = gcfg.on;
   if (onSpec === undefined && gcfg.x != null) onSpec = { x: gcfg.x, y: gcfg.y, scale: gcfg.scale, flip: gcfg.flip, rot: gcfg.rot };
-  const on = perchOf(S, st, onSpec, gcfg);
+  let on = perchOf(S, st, onSpec, gcfg);
+  // release: from that time on his perch is FROZEN where the host's head was at that instant (the host
+  // can bolt / be hidden / move without dragging him along)
+  let released = false;
+  if (on && gcfg.release != null && typeof onSpec === 'string' && CAPY_CAST.includes(onSpec)) {
+    const rel = releaseSpec(S, gcfg.release);
+    if (rel && t >= rel.t) { on = releasedPerch(S, st, onSpec, rel); released = true; }
+  }
   if (on && typeof onSpec === 'string') for (const k of ['x', 'y', 'scale', 'flip', 'rot']) if (gcfg[k] !== undefined) on[k] = gcfg[k];
-  let pos = null, host = null, layer = null, sx = 1, framePerch = on, inFlight = false, mode = 'perch';
+  let pos = null, host = null, layer = null, sx = 1, framePerch = on, inFlight = false, mode = 'perch', pk = null;
   const perched = (pr, flip, lift = 0) => ({ x: pr.x, y: pr.y - lift * 7 * pr.scale, rot: pr.rot, scale: pr.scale, flip, ...(pr.crouch ? { crouch: pr.crouch } : {}) });
   if (gcfg.hop) {
     const hp = gcfg.hop;
@@ -1812,10 +2346,10 @@ function resolveGerald(S, st, gcfgIn) {
       const tEnd = H.t0 + H.dur;
       const p = (t - H.t0) / H.dur;
       if (p < 0) {
-        pos = perched(src, src.flip); host = src.host; layer = src.layer || null;
+        pos = perched(src, src.flip); host = src.host; layer = src.layer || null; pk = src.kind;
       } else if (p >= 1) {
         const te = turnEnv(t, tEnd - 0.04, travel, dst.flip);
-        pos = perched(dst, te.flip, te.lift); sx = te.sx; host = dst.host; layer = dst.layer || null;
+        pos = perched(dst, te.flip, te.lift); sx = te.sx; host = dst.host; layer = dst.layer || null; pk = dst.kind;
         mode = te.active ? 'turn' : 'perch';
       } else {
         const ts = turnEnv(t, H.t0, src.flip, travel, Math.min(0.2, H.dur * 0.25));
@@ -1831,7 +2365,7 @@ function resolveGerald(S, st, gcfgIn) {
         pos = { ...pickChoreo(o), x: o.x, y: o.y, scale: sc, rot: lerp(src.rot, dst.rot, kk), flip: ts.flip };
         sx = ts.sx;
         const tOff = 0.16 / H.dur, tOn = (H.dur - 0.22) / H.dur;
-        if (p < tOff) { host = src.host; layer = src.layer || null; } else if (p >= tOn) { host = dst.host; layer = dst.layer || null; }
+        if (p < tOff) { host = src.host; layer = src.layer || null; pk = src.kind; } else if (p >= tOn) { host = dst.host; layer = dst.layer || null; pk = dst.kind; }
         mode = 'hop';
       }
     }
@@ -1855,10 +2389,11 @@ function resolveGerald(S, st, gcfgIn) {
       inFlight = t < Ld.touch;
       host = t >= Ld.touch ? on.host : null;
       layer = t >= Ld.touch ? on.layer || null : null;
+      pk = t >= Ld.touch ? on.kind : null;
       mode = 'land';
     } else {
       const te = turnEnv(t, Ld.t0 + Ld.dur - 0.04, travel, on.flip);
-      pos = perched(on, te.flip, te.lift); sx = te.sx; host = on.host; layer = on.layer || null;
+      pos = perched(on, te.flip, te.lift); sx = te.sx; host = on.host; layer = on.layer || null; pk = on.kind;
       mode = te.active ? 'turn' : 'perch';
     }
   }
@@ -1866,7 +2401,7 @@ function resolveGerald(S, st, gcfgIn) {
     const Tk = movTiming(S, gcfg.takeoff, 1.5);
     framePerch = on;
     if (t >= Tk.t0 + Tk.dur) return null;
-    if (t < Tk.t0) { pos = perched(on, on.flip); host = on.host; layer = on.layer || null; } else {
+    if (t < Tk.t0) { pos = perched(on, on.flip); host = on.host; layer = on.layer || null; pk = on.kind; } else {
       const to = gcfg.takeoff.to || { dx: 520, dy: -380 };
       const s = Math.max(0.05, on.scale);
       let travel = !!on.flip, rel;
@@ -1882,21 +2417,41 @@ function resolveGerald(S, st, gcfgIn) {
       pos = { ...pickChoreo(o), x: o.x, y: o.y, scale: s, flip: te.flip, rot: on.rot * (1 - smoothstep(0.3, 0.6, t - Tk.t0)) };
       sx = te.sx;
       inFlight = leapt;
-      host = leapt ? null : on.host; layer = leapt ? null : on.layer || null;
+      host = leapt ? null : on.host; layer = leapt ? null : on.layer || null; pk = leapt ? null : on.kind;
       mode = 'takeoff';
     }
   }
   if (!pos) {
     if (!on) return null;
-    pos = perched(on, on.flip); host = on.host; layer = on.layer || null;
+    pos = perched(on, on.flip); host = on.host; layer = on.layer || null; pk = on.kind;
   }
   if (gcfg.layer) layer = gcfg.layer;
   const opts = geraldAt(S, st.layout, pos, extra, host, inFlight);
   const ph = perchHeadOf(framePerch, S.T);
   return {
-    opts, anchors: CRIT.vultureAnchors(opts), host, layer, depthY: gcfg.depthY, sx, mode,
+    opts, anchors: CRIT.vultureAnchors(opts), host, layer, depthY: gcfg.depthY ?? (on && on.depthY), sx, mode, released, perchKind: pk,
     perch: framePerch, perchHead: ph && ph.head, perchFlip: ph && ph.flip,
   };
+}
+// release: t | 'cue+0.1' | {t, at: {x, y, rot?, scale?, flip?}} → {t, at}
+function releaseSpec(S, r) {
+  if (r == null || r === false) return null;
+  if (typeof r === 'object' && !Array.isArray(r)) return r.t == null ? null : { t: keyTime(S, r.t), at: r.at || null };
+  return { t: keyTime(S, r), at: null };
+}
+// Gerald's frozen perch after a release: the host's head top at the release instant — the host at its
+// DEFAULT spot with the scene's non-positional cast options (x / y / scale / pose / flip / hidden /
+// squash of the current frame are ignored: they are what the bolt animates). rel.at overrides.
+function releasedPerch(S, st, who, rel) {
+  const cc = { ...castCfgOf(S, { cast: st.cfgCast || {} }, who) };
+  for (const k of ['x', 'y', 'scale', 'pose', 'rot', 'flip', 'hidden', 'inWater', 'squash', 'layout', 'seatX']) delete cc[k];
+  const S2 = S.tl.sceneTime(S.id, S.scene.start + clamp(rel.t, 0, Math.max(0, S.duration - 1e-3)));
+  const ghost = castOpts(S2, who, { ...cc, setting: st.setting });
+  const a = castAnchors(ghost);
+  const p = { x: a.headTop.x, y: a.headTop.y, rot: fin(a.headTop.angle, 0), scale: 0.75 * ghost.scale, flip: !!ghost.flip, host: null, kind: 'released', layer: null, depthY: ghost.y + 0.5 };
+  if (rel.at) for (const k of ['x', 'y', 'rot', 'scale']) if (Number.isFinite(rel.at[k])) p[k] = rel.at[k];
+  if (rel.at && rel.at.flip != null) p.flip = !!rel.at.flip;
+  return p;
 }
 const CHOREO_KEYS = ['pose', 'pose2', 'poseMix', 'flapPhase', 'legs', 'fold', 'wing', 'crouch', 'ruffle', 'flare', 'glide'];
 function pickChoreo(o) {
@@ -1941,13 +2496,15 @@ function autoFoliage(cam, cfgF) {
 }
 
 // ───────────────────────────────────────────────────────────── extras
-// back: four dozers along the back of the pool (clear of the trio's silhouettes and the rules sign)
+// back: four dozers along the back of the pool (clear of the trio's silhouettes and the rules sign).
+//       Deliberately NOT env's SPRING.swimSpots.extras: those sit right behind Sunny's and Doreen's
+//       heads in the trio (two-headed silhouettes); pass extras: ES.SPRING.swimSpots.extras to use them.
 // open: s01 — the extras ARE the pool (use with cast: {sunny: false, doreen: false}): a bird on
 //       one's head, an orange hat on another, everyone asleep
 const EXTRAS = {
   back: [
     { x: 236, y: 548, scale: 0.72, flip: false, seed: 1 },
-    { x: 540, y: 500, scale: 0.62, flip: false, seed: 4 },
+    { x: 528, y: 502, scale: 0.62, flip: true, seed: 4 },        // faces away from the rules sign (its orange clear of the board)
     { x: 792, y: 500, scale: 0.62, flip: true, seed: 7 },
     { x: 1080, y: 540, scale: 0.74, flip: true, seed: 10 },
   ],
@@ -1969,12 +2526,21 @@ function drawSpringStage(ctx, t, S, cfg = {}) {
   const env = finiteOpts({ volcanoSmoke: 0.3, ...(setting === 'spring_evening' ? { dusk: 0.15 } : {}), ...(typeof cfg.env === 'function' ? cfg.env(S) : cfg.env || {}) });
   if (env.rumble == null) env.rumble = rumbleLevel(S);
   const envShort = { ...env, setting: setting === 'spring_evening' ? 'evening' : setting === 'new_spring' ? 'new' : 'day' };
-  const L = buildLayout(S, { ...cfg, setting });
+  // the moored raft (cfg.raft): Gerald on the banner bunches it, like on the river
+  let raftCfg = cfg.raft || null;
+  if (raftCfg) {
+    raftCfg = raftCfg === true ? {} : { ...raftCfg };
+    const fk = flagK(S, cfg.gerald);
+    if (raftCfg.flagPerch === undefined && fk > 0.001) raftCfg.flagPerch = { k: fk };
+    if (raftCfg.flagPerch === false) delete raftCfg.flagPerch;
+  }
+  const L = buildLayout(S, { ...cfg, raft: raftCfg, setting });
   const st = stageBase(S, t, setting, kind, L, envShort);
   st.A = A;
+  st.raft = L.raft || null;
   st.cfgCast = cfg.cast || {};
   const light = cfg.light === false ? null : cfg.light || lightFor(setting, env);
-  for (const who of Object.keys(L.chars)) st.cast[who] = castEntry(S, who, { ...castCfgOf(S, cfg, who), layout: L, env }, cfg, light);
+  for (const who of Object.keys(L.chars)) st.cast[who] = castEntry(S, who, { ...(L.chars[who].passenger ? L.chars[who].cc : castCfgOf(S, cfg, who)), layout: L, env }, cfg, light);
   // extras
   if (cfg.extras) {
     const list = Array.isArray(cfg.extras) ? cfg.extras : EXTRAS[cfg.extras === 'open' ? 'open' : 'back'];
@@ -1985,6 +2551,7 @@ function drawSpringStage(ctx, t, S, cfg = {}) {
     });
   }
   // Gerald (+ re-aim anyone looking at him now that his real position is known)
+  st.gcfg = cfg.gerald || null;
   st.gerald = resolveGerald(S, st, cfg.gerald);
   regaze(S, st, L, cfg, light);
   // camera
@@ -1999,17 +2566,33 @@ function drawSpringStage(ctx, t, S, cfg = {}) {
     // depth-sorted swimmers + items
     const items = [];
     st.extras.forEach((e) => items.push({ y: e.opts.y, x: e.opts.x, kind: 'extra', entry: e, water: e.opts.kit.inWater, w: 250 * e.opts.scale * SIZE.extra, sc: e.opts.scale }));
+    const passengers = [];
     for (const who in st.cast) {
       const o = st.cast[who].opts;
+      if (L.chars[who] && L.chars[who].passenger) { passengers.push(who); continue; }
       items.push({ y: o.y, x: o.x, kind: 'cast', who, water: o.kit.inWater, w: 255 * o.scale * (SIZE[who] || 1), sc: o.scale });
     }
+    const gOnRaft = !!(st.raft && st.gerald && !st.gerald.host && st.gerald.layer !== 'behind' && (st.gerald.perchKind === 'mast' || st.gerald.perchKind === 'flag'));
+    // default depth: BEHIND the near bank (runners on the bank above it pass in front of its banner)
+    if (st.raft) items.push({ y: fin(raftCfg.depthY, st.raft.opts.y - 160), x: st.raft.opts.x, kind: 'raft' });
     for (const it of cfg.items || []) {
       if (!it || typeof it.draw !== 'function') continue;
       const wo = it.water && typeof it.water === 'object' ? it.water : {};
       items.push({ y: clamp(fin(it.y, 600), -XY_LIM, XY_LIM), x: clamp(fin(it.x, 640), -XY_LIM, XY_LIM), kind: 'item', item: it, water: !!it.water, w: clamp(posv(wo.w, 60, 2), 2, 3000), depth: wo.depth != null ? clamp(posv(wo.depth, 30, 1), 1, 2000) : undefined, sc: 1 });
     }
-    if (st.gerald && !(st.gerald.host && st.cast[st.gerald.host]) && st.gerald.layer !== 'behind') items.push({ y: fin(st.gerald.depthY, 10000), x: st.gerald.opts.x, kind: 'gerald' });
+    if (st.gerald && !(st.gerald.host && st.cast[st.gerald.host]) && st.gerald.layer !== 'behind' && !gOnRaft) items.push({ y: fin(st.gerald.depthY, 10000), x: st.gerald.opts.x, kind: 'gerald' });
     items.sort((a, b) => a.y - b.y || a.x - b.x);
+    // the raft sandwich: back (mast, banner, rear bundles) → passengers (ground on the deck's sit line,
+    // z order) → front bundle (they sit IN it) → Gerald on the mast / banner
+    const drawRaftGroup = () => {
+      const ro = st.raft.opts;
+      PROPS.drawRaft(ctx, { ...ro, layer: 'back' });
+      runHook(cfg.hooks, 'onRaft', ctx, st);
+      const zOf = (w) => fin(L.chars[w].cc.z, RAFT_Z[w] ?? 1);
+      for (const who of passengers.slice().sort((a, b) => zOf(a) - zOf(b))) drawCast(ctx, st.cast[who].opts);
+      PROPS.drawRaft(ctx, { ...ro, layer: 'front' });
+      if (gOnRaft) drawGeraldEntry(ctx, st, st.gerald);
+    };
     // view culling: skip swimmers (and their water) whose generous bbox is fully off-screen
     const vw = (DW / 2) / st.cam.zoom + 40, vh = (DH / 2) / st.cam.zoom + 40;
     const visible = (it) => {
@@ -2026,6 +2609,7 @@ function drawSpringStage(ctx, t, S, cfg = {}) {
       else if (it.kind === 'cast') drawCast(ctx, st.cast[it.who].opts);
       else if (it.kind === 'item') { ctx.save(); try { it.item.draw(ctx, st); } finally { ctx.restore(); } }
       else if (it.kind === 'gerald') drawGeraldEntry(ctx, st, st.gerald);
+      else if (it.kind === 'raft') drawRaftGroup();
       if (it.water) {
         const sw = { x: it.x, y: it.y, w: it.w, scale: it.sc };
         if (it.depth) sw.depth = it.depth;
@@ -2096,6 +2680,7 @@ function drawOfficeStage(ctx, t, S, cfg = {}) {
     const so = sanitizeV(shelleyOpts(S, { ...(cfg.shelley || {}), layout: L }));
     st.shelley = { opts: so, anchors: CRIT.tortoiseAnchors(so) };
   }
+  st.gcfg = gcfg || null;
   st.gerald = resolveGerald(S, st, gcfg);
   regaze(S, st, L, cfg, light);
   const framings = { ...OFFICE_FRAMINGS, ...(cfg.framings || {}) };
@@ -2159,16 +2744,19 @@ function drawRaftStage(ctx, t, S, cfg = {}) {
   const light = cfg.light === false ? null : cfg.light || lightFor(setting, env);
   for (const who of Object.keys(L.chars)) {
     const cc = castCfgOf(S, cfg, who);
-    const acc = { soot, ...(who === 'barry' ? { helmet: true } : {}), ...(who === 'doreen' ? { juice } : {}), ...(cc.accessories || {}) };
+    // continuity: Sunny's orange went in the boil, Doreen's was juiced (s07) → none on the raft
+    const acc = { soot, ...(who === 'barry' ? { helmet: true } : { orange: false }), ...(who === 'doreen' ? { juice } : {}), ...(cc.accessories || {}) };
     st.cast[who] = castEntry(S, who, { ...cc, accessories: acc, layout: L, env }, cfg, light);
   }
+  st.gcfg = gcfg || null;
   st.gerald = resolveGerald(S, st, gcfg);
   regaze(S, st, L, cfg, light);
   const framings = { ...RIVER_FRAMINGS, ...(cfg.framings || {}) };
   st.cam = cfg.camera ? userCamera(S, cfg, st, kind) : cameraFor(S, framings, { ...(cfg.cam || {}), layout: L, st, setting });
   // the river barry_cu's volcano cheat (fixed per shot) unless the scene sets env.volcano
   if (st.cam.base && st.cam.base.envVolcano && env.volcano === undefined) env.volcano = st.cam.base.envVolcano;
-  const order = Object.keys(st.cast).sort((a, b) => (a === 'barry') - (b === 'barry'));
+  const zOf = (w) => fin(castCfgOf(S, cfg, w).z, RAFT_Z[w] ?? 1);
+  const order = Object.keys(st.cast).sort((a, b) => zOf(a) - zOf(b));
   const g = st.gerald;
   const items = (cfg.items || []).filter((it) => it && typeof it.draw === 'function').sort((a, b) => fin(a.y, 0) - fin(b.y, 0));
   // layer sandwich: raft back (mast, banner, rear bundles) → passengers with their ground on the
@@ -2379,6 +2967,27 @@ const lab = {
       tile(ctx, i, 4, 4, `${f.id.slice(0, 3)} t=${S.t.toFixed(2)}`, () => drawSpringStage(ctx, S.t, S, f.cfg(S)));
     });
   },
+  // s07 escape through the kit: K.escapeRun along the path, the leap INTO the stage's moored raft
+  // (cfg.raft passengers), Gerald on its mast, the launch (escape framing keyed to the cues)
+  escape(ctx, t) {
+    const times = [47.6, 49.2, 50.6, 51.7, 52.0, 52.25, 52.55, 53.3, 54.9, 55.6, 56.2, 56.9];
+    times.forEach((tt, i) => {
+      const S = labS('s07_eruption', tt + t);
+      tile(ctx, i, 4, 3, `s07 t=${S.t.toFixed(2)}`, () => {
+        const launch = beat(S, 'raft_launch');
+        const raft = { dx: launch.before ? 0 : -620 * ease.inQuad(launch.k), wake: launch.before ? 0 : 1, bob: 1, passengers: {} };
+        const cast = { barry: { accessories: { helmet: true } }, sunny: {}, doreen: {} };
+        for (const who of CAPY_CAST) {
+          const r = escapeRun(S, who, { raft });
+          if (r.aboard) raft.passengers[who] = { ...r, accessories: cast[who].accessories }; else Object.assign(cast[who], r);
+        }
+        drawSpringStage(ctx, S.t, S, {
+          env: { erupt: 0.7, lava: 0.6, dusk: 0.3 }, raft, cast, gerald: { on: 'mast' }, cam: { name: 'escape' },
+          hooks: { behind: (c, st) => { drawRulesSign(c, st.T); drawExitSigns(c, st.T); } },
+        });
+      });
+    });
+  },
   // framing audit (text): every spring / river / office framing at a representative time
   audit(ctx) {
     ctx.fillStyle = '#1d232b'; ctx.fillRect(0, 0, DW, DH);
@@ -2431,12 +3040,13 @@ module.exports = {
   cameraFor, faceFrame, trioFrame, toScreen, toWorld, clampCam, shakeOffset, auditFramings,
   SPRING_FRAMINGS, OFFICE_FRAMINGS, RIVER_FRAMINGS, WORLD, WORLD_CLOSE,
   // gags & timing
-  take, popIn, popOut, wobble, withSquash, shakeEnv, sfxShake, rumbleLevel, sfxTimes, SHAKE_SFX,
-  beat, ramp, bump, fadeWindow, stepKeys, keyTime, shot, lineWith, wordTime, linesOf, lastLineBefore, pathAt, gaitPhase,
+  take, popIn, popOut, wobble, lob, withSquash, shakeEnv, sfxShake, rumbleLevel, sfxTimes, SHAKE_SFX, RUMBLE_SFX, TOUCH_SFX,
+  beat, ramp, bump, fadeWindow, stepKeys, keyTime, keyedNum, shot, lineWith, wordTime, linesOf, lastLineBefore, pathAt, gaitPhase,
+  escapeRun, raftSeatPose, raftPoint, pawLocal,
   officePuff, officePuffKeys, PUFF_KEYS,
   // spring props
   drawRulesSign, rulesSignAnchors, drawExitSigns, drawMooredRaft, mooredRaftAnchors, RULES_SIGN, EXIT_SIGNS, MOORED_RAFT, EXTRAS,
   // constants
-  REST_MOOD, SCENE_DEFAULTS, SUB_Y, RAFT_SEATS,
+  REST_MOOD, SCENE_DEFAULTS, SCENE_ROSTER, SUB_Y, RAFT_SEATS, RAFT_FLIP, SPRING_RAFT_SEATS, SPRING_RAFT_FLIP, ESCAPE,
   lab,
 };
